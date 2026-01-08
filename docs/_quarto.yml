@@ -23,6 +23,8 @@ website:
         text: Model Training
       - href: webpages/usage.qmd
         text: Usage
+      - href: webpages/releases.qmd
+        text: Releases
     right:
       - icon: github
         href: https://github.com/huishenlab/tranquillyzer
