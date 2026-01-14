@@ -1,10 +1,8 @@
 import logging
 import gc
 import tensorflow as tf
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from numba import njit
 from rapidfuzz import process
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
@@ -20,27 +18,6 @@ logger = logging.getLogger(__name__)
 def reverse_complement(seq):
     complement = {"A": "T", "T": "A", "C": "G", "G": "C"}
     return "".join(complement.get(base, base) for base in reversed(seq))
-
-
-# Create ASCII lookup table (0-127 only, avoids excess memory usage)
-DNA_COMPLEMENT = np.zeros(128, dtype=np.uint8)  # Only map printable ASCII values
-DNA_COMPLEMENT[ord("A")] = ord("T")
-DNA_COMPLEMENT[ord("T")] = ord("A")
-DNA_COMPLEMENT[ord("G")] = ord("C")
-DNA_COMPLEMENT[ord("C")] = ord("G")
-DNA_COMPLEMENT[ord("N")] = ord("N")  # Keep 'N' unchanged
-
-
-@njit
-def reverse_complement_numba(seq_ascii):
-    rev_comp_arr = DNA_COMPLEMENT[seq_ascii[::-1]]  # Reverse & complement
-    return rev_comp_arr
-
-
-def reverse_complement(seq):
-    seq_ascii = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)  # Convert string to ASCII uint8
-    rev_comp_ascii = reverse_complement_numba(seq_ascii)  # Call optimized function
-    return rev_comp_ascii.tobytes().decode("ascii")  # Convert back to string
 
 
 def correct_barcode(row, column_name, whitelist, threshold):
@@ -144,13 +121,11 @@ def process_row(
         corrected_barcode_seqs.append(corrected_seq)
 
     corrected_barcodes_str = ";".join(corrected_barcodes)
-    # corrected_barcode_seqs_str = "-".join(corrected_barcode_seqs)
 
     orientation = row["orientation"]
 
     result["architecture"] = row["architecture"]
     result["reason"] = row["reason"]
-    # result['orientation'] = row['orientation']
     result["orientation"] = orientation
 
     cell_id, local_match_counts, local_cell_counts = assign_cell_id(result, whitelist_df, barcode_columns)
