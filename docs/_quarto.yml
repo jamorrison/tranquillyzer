@@ -21,6 +21,8 @@ website:
         text: Quick Start
       - href: webpages/model_training.qmd
         text: Model Training
+      - href: webpages/resource_requirements.qmd
+        text: Resource Requirements
       - href: webpages/usage.qmd
         text: Usage
       - href: webpages/releases.qmd
