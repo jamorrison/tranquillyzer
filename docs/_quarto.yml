@@ -27,6 +27,8 @@ website:
         text: Usage
       - href: webpages/releases.qmd
         text: Releases
+      - href: webpages/contributing.qmd
+        text: Contributing
     right:
       - icon: github
         href: https://github.com/huishenlab/tranquillyzer
@@ -56,6 +58,3 @@ format:
     code-copy: true
     code-block-border-left: "#000000"
     code-block-bg: "#F3F3F3"
-
-
-

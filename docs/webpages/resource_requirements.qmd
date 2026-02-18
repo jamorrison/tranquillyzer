@@ -18,15 +18,15 @@ feasible read length per replica.
 All estimates correspond to the default **_Tranquillyzer_ CNN-BiLSTM-CRF** annotation model with the following fixed
 architecture:
 
-- `embedding_dim = 128`  
-- `conv_layers = 3`  
-- `conv_filters = 128`  
-- `conv_kernel_size = 25`  
-- `lstm_layers = 1`  
-- `lstm_units = 96`  
-- `bidirectional = TRUE`  
-- `CRF = TRUE`  
-- `attention_heads = 0`  
+- `embedding_dim = 128`
+- `conv_layers = 3`
+- `conv_filters = 128`
+- `conv_kernel_size = 25`
+- `lstm_layers = 1`
+- `lstm_units = 96`
+- `bidirectional = TRUE`
+- `CRF = TRUE`
+- `attention_heads = 0`
 
 Unless otherwise stated, all estimates assume a **VRAM headroom of 0.35**, meaning _Tranquillyzer_ intentionally targets
 only ~65% of available GPU memory to ensure inference safety.

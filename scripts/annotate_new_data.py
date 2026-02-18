@@ -26,6 +26,7 @@ from tensorflow.keras import backend as K
 #       set here, but using a different function
 
 from scripts.available_gpus import gpus_to_visible_devices_string
+
 os.environ["CUDA_VISIBLE_DEVICES"] = gpus_to_visible_devices_string()
 
 tf.config.experimental.enable_tensor_float_32_execution(False)
@@ -282,8 +283,7 @@ def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy
                 learning_rate=params["learning_rate"],
                 crf_layer=True,
             )
-        _ = model(tf.zeros((1, 512), dtype=tf.int32), 
-                  training=False)
+        _ = model(tf.zeros((1, 512), dtype=tf.int32), training=False)
         model.load_weights(model_path_w_CRF)
     else:
         scope = strategy.scope() if strategy else contextlib.nullcontext()
@@ -322,7 +322,7 @@ def model_predictions(
     min_batch = int(n_gpus) if n_gpus > 0 else min_batch
     strategy = tf.distribute.MirroredStrategy() if n_gpus > 1 else None
 
-    conv_filters = 256  # default, will be overwritten if params present    
+    conv_filters = 256  # default, will be overwritten if params present
 
     max_len = int(int(bin_name.replace("bp", "").split("_")[1]) + 10)
     global_bs = choose_global_batch(
@@ -347,27 +347,17 @@ def model_predictions(
         base_qualities = df_chunk["base_qualities"].to_list() if "base_qualities" in df_chunk.columns else None
 
         encoded_data = preprocess_sequences(reads, max_len)
-        X_new_padded = pad_sequences(encoded_data, padding='post', dtype='int32', maxlen=max_len)
+        X_new_padded = pad_sequences(encoded_data, padding="post", dtype="int32", maxlen=max_len)
 
         if global_bs >= 100 and len(reads) >= 100:
             _log_batch_once(bin_name or "", int(global_bs))
 
-            chunk_predictions = annotate_new_data_parallel(
-                X_new_padded,
-                model,
-                global_bs,
-                min_batch=min_batch
-            )
+            chunk_predictions = annotate_new_data_parallel(X_new_padded, model, global_bs, min_batch=min_batch)
         else:
             model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None)
             _log_batch_once(bin_name or "", int(global_bs))
 
-            chunk_predictions = annotate_new_data_parallel(
-                X_new_padded,
-                model,
-                global_bs,
-                min_batch=min_batch
-            )
+            chunk_predictions = annotate_new_data_parallel(X_new_padded, model, global_bs, min_batch=min_batch)
 
         del df_chunk, X_new_padded
         gc.collect()

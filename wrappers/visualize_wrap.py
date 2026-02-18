@@ -203,12 +203,7 @@ def visualize_wrap(
     # Perform annotation and plotting
     encoded_data = preprocess_sequences(selected_reads, max_read_len + 10)
     try:
-        predictions = annotate_new_data_parallel(
-            encoded_data,
-            model,
-            max_batch_size,
-            min_batch=min_batch_size
-        )
+        predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
     except Exception as e:
         logger.error(f"Encountered an error during annotation: {e}")
         sys.exit(1)
