@@ -108,7 +108,7 @@ def process_full_length_reads_in_chunks_and_save(
     if model_type == "HYB" and pass_num == 1:
         tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")
         os.makedirs(tmp_invalid_dir, exist_ok=True)
-        
+
         tmp_invalid_payload = {
             "ReadName": invalid_reads_df["ReadName"],
             "read": invalid_reads_df["read"],
@@ -116,7 +116,7 @@ def process_full_length_reads_in_chunks_and_save(
         }
         if output_fmt == "fastq":
             tmp_invalid_payload["base_qualities"] = invalid_reads_df["base_qualities"]
-        
+
         tmp_invalid_df = pl.DataFrame(tmp_invalid_payload)
 
         tmp_path = f"{tmp_invalid_dir}/{bin_name}.tsv"
@@ -311,7 +311,7 @@ def filtering_reason_stats(reason_counter_by_bin, output_dir):
 
 
 def plot_read_n_cDNA_lengths(output_dir):
-    
+
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
