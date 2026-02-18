@@ -336,9 +336,7 @@ def train_model_wrap(
         max_read_len = int(max(validation_read_lengths)) + 10
 
         encoded_data = preprocess_sequences(validation_reads, max_read_len)
-        predictions = annotate_new_data_parallel(
-            encoded_data, model, max_batch_size, min_batch=min_batch_size
-        )
+        predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
         annotated_reads = extract_annotated_full_length_seqs(
             validation_reads,
             predictions,
