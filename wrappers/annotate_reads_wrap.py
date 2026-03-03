@@ -2,9 +2,27 @@
 import logging
 import queue
 import time
+import os
+import gzip
+import shutil
 
 # Share logger across all functions in module
 logger = logging.getLogger(__name__)
+
+
+def _gzip_file(path):
+    if path is None or not isinstance(path, str) or not path.strip():
+        return
+    if not path.endswith((".fasta", ".fastq")):
+        return
+    if not os.path.exists(path):
+        return
+    gz_path = path + ".gz"
+    if os.path.exists(gz_path):
+        os.remove(gz_path)
+    with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    os.remove(path)
 
 
 def load_libs():
@@ -15,7 +33,6 @@ def load_libs():
     import pickle
     import pandas as pd
     import multiprocessing as mp
-    from multiprocessing import Manager
     from collections import defaultdict
     import psutil
     import polars as pl
@@ -33,8 +50,6 @@ def load_libs():
     )
     from scripts.preprocess_reads import convert_tsv_to_parquet
     from scripts.trained_models import seq_orders
-    from scripts.correct_barcodes import generate_barcodes_stats_pdf
-    from scripts.demultiplex import generate_demux_stats_pdf
     from scripts.available_gpus import log_gpus_used
 
     return (
@@ -44,7 +59,6 @@ def load_libs():
         resource,
         pickle,
         mp,
-        Manager,
         defaultdict,
         psutil,
         pl,
@@ -55,18 +69,14 @@ def load_libs():
         seq_orders,
         estimate_average_read_length_from_bin,
         calculate_total_rows,
-        generate_barcodes_stats_pdf,
-        generate_demux_stats_pdf,
         plot_read_n_cDNA_lengths,
         convert_tsv_to_parquet,
         log_gpus_used,
     )
 
 
-def collect_prediction_stats(
-    result_queue, workers, match_type_counter, cell_id_counter, cumulative_barcodes_stats, max_idle_time=60
-):
-    """Collect results from each model prediction and collate into shared stats"""
+def collect_prediction_stats(result_queue, workers, max_idle_time=60):
+    """Collect and drain worker results to avoid queue buildup."""
     idle_start = None
 
     while any(worker.is_alive() for worker in workers) or not result_queue.empty():
@@ -76,24 +86,7 @@ def collect_prediction_stats(
             # Reset idle start since a new result has been retrieved
             idle_start = None
 
-            if result:
-                local_cumulative_stats, local_match_counter, local_cell_counter, _ = result
-
-                # Count how (all matched, majority matched, ambiguous, etc.) barcodes match
-                for key, value in local_match_counter.items():
-                    match_type_counter[key] = match_type_counter.get(key, 0) + value
-
-                # Number of reads per demuxed cell
-                for key, value in local_cell_counter.items():
-                    cell_id_counter[key] = cell_id_counter.get(key, 0) + value
-
-                # Stats for barcode matching
-                for barcode in local_cumulative_stats.keys():
-                    for stat in ["count_data", "min_dist_data"]:
-                        for key, value in local_cumulative_stats[barcode][stat].items():
-                            cumulative_barcodes_stats[barcode][stat][key] = (
-                                cumulative_barcodes_stats[barcode][stat].get(key, 0) + value
-                            )
+            _ = result
         except queue.Empty:
             # Wait for the queue to get more entries
             if idle_start is None:
@@ -148,6 +141,9 @@ def annotate_reads_wrap(
     max_queue_size,
     include_barcode_quals,
     include_polya,
+    run_barcode_correction=False,
+    run_demux=False,
+    models_dir=None,
 ):
     (
         os,
@@ -156,7 +152,6 @@ def annotate_reads_wrap(
         resource,
         pickle,
         mp,
-        Manager,
         defaultdict,
         psutil,
         pl,
@@ -167,8 +162,6 @@ def annotate_reads_wrap(
         seq_orders,
         estimate_average_read_length_from_bin,
         calculate_total_rows,
-        generate_barcodes_stats_pdf,
-        generate_demux_stats_pdf,
         plot_read_n_cDNA_lengths,
         convert_tsv_to_parquet,
         log_gpus_used,
@@ -182,8 +175,11 @@ def annotate_reads_wrap(
     # Read / create / prepare input files and directories
     base_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    models_dir = os.path.join(base_dir, "models")
+    if models_dir is None:
+        models_dir = os.path.join(base_dir, "models")
     models_dir = os.path.abspath(models_dir)
+    if not os.path.isdir(models_dir):
+        raise FileNotFoundError(f"Model directory not found: {models_dir}")
 
     utils_dir = os.path.join(base_dir, "utils")
     utils_dir = os.path.abspath(utils_dir)
@@ -226,7 +222,12 @@ def annotate_reads_wrap(
         available = _available_models(seq_order_file)
         suffix = f" Available models: {', '.join(available)}" if available else " No models found in seq_orders file."
         raise ValueError(f"Model '{model_name}' not found in seq_orders file: {seq_order_file}.{suffix}")
-    whitelist_df = pd.read_csv(whitelist_file, sep="\t")
+    if run_barcode_correction:
+        if not whitelist_file:
+            raise ValueError("whitelist_file is required when run_barcode_correction=True")
+        whitelist_df = pd.read_csv(whitelist_file, sep="\t")
+    else:
+        whitelist_df = pd.DataFrame()
     num_labels = len(seq_order)
 
     base_folder_path = os.path.join(output_dir, "full_length_pp_fa")
@@ -243,20 +244,25 @@ def annotate_reads_wrap(
         key=lambda f: estimate_average_read_length_from_bin(os.path.basename(f).replace(".parquet", "")),
     )
 
-    fasta_dir = os.path.join(output_dir, "demuxed_fasta")
-    os.makedirs(fasta_dir, exist_ok=True)
+    demuxed_fasta = None
+    ambiguous_fasta = None
+    demuxed_fasta_lock = None
+    ambiguous_fasta_lock = None
+    if run_demux:
+        fasta_dir = os.path.join(output_dir, "demuxed_fasta")
+        os.makedirs(fasta_dir, exist_ok=True)
 
-    if output_fmt == "fastq":
-        logger.info("Selected output format: FASTQ")
-        demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq")
-        ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq")
-    elif output_fmt == "fasta":
-        logger.info("Selected output format: FASTA")
-        demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta")
-        ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta")
+        if output_fmt == "fastq":
+            logger.info("Selected output format: FASTQ")
+            demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq")
+            ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq")
+        elif output_fmt == "fasta":
+            logger.info("Selected output format: FASTA")
+            demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta")
+            ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta")
 
-    demuxed_fasta_lock = FileLock(demuxed_fasta + ".lock")
-    ambiguous_fasta_lock = FileLock(ambiguous_fasta + ".lock")
+        demuxed_fasta_lock = FileLock(demuxed_fasta + ".lock")
+        ambiguous_fasta_lock = FileLock(ambiguous_fasta + ".lock")
 
     invalid_file_lock = FileLock(invalid_output_file + ".lock")
     valid_file_lock = FileLock(valid_output_file + ".lock")
@@ -266,31 +272,19 @@ def annotate_reads_wrap(
     #       used from the dictionary. Since its the same value though, we really don't
     #       need to double store these values
     column_mapping = {barcode: barcode for barcode in barcodes}
-
-    whitelist_dict = {
-        "cell_ids": {
-            idx + 1: "-".join(map(str, row.dropna().unique()))
-            for idx, row in whitelist_df[list(column_mapping.values())].iterrows()
-        },
-        **{
-            input_column: whitelist_df[whitelist_column].dropna().unique().tolist()
-            for input_column, whitelist_column in column_mapping.items()
-        },
-    }
-
-    # Create objects shared across processes
-    manager = Manager()
-    cumulative_barcodes_stats = manager.dict(
-        {
-            barcode: {
-                "count_data": manager.dict(),
-                "min_dist_data": manager.dict(),
-            }
-            for barcode in column_mapping.keys()
+    if run_barcode_correction:
+        whitelist_dict = {
+            "cell_ids": {
+                idx + 1: "-".join(map(str, row.dropna().unique()))
+                for idx, row in whitelist_df[list(column_mapping.values())].iterrows()
+            },
+            **{
+                input_column: whitelist_df[whitelist_column].dropna().unique().tolist()
+                for input_column, whitelist_column in column_mapping.items()
+            },
         }
-    )
-    match_type_counter = manager.dict()
-    cell_id_counter = manager.dict()
+    else:
+        whitelist_dict = {"cell_ids": {}}
 
     def post_process_worker(
         task_queue,
@@ -301,6 +295,8 @@ def annotate_reads_wrap(
         result_queue,
         include_barcode_quals,
         include_polya,
+        run_barcode_correction,
+        run_demux,
     ):
         """Worker function for processing reads and returning results."""
         while True:
@@ -379,11 +375,12 @@ def annotate_reads_wrap(
                     threads,
                     include_barcode_quals,
                     include_polya,
+                    run_barcode_correction,
+                    run_demux,
                 )
 
                 if result:
-                    local_cumulative_stats, local_match_counter, local_cell_counter = result
-                    result_queue.put((local_cumulative_stats, local_match_counter, local_cell_counter, bin_name))
+                    result_queue.put((True, bin_name))
                 else:
                     logger.warning(f"No result from post_process_reads in {bin_name}, chunk {chunk_idx}")
 
@@ -419,6 +416,8 @@ def annotate_reads_wrap(
                     result_queue,
                     include_barcode_quals,
                     include_polya,
+                    run_barcode_correction,
+                    run_demux,
                 ),
             )
             for _ in range(num_workers)
@@ -472,7 +471,7 @@ def annotate_reads_wrap(
             task_queue.put(None)
 
         logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
-        collect_prediction_stats(result_queue, workers, match_type_counter, cell_id_counter, cumulative_barcodes_stats)
+        collect_prediction_stats(result_queue, workers)
         logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
 
         logger.info("Finished first pass with regular model on all the reads")
@@ -522,6 +521,8 @@ def annotate_reads_wrap(
                         result_queue,
                         include_barcode_quals,
                         include_polya,
+                        run_barcode_correction,
+                        run_demux,
                     ),
                 )
                 for _ in range(num_workers)
@@ -570,9 +571,7 @@ def annotate_reads_wrap(
             for _ in range(threads):
                 task_queue.put(None)
 
-            collect_prediction_stats(
-                result_queue, workers, match_type_counter, cell_id_counter, cumulative_barcodes_stats
-            )
+            collect_prediction_stats(result_queue, workers)
             logger.info("Finished second pass with CRF model on invalid reads")
 
             for worker in workers:
@@ -604,6 +603,8 @@ def annotate_reads_wrap(
                     result_queue,
                     include_barcode_quals,
                     include_polya,
+                    run_barcode_correction,
+                    run_demux,
                 ),
             )
             for _ in range(num_workers)
@@ -651,7 +652,7 @@ def annotate_reads_wrap(
         for _ in range(threads):
             task_queue.put(None)
 
-        collect_prediction_stats(result_queue, workers, match_type_counter, cell_id_counter, cumulative_barcodes_stats)
+        collect_prediction_stats(result_queue, workers)
 
         logger.info("Finished first pass with CRF model on all the reads")
 
@@ -659,30 +660,7 @@ def annotate_reads_wrap(
             worker.join()
             worker.close()
 
-    # Convert shared dictionary to a standard dictionary
-    # Each key of the inner dictionary is its own shared dictionary, so convert those as well
-    cumulative_barcodes_stats = {
-        k: {stat: dict(stat_dict) for stat, stat_dict in inner.items()}
-        for k, inner in cumulative_barcodes_stats.items()
-    }
-
-    os.makedirs(f"{output_dir}/plots", exist_ok=True)
-
-    logger.info("Generating barcode stats plots")
-    generate_barcodes_stats_pdf(
-        cumulative_barcodes_stats, list(column_mapping.keys()), pdf_filename=f"{output_dir}/plots/barcode_plots.pdf"
-    )
-    logger.info("Generated barcode stats plots")
-
-    logger.info("Generating demux stats plots")
-    generate_demux_stats_pdf(
-        f"{output_dir}/plots/demux_plots.pdf",
-        f"{output_dir}/matchType_readCount.tsv",
-        f"{output_dir}/cellId_readCount.tsv",
-        match_type_counter,
-        cell_id_counter,
-    )
-    logger.info("Generated demux stats plots")
+    # Annotation now keeps this step focused on core outputs only; QC/stat plots are a separate step.
 
     if os.path.exists(f"{output_dir}/annotations_valid.tsv"):
         with open(f"{output_dir}/annotations_valid.tsv", "r") as f:
@@ -698,9 +676,6 @@ def annotate_reads_wrap(
         os.system(f"rm {output_dir}/annotations_valid.tsv")
         os.system(f"rm {output_dir}/annotations_valid.tsv.lock")
 
-        logger.info("Generating valid read length and cDNA length distribution plots")
-        plot_read_n_cDNA_lengths(output_dir)
-        logger.info("Generated valid read length and cDNA length distribution plots")
         del df
     else:
         logger.warning("annotations_valid.tsv not found. Skipping Parquet conversion.")
@@ -723,19 +698,22 @@ def annotate_reads_wrap(
     else:
         logger.warning("annotations_invalid.tsv not found. Skipping Parquet conversion.")
 
-    if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fasta.lock"):
-        os.system(f"rm {output_dir}/demuxed_fasta/demuxed.fasta.lock")
-    if os.path.exists(f"{output_dir}/demuxed_fasta/ambiguous.fasta.lock"):
-        os.system(f"rm {output_dir}/demuxed_fasta/ambiguous.fasta.lock")
-    if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fastq.lock"):
-        os.system(f"rm {output_dir}/demuxed_fasta/demuxed.fastq.lock")
-    if os.path.exists(f"{output_dir}/demuxed_fasta/ambiguous.fastq.lock"):
-        os.system(f"rm {output_dir}/demuxed_fasta/ambiguous.fastq.lock")
+    if run_demux:
+        if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fasta.lock"):
+            os.system(f"rm {output_dir}/demuxed_fasta/demuxed.fasta.lock")
+        if os.path.exists(f"{output_dir}/demuxed_fasta/ambiguous.fasta.lock"):
+            os.system(f"rm {output_dir}/demuxed_fasta/ambiguous.fasta.lock")
+        if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fastq.lock"):
+            os.system(f"rm {output_dir}/demuxed_fasta/demuxed.fastq.lock")
+        if os.path.exists(f"{output_dir}/demuxed_fasta/ambiguous.fastq.lock"):
+            os.system(f"rm {output_dir}/demuxed_fasta/ambiguous.fastq.lock")
+        _gzip_file(demuxed_fasta)
+        _gzip_file(ambiguous_fasta)
 
     if model_type == "HYB":
         os.system(f"rm -r {output_dir}/tmp_invalid_reads")
 
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB
-    logger.info(f"Peak memory usage during annotation/barcode correction/demuxing: {max_rss_mb:.2f} MB")
+    logger.info(f"Peak memory usage during annotation pipeline: {max_rss_mb:.2f} MB")
     logger.info(f"Elapsed time: {time.time() - start:.2f} seconds")

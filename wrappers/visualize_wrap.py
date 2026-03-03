@@ -52,6 +52,7 @@ def visualize_wrap(
     model_name,
     model_type,
     seq_order_file,
+    models_dir,
     gpu_mem,
     target_tokens,
     vram_headroom,
@@ -91,8 +92,11 @@ def visualize_wrap(
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    models_dir = os.path.join(base_dir, "models")
+    if models_dir is None:
+        models_dir = os.path.join(base_dir, "models")
     models_dir = os.path.abspath(models_dir)
+    if not os.path.isdir(models_dir):
+        raise FileNotFoundError(f"Model directory not found: {models_dir}")
 
     utils_dir = os.path.join(base_dir, "utils")
     utils_dir = os.path.abspath(utils_dir)

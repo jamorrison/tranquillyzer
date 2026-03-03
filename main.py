@@ -225,6 +225,11 @@ def visualize(
     seq_order_file: str = typer.Option(
         None, help="Path to the seq_orders.tsv file. If not provided, uses the default from utils."
     ),
+    models_dir: str = typer.Option(
+        None,
+        "--models-dir",
+        help="Path to model directory containing <model>.h5 and <model>[_w_CRF]_lbl_bin.pkl files.",
+    ),
     gpu_mem: Annotated[
         str,
         typer.Option(
@@ -292,6 +297,7 @@ def visualize(
         model_name,
         model_type,
         seq_order_file,
+        models_dir,
         gpu_mem,
         target_tokens,
         vram_headroom,
@@ -311,7 +317,9 @@ def visualize(
 @app.command(no_args_is_help=True)
 def annotate_reads(
     output_dir: str,
-    whitelist_file: str,
+    whitelist_file: str = typer.Option(
+        None, "--whitelist-file", help="Barcode whitelist TSV. Required for barcode correction/demux."
+    ),
     output_fmt: str = typer.Option("fasta", help=("output format for demultiplexed reads: fasta or fastq")),
     model_name: str = typer.Option(
         "10x3p_sc_ont_011",
@@ -331,6 +339,11 @@ def annotate_reads(
     ] = "HYB",
     seq_order_file: str = typer.Option(
         None, help="Path to the seq_orders.tsv file. If not provided, uses the default from utils."
+    ),
+    models_dir: str = typer.Option(
+        None,
+        "--models-dir",
+        help="Path to model directory containing <model>.h5 and <model>[_w_CRF]_lbl_bin.pkl files.",
     ),
     chunk_size: int = typer.Option(100000, help=("Base chunk size, dynamically adjusts based on read length")),
     gpu_mem: Annotated[
@@ -370,16 +383,24 @@ def annotate_reads(
         False,
         help="Append detected polyA tails to output sequences (includes qualities in FASTQ)",
     ),
+    run_barcode_correction: bool = typer.Option(
+        False,
+        help="Run barcode correction on valid annotated reads. Disabled by default for annotation-only mode.",
+    ),
+    run_demux: bool = typer.Option(
+        False,
+        help="Write demultiplexed FASTA/FASTQ during annotation. Requires --run-barcode-correction.",
+    ),
 ):
     """
-    End-to-end annotation, barcode correction, demultiplexing, and QC plots.
+    Annotation-first pipeline with optional barcode correction and demultiplexing.
 
     Pipeline:
       1) Iterate through binned Parquet files and run model predictions.
-      2) Post-process predictions to call segments, correct barcodes (Levenshtein),
-         and write demultiplexed reads to FASTA/FASTQ.
-      3) Optionally (HYB) re-run invalid reads with CRF model.
-      4) Emit summary TSV/Parquet files and PDF plots for barcode & demux stats.
+      2) Post-process predictions to call segment boundaries and write annotations.
+      3) Optionally run barcode correction and demultiplexing inline in the same pass.
+      4) Optionally (HYB) re-run invalid reads with CRF model.
+      5) Emit summary TSV/Parquet files and optional barcode/demux QC plots.
 
     Args:
         output_dir: Base directory with `full_length_pp_fa/` and target for outputs.
@@ -394,15 +415,14 @@ def annotate_reads(
         min_batch_size: Min batch size for inference.
         max_batch_size: Max batch size for inference.
         bc_lv_threshold: Levenshtein threshold for barcode correction.
-        threads: CPU workers for barcode/demux post-processing.
+        threads: CPU workers for annotation post-processing.
         max_queue_size: Max in-flight Parquet chunks for worker queueing.
+        run_barcode_correction: If true, computes corrected barcode columns and demux stats.
+        run_demux: If true, writes `demuxed_fasta/*` files in the same pass.
 
     Outputs:
         - `<output_dir>/annotations_valid.parquet` and `_invalid.parquet`
-        - `<output_dir>/demuxed_fasta/demuxed.(fa|fq)` and `ambiguous.(fa|fq)`
-        - `<output_dir>/plots/barcode_plots.pdf`, `demux_plots.pdf`
-        - Read length & cDNA length plots for valid reads
-        - Match/cell counts TSVs
+        - Optional: `<output_dir>/demuxed_fasta/demuxed.(fa|fq)` and `ambiguous.(fa|fq)`
 
     Raises:
         FileNotFoundError: If expected input files or whitelist are missing.
@@ -410,6 +430,11 @@ def annotate_reads(
         RuntimeError: Propagated exceptions from worker processes.
     """
     from wrappers.annotate_reads_wrap import annotate_reads_wrap
+
+    if run_demux and not run_barcode_correction:
+        raise typer.BadParameter("--run-demux requires --run-barcode-correction")
+    if run_barcode_correction and not whitelist_file:
+        raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled")
 
     annotate_reads_wrap(
         output_dir,
@@ -429,6 +454,74 @@ def annotate_reads(
         max_queue_size,
         include_barcode_quals,
         include_polya,
+        run_barcode_correction,
+        run_demux,
+        models_dir=models_dir,
+    )
+
+
+@app.command(no_args_is_help=True)
+def barcode_correct(
+    input_dir: str,
+    whitelist_file: str,
+    output_dir: str = typer.Option(None, help="Output directory. Defaults to input_dir"),
+    input_file: str = typer.Option(None, help="Annotations file. Defaults to <input_dir>/annotations_valid.parquet"),
+    output_fmt: str = typer.Option("fasta", help="Demux output format when --run-demux is enabled: fasta or fastq"),
+    seq_order_file: str = typer.Option(
+        None, help="Path to seq_orders.tsv used to infer barcode columns. If omitted, infer from whitelist/annotations."
+    ),
+    model_name: str = typer.Option("10x3p_sc_ont_011", help="Model name for seq-order lookup when seq_order_file set."),
+    bc_lv_threshold: int = typer.Option(2, help="lv-distance threshold for barcode correction"),
+    threads: int = typer.Option(12, help="Number of CPU threads for barcode correction"),
+    chunk_size: int = typer.Option(100000, help="Number of rows to scan/process per chunk from annotations input"),
+    include_barcode_quals: bool = typer.Option(
+        False, help="When writing FASTQ demux output, append barcode qualities to the FASTQ header."
+    ),
+    include_polya: bool = typer.Option(False, help="Append detected polyA tails to demuxed sequences"),
+    run_demux: bool = typer.Option(
+        False,
+        help="Run demuxing concurrently while correcting barcodes (single pass through annotations).",
+    ),
+):
+    """
+    Correct barcode segments on annotated valid reads, with optional concurrent demultiplexing.
+    """
+    from wrappers.barcode_correction_wrap import barcode_correction_wrap
+
+    barcode_correction_wrap(
+        input_dir=input_dir,
+        whitelist_file=whitelist_file,
+        output_dir=output_dir or input_dir,
+        input_file=input_file,
+        output_fmt=output_fmt,
+        seq_order_file=seq_order_file,
+        model_name=model_name,
+        bc_lv_threshold=bc_lv_threshold,
+        threads=threads,
+        chunk_size=chunk_size,
+        include_barcode_quals=include_barcode_quals,
+        include_polya=include_polya,
+        run_demux=run_demux,
+    )
+
+
+@app.command(no_args_is_help=True)
+def demux_reads(
+    input_dir: str,
+    output_dir: str = typer.Option(None, help="Output directory. Defaults to input_dir"),
+    input_file: str = typer.Option(None, help="Corrected annotation file. Defaults to <input_dir>/annotations_corrected.parquet"),
+    output_fmt: str = typer.Option("fasta", help="Output format for demultiplexed reads: fasta or fastq"),
+):
+    """
+    Write demultiplexed FASTA/FASTQ from barcode-corrected annotations.
+    """
+    from wrappers.demux_wrap import demux_wrap
+
+    demux_wrap(
+        input_dir=input_dir,
+        output_dir=output_dir or input_dir,
+        input_file=input_file,
+        output_fmt=output_fmt,
     )
 
 

@@ -62,6 +62,8 @@ def process_full_length_reads_in_chunks_and_save(
     n_jobs,
     include_barcode_quals,
     include_polya,
+    run_barcode_correction=True,
+    run_demux=True,
 ):
     reads_in_chunk = len(reads)
 
@@ -141,58 +143,44 @@ def process_full_length_reads_in_chunks_and_save(
                 invalid_reads_df.to_csv(invalid_output_file, sep="\t", index=False, mode="a", header=add_header)
         # del invalid_reads_df
 
-    # Process valid reads for barcodes
-    column_mapping = {}
+    column_mapping = {barcode: barcode for barcode in barcodes}
 
-    for barcode in barcodes:
-        column_mapping[barcode] = barcode
-
-    # Process barcodes in parallel
     if not valid_reads_df.empty:
-        # logging.info("Correcting barcode and demuliplexing valid reads")
-        corrected_df, match_type_counts, cell_id_counts = bc_n_demultiplex(
-            valid_reads_df,
-            strand,
-            list(column_mapping.keys()),
-            whitelist_dict,
-            whitelist_df,
-            threshold,
-            output_dir,
-            output_fmt,
-            demuxed_fasta,
-            demuxed_fasta_lock,
-            ambiguous_fasta,
-            ambiguous_fasta_lock,
-            n_jobs,
-            include_barcode_quals,
-            include_polya,
-        )
+        if run_barcode_correction:
+            corrected_df, _, _ = bc_n_demultiplex(
+                valid_reads_df,
+                strand,
+                list(column_mapping.keys()),
+                whitelist_dict,
+                whitelist_df,
+                threshold,
+                output_dir,
+                output_fmt,
+                demuxed_fasta,
+                demuxed_fasta_lock,
+                ambiguous_fasta,
+                ambiguous_fasta_lock,
+                n_jobs,
+                include_barcode_quals,
+                include_polya,
+                write_demuxed_reads=run_demux,
+            )
+            output_df = corrected_df
+        else:
+            output_df = valid_reads_df.copy()
+            output_df["cDNA_length"] = output_df.apply(
+                lambda row: int(float(str(row["cDNA_Ends"]).split(",")[0].strip()))
+                - int(float(str(row["cDNA_Starts"]).split(",")[0].strip())),
+                axis=1,
+            )
 
-        for barcode in list(column_mapping.keys()):
-            count_column = f"corrected_{barcode}_counts_with_min_dist"
-            min_dist_column = f"corrected_{barcode}_min_dist"
-
-            # Update count stats
-            chunk_count_data = corrected_df[count_column].value_counts()
-            for key, value in chunk_count_data.items():
-                cumulative_barcodes_stats[barcode]["count_data"][key] = (
-                    cumulative_barcodes_stats[barcode]["count_data"].get(key, 0) + value
-                )
-
-            # Update min distance stats
-            chunk_min_dist_data = corrected_df[min_dist_column].value_counts()
-            for key, value in chunk_min_dist_data.items():
-                cumulative_barcodes_stats[barcode]["min_dist_data"][key] = (
-                    cumulative_barcodes_stats[barcode]["min_dist_data"].get(key, 0) + value
-                )
-
-        with valid_file_lock:  # FileLock ensures only one process writes at a time
+        with valid_file_lock:
             add_header = not os.path.exists(valid_output_file) or os.path.getsize(valid_output_file) == 0
-            corrected_df.to_csv(valid_output_file, sep="\t", index=False, mode="a", header=add_header)
+            output_df.to_csv(valid_output_file, sep="\t", index=False, mode="a", header=add_header)
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
 
-        return match_type_counts, cell_id_counts, cumulative_barcodes_stats
+        return {}, {}, cumulative_barcodes_stats
 
     for local_df in ["chunk_df", "corrected_df", "invalid_reads_df", "valid_reads_df"]:
         if local_df:
@@ -241,6 +229,8 @@ def post_process_reads(
     njobs,
     include_barcode_quals,
     include_polya,
+    run_barcode_correction=True,
+    run_demux=True,
 ):
     results = process_full_length_reads_in_chunks_and_save(
         reads,
@@ -275,6 +265,8 @@ def post_process_reads(
         njobs,
         include_barcode_quals,
         include_polya,
+        run_barcode_correction,
+        run_demux,
     )
 
     if results is not None:
