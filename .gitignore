@@ -4,6 +4,9 @@
 
 # Singularity image
 tranquillyzer.sif
+.coverage*
+__pycache__/
+*.pyc
 
 # Unwanted hidden files
 ._*

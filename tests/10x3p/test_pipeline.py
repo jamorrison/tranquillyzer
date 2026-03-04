@@ -155,56 +155,56 @@ def test_demux_reads():
     )
 
 
-# @pytest.mark.order(7)
-# def test_align():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "align",
-#             OUT_DIR,
-#             REF_FASTA,
-#             OUT_DIR,
-#             "--preset",
-#             "splice",
-#             "--threads",
-#             THREADS,
-#         ]
-#     )
+@pytest.mark.order(7)
+def test_align():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "align",
+            OUT_DIR,
+            REF_FASTA,
+            OUT_DIR,
+            "--preset",
+            "splice",
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
-# @pytest.mark.order(6)
-# def test_dedup():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "dedup",
-#             OUT_DIR,
-#             "--lv-threshold",
-#             1,
-#             "--threads",
-#             THREADS,
-#             "--per-cell",
-#         ]
-#     )
+@pytest.mark.order(6)
+def test_dedup():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "dedup",
+            OUT_DIR,
+            "--lv-threshold",
+            1,
+            "--threads",
+            THREADS,
+            "--per-cell",
+        ]
+    )
 
 
-# @pytest.mark.order(7)
-# def test_split_bam():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "split-bam",
-#             f"{OUT_DIR}/aligned_files/demuxed_aligned_dup_marked.bam",
-#             "--bucket-threads",
-#             1,
-#             "--merge-threads",
-#             1,
-#             "--max-open-cb-writers",
-#             500,
-#             "--filter-secondary",
-#             "--filter-supplementary",
-#         ]
-#     )
+@pytest.mark.order(7)
+def test_split_bam():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "split-bam",
+            f"{OUT_DIR}/aligned_files/demuxed_aligned_dup_marked.bam",
+            "--bucket-threads",
+            1,
+            "--merge-threads",
+            1,
+            "--max-open-cb-writers",
+            500,
+            "--filter-secondary",
+            "--filter-supplementary",
+        ]
+    )
 
 
 # @pytest.mark.order(8)

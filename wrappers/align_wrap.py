@@ -18,6 +18,7 @@ def align_wrap(input_dir, ref, output_dir, preset, filt_flag, mapq, threads, add
         os.path.join(input_dir, "demuxed_fasta/demuxed.fasta"),
     ]
     fasta_file = next((p for p in demux_candidates if os.path.exists(p)), None)
+    logger.info(f"Using {fasta_file} for alignment")
     if fasta_file is None:
         raise FileNotFoundError("No demuxed FASTA or FASTQ file found in the input directory.")
 

@@ -95,18 +95,18 @@ def process_row(
         "cDNA_Starts": row["cDNA_Starts"],
         "cDNA_Ends": row["cDNA_Ends"],
         "cDNA_length": int(row["cDNA_Ends"]) - int(row["cDNA_Starts"]),
-        "UMI_Starts": row["UMI_Starts"],
-        "UMI_Ends": row["UMI_Ends"],
+        "UMI_Starts": row.get("UMI_Starts"),
+        "UMI_Ends": row.get("UMI_Ends"),
         "random_s_Starts": row["random_s_Starts"],
         "random_s_Ends": row["random_s_Ends"],
         "random_e_Starts": row["random_e_Starts"],
         "random_e_Ends": row["random_e_Ends"],
     }
 
-    polyA_start = _parse_optional_int(row.get("polyA_Starts")) if "polyA_Starts" in row else None
-    polyA_end = _parse_optional_int(row.get("polyA_Ends")) if "polyA_Ends" in row else None
-    polyT_start = _parse_optional_int(row.get("polyT_Starts")) if "polyT_Starts" in row else None
-    polyT_end = _parse_optional_int(row.get("polyT_Ends")) if "polyT_Ends" in row else None
+    polyA_start = _parse_optional_int(row.get("polyA_Starts"))
+    polyA_end = _parse_optional_int(row.get("polyA_Ends"))
+    polyT_start = _parse_optional_int(row.get("polyT_Starts"))
+    polyT_end = _parse_optional_int(row.get("polyT_Ends"))
 
     if polyA_start is not None and polyA_end is not None:
         result["polyA_Starts"] = row.get("polyA_Starts")
@@ -154,8 +154,14 @@ def process_row(
     cDNA_start = int(row["cDNA_Starts"])
     cDNA_end = int(row["cDNA_Ends"])
     cDNA_sequence = row["read"][cDNA_start:cDNA_end]
-    umi_sequence = row["read"][int(row["UMI_Starts"]) : int(row["UMI_Ends"])]
-    _base_q = row["base_qualities"]
+    _umi_start = _parse_optional_int(row.get("UMI_Starts"))
+    _umi_end = _parse_optional_int(row.get("UMI_Ends"))
+    umi_sequence = (
+        row["read"][_umi_start:_umi_end]
+        if (_umi_start is not None and _umi_end is not None and _umi_end > _umi_start)
+        else ""
+    )
+    _base_q = row.get("base_qualities")
     cDNA_quality = _base_q[cDNA_start:cDNA_end] if (output_fmt == "fastq" and _base_q is not None) else None
 
     polya_seq = None
@@ -244,10 +250,13 @@ def process_row(
             if output_fmt == "fastq" and polya_qual is not None:
                 quality_out = (quality_out or "") + polya_qual
 
+    _umi_name_token = f"_{umi_sequence}" if umi_sequence else ""
+    _umi_field = f"|UMI:{umi_sequence}" if umi_sequence else ""
+
     if output_fmt == "fasta":
         demux_header = (
-            f">{row['ReadName']}_{corrected_barcode_seqs_str}_{umi_sequence} "
-            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}|UMI:{umi_sequence}|orientation:{orientation}"
+            f">{row['ReadName']}_{corrected_barcode_seqs_str}{_umi_name_token} "
+            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}{_umi_field}|orientation:{orientation}"
         )
         batch_reads[corrected_barcode_seqs_str].append(
             (
@@ -260,8 +269,8 @@ def process_row(
         result["demux_quality"] = None
     elif output_fmt == "fastq":
         header = (
-            f"@{row['ReadName']}_{corrected_barcode_seqs_str}_{umi_sequence} "
-            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}|UMI:{umi_sequence}|orientation:{orientation}"
+            f"@{row['ReadName']}_{corrected_barcode_seqs_str}{_umi_name_token} "
+            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}{_umi_field}|orientation:{orientation}"
             f"{barcode_qual_suffix}"
         )
         _fallback_q = _base_q[cDNA_start:cDNA_end] if _base_q is not None else ""
