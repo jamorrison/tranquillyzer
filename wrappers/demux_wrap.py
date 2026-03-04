@@ -23,7 +23,7 @@ def _gzip_file(path):
 
 
 def demux_wrap(input_dir, output_dir, input_file, output_fmt):
-    input_file = input_file or f"{input_dir}/annotations_corrected.parquet"
+    input_file = input_file or f"{input_dir}/annotations_valid_bc_corrected.parquet"
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"Corrected annotation file not found: {input_file}")
 

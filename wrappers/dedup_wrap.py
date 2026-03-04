@@ -51,6 +51,12 @@ def dedup_wrap(input_dir, lv_threshold, stranded, per_cell, threads):
     subprocess.run(["samtools", "index", "-@", str(threads), out_bam], check=True)
     logger.info(f"Indexing completed for {out_bam}")
 
+    # Input alignment is no longer needed after successful dedup output + index creation.
+    for stale_path in [input_bam, f"{input_bam}.bai", f"{input_bam}.csi"]:
+        if os.path.exists(stale_path):
+            os.remove(stale_path)
+            logger.info(f"Removed intermediate file: {stale_path}")
+
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB
     logger.info(f"Peak memory usage: {max_rss_mb:.2f} MB")

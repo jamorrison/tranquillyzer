@@ -530,7 +530,9 @@ def barcode_correct(
 def demux_reads(
     input_dir: str,
     output_dir: str = typer.Option(None, help="Output directory. Defaults to input_dir"),
-    input_file: str = typer.Option(None, help="Corrected annotation file. Defaults to <input_dir>/annotations_corrected.parquet"),
+    input_file: str = typer.Option(
+        None, help="Corrected annotation file. Defaults to <input_dir>/annotations_valid_bc_corrected.parquet"
+    ),
     output_fmt: str = typer.Option("fasta", help="Output format for demultiplexed reads: fasta or fastq"),
 ):
     """

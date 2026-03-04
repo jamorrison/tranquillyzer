@@ -146,7 +146,7 @@ def test_demux_reads():
             "demux-reads",
             OUT_DIR,
             "--input-file",
-            f"{OUT_DIR}/annotations_corrected.parquet",
+            f"{OUT_DIR}/annotations_valid_bc_corrected.parquet",
             "--output-fmt",
             "fasta",
         ]
@@ -170,7 +170,7 @@ def test_align():
     )
 
 
-@pytest.mark.order(6)
+@pytest.mark.order(8)
 def test_dedup():
     run_cmd(
         [
@@ -186,7 +186,7 @@ def test_dedup():
     )
 
 
-@pytest.mark.order(7)
+@pytest.mark.order(9)
 def test_split_bam():
     run_cmd(
         [

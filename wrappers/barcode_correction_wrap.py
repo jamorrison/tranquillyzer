@@ -93,8 +93,8 @@ def barcode_correction_wrap(
         **{barcode: whitelist_df[barcode].dropna().unique().tolist() for barcode in barcode_columns},
     }
 
-    corrected_tsv = f"{output_dir}/annotations_corrected.tsv"
-    corrected_parquet = f"{output_dir}/annotations_corrected.parquet"
+    corrected_tsv = f"{output_dir}/annotations_valid_bc_corrected.tsv"
+    corrected_parquet = f"{output_dir}/annotations_valid_bc_corrected.parquet"
     if os.path.exists(corrected_tsv):
         os.remove(corrected_tsv)
     if os.path.exists(corrected_parquet):
@@ -154,5 +154,7 @@ def barcode_correction_wrap(
     )
     if os.path.exists(corrected_tsv):
         os.remove(corrected_tsv)
+    if os.path.basename(input_file) == "annotations_valid.parquet" and os.path.exists(input_file):
+        os.remove(input_file)
 
     logger.info(f"Wrote corrected annotations to {corrected_parquet}")
