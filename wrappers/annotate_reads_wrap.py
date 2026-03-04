@@ -26,6 +26,23 @@ def _gzip_file(path):
     os.remove(path)
 
 
+def _has_usable_base_qualities_in_parquets(parquet_files, pl, sample_rows=5000):
+    for parquet_file in parquet_files:
+        try:
+            sample_df = pl.scan_parquet(parquet_file).limit(sample_rows).collect()
+        except Exception:
+            continue
+        if "base_qualities" not in sample_df.columns:
+            continue
+        for value in sample_df["base_qualities"].to_list():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text.lower() not in {"none", "nan"}:
+                return True
+    return False
+
+
 CHUNK_FILE_RE = re.compile(r"^pass(?P<pass>\d+)__(?P<bin>.+)__chunk(?P<chunk>\d{6})\.(?:tsv|done)$")
 
 
@@ -367,6 +384,22 @@ def annotate_reads_wrap(
     elif resume:
         logger.info("Resume enabled but no checkpoint found. Starting from beginning.")
 
+    effective_output_fmt = output_fmt
+    if run_demux and output_fmt == "fastq":
+        has_base_qualities = _has_usable_base_qualities_in_parquets(parquet_files, pl)
+        if not has_base_qualities:
+            logger.warning(
+                "Base quality scores not available; requested FASTQ demux output will be written as FASTA."
+            )
+            effective_output_fmt = "fasta"
+    if run_demux and include_barcode_quals:
+        if effective_output_fmt == "fastq":
+            logger.info("Barcode quality strings will be appended to FASTQ headers for demuxed reads.")
+        else:
+            logger.warning(
+                "--include-barcode-quals requested, but demux output format is FASTA; barcode quality tags will be omitted."
+            )
+
     demuxed_fasta = None
     ambiguous_fasta = None
     demuxed_fasta_lock = None
@@ -375,12 +408,12 @@ def annotate_reads_wrap(
         fasta_dir = os.path.join(output_dir, "demuxed_fasta")
         os.makedirs(fasta_dir, exist_ok=True)
 
-        if output_fmt == "fastq":
-            logger.info("Selected output format: FASTQ")
+        if effective_output_fmt == "fastq":
+            logger.info("Selected demux output format: FASTQ")
             demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq")
             ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq")
-        elif output_fmt == "fasta":
-            logger.info("Selected output format: FASTA")
+        elif effective_output_fmt == "fasta":
+            logger.info("Selected demux output format: FASTA")
             demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta")
             ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta")
 
@@ -537,7 +570,7 @@ def annotate_reads_wrap(
                 args=(
                     task_queue,
                     strand,
-                    output_fmt,
+                    effective_output_fmt,
                     count,
                     header_track,
                     result_queue,
@@ -661,7 +694,7 @@ def annotate_reads_wrap(
                     args=(
                         task_queue,
                         strand,
-                        output_fmt,
+                        effective_output_fmt,
                         count,
                         header_track,
                         result_queue,
@@ -763,7 +796,7 @@ def annotate_reads_wrap(
                 args=(
                     task_queue,
                     strand,
-                    output_fmt,
+                    effective_output_fmt,
                     count,
                     header_track,
                     result_queue,

@@ -320,7 +320,12 @@ def annotate_reads(
     whitelist_file: str = typer.Option(
         None, "--whitelist-file", help="Barcode whitelist TSV. Required for barcode correction/demux."
     ),
-    output_fmt: str = typer.Option("fasta", help=("output format for demultiplexed reads: fasta or fastq")),
+    output_fmt: str = typer.Option(
+        "fasta",
+        "--demux-output-fmt",
+        "--output-fmt",
+        help=("Output format for demultiplexed reads when --run-demux is enabled: fasta or fastq"),
+    ),
     model_name: str = typer.Option(
         "10x3p_sc_ont_011",
         help="""Base model name. Use the name of the model without any suffix.\n
@@ -453,6 +458,8 @@ def annotate_reads(
         raise typer.BadParameter("--run-demux requires --run-barcode-correction")
     if run_barcode_correction and not whitelist_file:
         raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled")
+    if output_fmt not in {"fasta", "fastq"}:
+        raise typer.BadParameter("demux output format must be either 'fasta' or 'fastq'")
 
     annotate_reads_wrap(
         output_dir,

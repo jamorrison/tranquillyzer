@@ -40,6 +40,24 @@ def _scan_annotations_in_chunks(input_file, chunk_size):
         offset += chunk_size
 
 
+def _has_usable_base_qualities(lazy_df):
+    schema = lazy_df.collect_schema().names()
+    if "base_qualities" not in schema:
+        return False
+    probe = (
+        lazy_df.select(
+            (
+                pl.col("base_qualities").is_not_null() & (pl.col("base_qualities").cast(pl.Utf8).str.len_chars() > 0)
+            )
+            .any()
+            .alias("has_bq")
+        )
+        .collect()
+        .item()
+    )
+    return bool(probe)
+
+
 def _infer_barcode_columns(columns, whitelist_df, seq_order_file, model_name):
     if seq_order_file:
         _, _, barcodes, _, strand = seq_orders(seq_order_file, model_name)
@@ -74,6 +92,17 @@ def barcode_correction_wrap(
         raise FileNotFoundError(f"Annotation file not found: {input_file}")
 
     whitelist_df = pd.read_csv(whitelist_file, sep="\t")
+    if input_file.endswith(".parquet"):
+        lazy_df = pl.scan_parquet(input_file)
+    else:
+        lazy_df = pl.scan_csv(input_file, separator="\t", infer_schema_length=5000)
+
+    effective_output_fmt = output_fmt
+    if run_demux and output_fmt == "fastq":
+        if not _has_usable_base_qualities(lazy_df):
+            logger.warning("Base quality scores not available; requested FASTQ demux output will be written as FASTA.")
+            effective_output_fmt = "fasta"
+
     chunk_iter = _scan_annotations_in_chunks(input_file, chunk_size)
     first_chunk = next(chunk_iter, None)
     if first_chunk is None or first_chunk.height == 0:
@@ -107,7 +136,7 @@ def barcode_correction_wrap(
     if run_demux:
         fasta_dir = os.path.join(output_dir, "demuxed_fasta")
         os.makedirs(fasta_dir, exist_ok=True)
-        if output_fmt == "fastq":
+        if effective_output_fmt == "fastq":
             demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq")
             ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq")
         else:
@@ -128,7 +157,7 @@ def barcode_correction_wrap(
             whitelist_df,
             bc_lv_threshold,
             output_dir,
-            output_fmt,
+            effective_output_fmt,
             demuxed_fasta,
             demuxed_fasta_lock,
             ambiguous_fasta,
