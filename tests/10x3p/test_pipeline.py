@@ -110,8 +110,6 @@ def test_annotate_reads():
             "tranquillyzer",
             "annotate-reads",
             OUT_DIR,
-            # "--whitelist-file",
-            # BARCODES,
             "--model-type",
             "CRF",
             "--models-dir",

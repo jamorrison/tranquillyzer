@@ -391,16 +391,29 @@ def annotate_reads(
         False,
         help="Write demultiplexed FASTA/FASTQ during annotation. Requires --run-barcode-correction.",
     ),
+    checkpoint_file: str = typer.Option(
+        None,
+        help="Checkpoint file path. Defaults to <output_dir>/annotation_checkpoint.txt",
+    ),
+    resume: bool = typer.Option(
+        True,
+        help="Resume from checkpoint and chunk markers when available.",
+    ),
+    combine_chunk_outputs: bool = typer.Option(
+        True,
+        help="Combine all chunk TSV outputs into single annotations_valid/invalid.parquet files. "
+        "Disable to keep per-chunk parquet outputs.",
+    ),
 ):
     """
     Annotation-first pipeline with optional barcode correction and demultiplexing.
 
     Pipeline:
       1) Iterate through binned Parquet files and run model predictions.
-      2) Post-process predictions to call segment boundaries and write annotations.
+      2) Post-process predictions to call segment boundaries and write per-bin/per-chunk outputs.
       3) Optionally run barcode correction and demultiplexing inline in the same pass.
       4) Optionally (HYB) re-run invalid reads with CRF model.
-      5) Emit summary TSV/Parquet files and optional barcode/demux QC plots.
+      5) Finalize chunk outputs to combined Parquet or per-chunk Parquet outputs.
 
     Args:
         output_dir: Base directory with `full_length_pp_fa/` and target for outputs.
@@ -419,9 +432,14 @@ def annotate_reads(
         max_queue_size: Max in-flight Parquet chunks for worker queueing.
         run_barcode_correction: If true, computes corrected barcode columns and demux stats.
         run_demux: If true, writes `demuxed_fasta/*` files in the same pass.
+        checkpoint_file: Path to checkpoint file storing pass/bin/chunk progress.
+        resume: If true, restart from checkpoint and skip done chunks.
+        combine_chunk_outputs: If true, merge chunk TSVs into annotations_valid/invalid.parquet.
 
     Outputs:
-        - `<output_dir>/annotations_valid.parquet` and `_invalid.parquet`
+        - Chunk outputs under `<output_dir>/annotation_chunks/`
+        - Combined `<output_dir>/annotations_valid.parquet` and `_invalid.parquet` (default)
+          OR per-chunk parquet files if `--no-combine-chunk-outputs`
         - Optional: `<output_dir>/demuxed_fasta/demuxed.(fa|fq)` and `ambiguous.(fa|fq)`
 
     Raises:
@@ -456,6 +474,9 @@ def annotate_reads(
         include_polya,
         run_barcode_correction,
         run_demux,
+        checkpoint_file,
+        resume,
+        combine_chunk_outputs,
         models_dir=models_dir,
     )
 

@@ -5,6 +5,7 @@ import time
 import os
 import gzip
 import shutil
+import re
 
 # Share logger across all functions in module
 logger = logging.getLogger(__name__)
@@ -23,6 +24,98 @@ def _gzip_file(path):
     with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
         shutil.copyfileobj(src, dst)
     os.remove(path)
+
+
+CHUNK_FILE_RE = re.compile(r"^pass(?P<pass>\d+)__(?P<bin>.+)__chunk(?P<chunk>\d{6})\.(?:tsv|done)$")
+
+
+def _save_checkpoint(checkpoint_file, pass_num, bin_name, chunk_idx):
+    with open(checkpoint_file, "w") as fh:
+        fh.write(f"{pass_num}\t{bin_name}\t{int(chunk_idx)}\n")
+
+
+def _load_checkpoint(checkpoint_file):
+    if not os.path.exists(checkpoint_file):
+        return None
+    with open(checkpoint_file, "r") as fh:
+        raw = fh.readline().strip()
+    if not raw:
+        return None
+    parts = raw.split("\t")
+    if len(parts) != 3:
+        return None
+    try:
+        return int(parts[0]), parts[1], int(parts[2])
+    except ValueError:
+        return None
+
+
+def _chunk_key_from_filename(name, bin_order):
+    m = CHUNK_FILE_RE.match(name)
+    if not m:
+        return None
+    pass_num = int(m.group("pass"))
+    bin_name = m.group("bin")
+    chunk_idx = int(m.group("chunk"))
+    return pass_num, bin_order.get(bin_name, 10**9), bin_name, chunk_idx
+
+
+def _done_marker_path(chunk_output_dir, pass_num, bin_name, chunk_idx):
+    return os.path.join(chunk_output_dir, "done", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.done")
+
+
+def _cleanup_from_checkpoint(chunk_output_dir, checkpoint_tuple, bin_order):
+    if checkpoint_tuple is None:
+        return
+    cp_pass, cp_bin, cp_chunk = checkpoint_tuple
+    cp_key = (cp_pass, bin_order.get(cp_bin, 10**9), cp_bin, cp_chunk)
+    for subdir in ["done", "valid_chunks", "invalid_chunks"]:
+        root = os.path.join(chunk_output_dir, subdir)
+        if not os.path.isdir(root):
+            continue
+        for fn in os.listdir(root):
+            key = _chunk_key_from_filename(fn, bin_order)
+            if key is None:
+                continue
+            if key >= cp_key:
+                os.remove(os.path.join(root, fn))
+
+
+def _convert_chunk_outputs(chunk_output_dir, output_dir, combine_chunks, pl, chunk_size):
+    def _sorted_chunk_files(path):
+        if not os.path.isdir(path):
+            return []
+        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".tsv")]
+        files.sort(key=lambda f: _chunk_key_from_filename(os.path.basename(f), {}) or (10**9, 10**9, "", 10**9))
+        return files
+
+    valid_files = _sorted_chunk_files(os.path.join(chunk_output_dir, "valid_chunks"))
+    invalid_files = _sorted_chunk_files(os.path.join(chunk_output_dir, "invalid_chunks"))
+
+    if combine_chunks:
+        if valid_files:
+            pl.scan_csv(valid_files, separator="\t", infer_schema_length=5000).sink_parquet(
+                f"{output_dir}/annotations_valid.parquet", compression="snappy", row_group_size=chunk_size
+            )
+        if invalid_files:
+            pl.scan_csv(invalid_files, separator="\t", infer_schema_length=5000).sink_parquet(
+                f"{output_dir}/annotations_invalid.parquet", compression="snappy", row_group_size=chunk_size
+            )
+    else:
+        valid_out_dir = os.path.join(output_dir, "annotations_valid_chunks")
+        invalid_out_dir = os.path.join(output_dir, "annotations_invalid_chunks")
+        os.makedirs(valid_out_dir, exist_ok=True)
+        os.makedirs(invalid_out_dir, exist_ok=True)
+        for tsv_path in valid_files:
+            stem = os.path.splitext(os.path.basename(tsv_path))[0]
+            pl.scan_csv(tsv_path, separator="\t", infer_schema_length=5000).sink_parquet(
+                os.path.join(valid_out_dir, f"{stem}.parquet"), compression="snappy", row_group_size=chunk_size
+            )
+        for tsv_path in invalid_files:
+            stem = os.path.splitext(os.path.basename(tsv_path))[0]
+            pl.scan_csv(tsv_path, separator="\t", infer_schema_length=5000).sink_parquet(
+                os.path.join(invalid_out_dir, f"{stem}.parquet"), compression="snappy", row_group_size=chunk_size
+            )
 
 
 def load_libs():
@@ -143,6 +236,9 @@ def annotate_reads_wrap(
     include_polya,
     run_barcode_correction=False,
     run_demux=False,
+    checkpoint_file=None,
+    resume=True,
+    combine_chunk_outputs=True,
     models_dir=None,
 ):
     (
@@ -234,6 +330,11 @@ def annotate_reads_wrap(
 
     invalid_output_file = os.path.join(output_dir, "annotations_invalid.tsv")
     valid_output_file = os.path.join(output_dir, "annotations_valid.tsv")
+    chunk_output_dir = os.path.join(output_dir, "annotation_chunks")
+    os.makedirs(os.path.join(chunk_output_dir, "done"), exist_ok=True)
+    os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
+    os.makedirs(os.path.join(chunk_output_dir, "invalid_chunks"), exist_ok=True)
+    checkpoint_file = checkpoint_file or os.path.join(output_dir, "annotation_checkpoint.txt")
 
     parquet_files = sorted(
         [
@@ -243,6 +344,28 @@ def annotate_reads_wrap(
         ],
         key=lambda f: estimate_average_read_length_from_bin(os.path.basename(f).replace(".parquet", "")),
     )
+    bin_order = {os.path.basename(f).replace(".parquet", ""): i for i, f in enumerate(parquet_files)}
+    checkpoint_tuple = _load_checkpoint(checkpoint_file) if resume else None
+    if checkpoint_tuple:
+        cp_pass, cp_bin, cp_chunk = checkpoint_tuple
+        cp_done = _done_marker_path(chunk_output_dir, cp_pass, cp_bin, cp_chunk)
+        logger.info(
+            f"Resume enabled. Checkpoint loaded: pass={cp_pass}, bin={cp_bin}, chunk={cp_chunk} "
+            f"(status: {'done' if os.path.exists(cp_done) else 'incomplete'})"
+        )
+        if os.path.exists(cp_done):
+            logger.info(
+                f"Checkpointed chunk already completed. Will resume from next chunk after "
+                f"pass={cp_pass}, bin={cp_bin}, chunk={cp_chunk}"
+            )
+        else:
+            logger.info(f"Will resume from checkpointed chunk: pass={cp_pass}, bin={cp_bin}, chunk={cp_chunk}")
+        # Only rewind outputs when checkpointed chunk is incomplete.
+        # If its .done marker exists, keep outputs as-is and rely on done markers to skip work.
+        if not os.path.exists(cp_done):
+            _cleanup_from_checkpoint(chunk_output_dir, checkpoint_tuple, bin_order)
+    elif resume:
+        logger.info("Resume enabled but no checkpoint found. Starting from beginning.")
 
     demuxed_fasta = None
     ambiguous_fasta = None
@@ -297,6 +420,9 @@ def annotate_reads_wrap(
         include_polya,
         run_barcode_correction,
         run_demux,
+        pass_num_worker,
+        checkpoint_file_worker,
+        checkpoint_lock_path,
     ):
         """Worker function for processing reads and returning results."""
         while True:
@@ -307,37 +433,12 @@ def annotate_reads_wrap(
 
                 parquet_file, bin_name, chunk_idx, predictions, read_names, reads, read_lengths, base_qualities = item
 
-                local_cumulative_stats = {
-                    barcode: {"count_data": {}, "min_dist_data": {}} for barcode in column_mapping.keys()
-                }
-                local_match_counter, local_cell_counter = defaultdict(int), defaultdict(int)
-
-                # FIXME: output_dir comes from outer function
-                checkpoint_file = os.path.join(output_dir, "annotation_checkpoint.txt")
-
                 with header_track.get_lock():
                     add_header = header_track.value == 0
 
-                # FIXME: these variables come from outer function:
-                # -- model_type
-                # -- pass_num
-                # -- model_path_w_CRF
-                # -- label_binarizer
-                # -- seq_order
-                # -- output_dir
-                # -- invalid_output_file
-                # -- invalid_file_lock
-                # -- valid_output_file
-                # -- valid_file_lock
-                # -- barcodes
-                # -- whitelist_df
-                # -- whitelist_dict
-                # -- bc_lv_threshold
-                # -- demuxed_fasta
-                # -- demuxed_fasta_lock
-                # -- ambiguous_fasta
-                # -- ambiguous_fasta_lock
-                # -- threads
+                with FileLock(checkpoint_lock_path):
+                    _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx)
+
                 result = post_process_reads(
                     reads,
                     read_names,
@@ -345,11 +446,11 @@ def annotate_reads_wrap(
                     output_fmt,
                     base_qualities,
                     model_type,
-                    pass_num,
+                    pass_num_worker,
                     model_path_w_CRF,
                     predictions,
                     label_binarizer,
-                    local_cumulative_stats,
+                    {},
                     read_lengths,
                     seq_order,
                     add_header,
@@ -364,10 +465,10 @@ def annotate_reads_wrap(
                     whitelist_df,
                     whitelist_dict,
                     bc_lv_threshold,
-                    checkpoint_file,
+                    checkpoint_file_worker,
                     1,
-                    local_match_counter,
-                    local_cell_counter,
+                    {},
+                    {},
                     demuxed_fasta,
                     demuxed_fasta_lock,
                     ambiguous_fasta,
@@ -377,10 +478,13 @@ def annotate_reads_wrap(
                     include_polya,
                     run_barcode_correction,
                     run_demux,
+                    chunk_output_dir,
                 )
 
                 if result:
-                    result_queue.put((True, bin_name))
+                    with FileLock(checkpoint_lock_path):
+                        _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx)
+                    result_queue.put((True, bin_name, chunk_idx))
                 else:
                     logger.warning(f"No result from post_process_reads in {bin_name}, chunk {chunk_idx}")
 
@@ -393,6 +497,29 @@ def annotate_reads_wrap(
 
     num_workers = min(threads, mp.cpu_count() - 1)
     max_queue_size = max(3, num_workers * 2)
+    total_queued_chunks = 0
+
+    def _resume_pointer_for_pass(pass_num_local, bin_files):
+        """Return (start_bin_index, start_chunk) or None if this pass is already complete."""
+        if not resume or checkpoint_tuple is None:
+            return 0, 1
+
+        cp_pass, cp_bin, cp_chunk = checkpoint_tuple
+        if cp_pass > pass_num_local:
+            return None
+        if cp_pass < pass_num_local:
+            return 0, 1
+
+        bin_names = [os.path.basename(p).replace(".parquet", "") for p in bin_files]
+        if cp_bin not in bin_names:
+            return 0, 1
+
+        start_bin_idx = bin_names.index(cp_bin)
+        start_chunk = cp_chunk
+        cp_done = _done_marker_path(chunk_output_dir, cp_pass, cp_bin, cp_chunk)
+        if os.path.exists(cp_done):
+            start_chunk += 1
+        return start_bin_idx, start_chunk
 
     if model_type == "REG" or model_type == "HYB":
         task_queue = mp.Queue(maxsize=max_queue_size)
@@ -418,6 +545,9 @@ def annotate_reads_wrap(
                     include_polya,
                     run_barcode_correction,
                     run_demux,
+                    pass_num,
+                    checkpoint_file,
+                    checkpoint_file + ".lock",
                 ),
             )
             for _ in range(num_workers)
@@ -431,24 +561,40 @@ def annotate_reads_wrap(
         # process all the reads with CNN-LSTM model first
         logger.info("Starting first pass with regular model on all the reads")
         try:
-            for parquet_file in parquet_files:
-                for item in model_predictions(
-                    parquet_file,
-                    1,
-                    chunk_size,
-                    model_path,
-                    model_path_w_CRF,
-                    model_type,
-                    num_labels,
-                    user_total_gb=gpu_mem,
-                    target_tokens_per_replica=target_tokens,
-                    safety_margin=vram_headroom,
-                    min_batch=min_batch_size,
-                    max_batch=max_batch_size,
-                ):
-                    task_queue.put(item)
-                    with header_track.get_lock():
-                        header_track.value += 1
+            pass1_pointer = _resume_pointer_for_pass(1, parquet_files)
+            if pass1_pointer is None:
+                logger.info("Skipping pass 1: checkpoint indicates it is already complete")
+            else:
+                start_bin_idx, start_chunk = pass1_pointer
+                logger.info(
+                    f"Pass 1 resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if (run_files := parquet_files[start_bin_idx:]) else 'N/A'}, "
+                    f"start_chunk={start_chunk}"
+                )
+                run_files = parquet_files[start_bin_idx:]
+                queued_chunks = 0
+                for i, parquet_file in enumerate(run_files):
+                    chunk_start_local = start_chunk if i == 0 else 1
+                    for item in model_predictions(
+                        parquet_file,
+                        chunk_start_local,
+                        chunk_size,
+                        model_path,
+                        model_path_w_CRF,
+                        model_type,
+                        num_labels,
+                        user_total_gb=gpu_mem,
+                        target_tokens_per_replica=target_tokens,
+                        safety_margin=vram_headroom,
+                        min_batch=min_batch_size,
+                        max_batch=max_batch_size,
+                    ):
+                        task_queue.put(item)
+                        with header_track.get_lock():
+                            header_track.value += 1
+                        queued_chunks += 1
+                total_queued_chunks += queued_chunks
+                if queued_chunks == 0:
+                    logger.info("No pending chunks found for pass 1. This pass is already annotated.")
         except Exception as e:
             # Wind down queues, close workers when done, print error and exit
             for _ in range(threads):
@@ -523,6 +669,9 @@ def annotate_reads_wrap(
                         include_polya,
                         run_barcode_correction,
                         run_demux,
+                        pass_num,
+                        checkpoint_file,
+                        checkpoint_file + ".lock",
                     ),
                 )
                 for _ in range(num_workers)
@@ -533,11 +682,24 @@ def annotate_reads_wrap(
 
             logger.info("Starting second pass with CRF model on invalid reads")
             try:
-                for invalid_parquet_file in invalid_parquet_files:
-                    if calculate_total_rows(invalid_parquet_file) >= 100:
+                pass2_pointer = _resume_pointer_for_pass(2, invalid_parquet_files)
+                if pass2_pointer is None:
+                    logger.info("Skipping pass 2: checkpoint indicates it is already complete")
+                else:
+                    start_bin_idx, start_chunk = pass2_pointer
+                    run_files = invalid_parquet_files[start_bin_idx:]
+                    logger.info(
+                        f"Pass 2 resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if run_files else 'N/A'}, "
+                        f"start_chunk={start_chunk}"
+                    )
+                    queued_chunks = 0
+                    for i, invalid_parquet_file in enumerate(run_files):
+                        if calculate_total_rows(invalid_parquet_file) < 100:
+                            continue
+                        chunk_start_local = start_chunk if i == 0 else 1
                         for item in model_predictions(
                             invalid_parquet_file,
-                            1,
+                            chunk_start_local,
                             chunk_size,
                             model_path,
                             model_path_w_CRF,
@@ -552,6 +714,10 @@ def annotate_reads_wrap(
                             task_queue.put(item)
                             with header_track.get_lock():
                                 header_track.value += 1
+                            queued_chunks += 1
+                    total_queued_chunks += queued_chunks
+                    if queued_chunks == 0:
+                        logger.info("No pending chunks found for pass 2. This pass is already annotated.")
             except Exception as e:
                 # Wind down queues, close workers when done, print error and exit
                 for _ in range(threads):
@@ -605,6 +771,9 @@ def annotate_reads_wrap(
                     include_polya,
                     run_barcode_correction,
                     run_demux,
+                    pass_num,
+                    checkpoint_file,
+                    checkpoint_file + ".lock",
                 ),
             )
             for _ in range(num_workers)
@@ -615,24 +784,40 @@ def annotate_reads_wrap(
 
         logger.info("Starting first pass with CRF model on all the reads")
         try:
-            for parquet_file in parquet_files:
-                for item in model_predictions(
-                    parquet_file,
-                    1,
-                    chunk_size,
-                    None,
-                    model_path_w_CRF,
-                    model_type,
-                    num_labels,
-                    user_total_gb=gpu_mem,
-                    target_tokens_per_replica=target_tokens,
-                    safety_margin=vram_headroom,
-                    min_batch=min_batch_size,
-                    max_batch=max_batch_size,
-                ):
-                    task_queue.put(item)
-                    with header_track.get_lock():
-                        header_track.value += 1
+            pass1_pointer = _resume_pointer_for_pass(1, parquet_files)
+            if pass1_pointer is None:
+                logger.info("Skipping CRF pass: checkpoint indicates it is already complete")
+            else:
+                start_bin_idx, start_chunk = pass1_pointer
+                run_files = parquet_files[start_bin_idx:]
+                logger.info(
+                    f"CRF pass resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if run_files else 'N/A'}, "
+                    f"start_chunk={start_chunk}"
+                )
+                queued_chunks = 0
+                for i, parquet_file in enumerate(run_files):
+                    chunk_start_local = start_chunk if i == 0 else 1
+                    for item in model_predictions(
+                        parquet_file,
+                        chunk_start_local,
+                        chunk_size,
+                        None,
+                        model_path_w_CRF,
+                        model_type,
+                        num_labels,
+                        user_total_gb=gpu_mem,
+                        target_tokens_per_replica=target_tokens,
+                        safety_margin=vram_headroom,
+                        min_batch=min_batch_size,
+                        max_batch=max_batch_size,
+                    ):
+                        task_queue.put(item)
+                        with header_track.get_lock():
+                            header_track.value += 1
+                        queued_chunks += 1
+                total_queued_chunks += queued_chunks
+                if queued_chunks == 0:
+                    logger.info("No pending chunks found for CRF pass. This pass is already annotated.")
         except Exception as e:
             # Wind down queues, close workers when done, print error and exit
             for _ in range(threads):
@@ -660,43 +845,9 @@ def annotate_reads_wrap(
             worker.join()
             worker.close()
 
-    # Annotation now keeps this step focused on core outputs only; QC/stat plots are a separate step.
-
-    if os.path.exists(f"{output_dir}/annotations_valid.tsv"):
-        with open(f"{output_dir}/annotations_valid.tsv", "r") as f:
-            header = f.readline().strip().split("\t")
-            dtypes = {col: pl.Utf8 for col in header if col != "read_length"}
-            dtypes["read_length"] = pl.Int64
-
-        df = pl.scan_csv(f"{output_dir}/annotations_valid.tsv", separator="\t", dtypes=dtypes)
-        annotations_valid_parquet_file = f"{output_dir}/annotations_valid.parquet"
-        logger.info("Converting annotations_valid.tsv")
-        df.sink_parquet(annotations_valid_parquet_file, compression="snappy", row_group_size=chunk_size)
-        logger.info("Converted annotations_valid.tsv to annotations_valid.parquet")
-        os.system(f"rm {output_dir}/annotations_valid.tsv")
-        os.system(f"rm {output_dir}/annotations_valid.tsv.lock")
-
-        del df
-    else:
-        logger.warning("annotations_valid.tsv not found. Skipping Parquet conversion.")
-
-    if os.path.exists(f"{output_dir}/annotations_invalid.tsv"):
-        logger.info("annotations_invalid.tsv found — proceeding with Parquet conversion")
-        with open(f"{output_dir}/annotations_invalid.tsv", "r") as f:
-            header = f.readline().strip().split("\t")
-        dtypes = {col: pl.Utf8 for col in header if col != "read_length"}
-        dtypes["read_length"] = pl.Int64
-
-        df = pl.scan_csv(f"{output_dir}/annotations_invalid.tsv", separator="\t", dtypes=dtypes)
-        annotations_invalid_parquet_file = f"{output_dir}/annotations_invalid.parquet"
-        logger.info("Converting annotations_invalid.tsv")
-        df.sink_parquet(annotations_invalid_parquet_file, compression="snappy", row_group_size=chunk_size)
-        logger.info("Converted annotations_invalid.tsv to annotations_invalid.parquet")
-        os.system(f"rm {output_dir}/annotations_invalid.tsv")
-        os.system(f"rm {output_dir}/annotations_invalid.tsv.lock")
-        del df
-    else:
-        logger.warning("annotations_invalid.tsv not found. Skipping Parquet conversion.")
+    _convert_chunk_outputs(chunk_output_dir, output_dir, combine_chunk_outputs, pl, chunk_size)
+    if resume and total_queued_chunks == 0:
+        logger.info("All annotation chunks are already completed. Dataset has already been annotated.")
 
     if run_demux:
         if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fasta.lock"):

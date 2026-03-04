@@ -6,27 +6,10 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import tensorflow as tf
-from filelock import FileLock
-
 from scripts.correct_barcodes import bc_n_demultiplex
 from scripts.extract_annotated_seqs import extract_annotated_full_length_seqs
 
 logger = logging.getLogger(__name__)
-
-
-# Function to save the current state (bin_name and chunk) for checkpointing
-def save_checkpoint(checkpoint_file, bin_name, chunk):
-    with open(checkpoint_file, "w") as f:
-        f.write(f"{bin_name},{chunk}")
-
-
-# Function to load the last checkpoint
-def load_checkpoint(checkpoint_file, start_bin):
-    if os.path.exists(checkpoint_file):
-        with open(checkpoint_file, "r") as f:
-            bin_name, chunk = f.readline().strip().split(",")
-        return bin_name, int(chunk)
-    return start_bin, 1  # If no checkpoint, start from the first chunk
 
 
 def process_full_length_reads_in_chunks_and_save(
@@ -64,6 +47,7 @@ def process_full_length_reads_in_chunks_and_save(
     include_polya,
     run_barcode_correction=True,
     run_demux=True,
+    chunk_output_dir=None,
 ):
     reads_in_chunk = len(reads)
 
@@ -126,22 +110,22 @@ def process_full_length_reads_in_chunks_and_save(
 
         if not os.path.exists(lock_path):
             with open(lock_path, "w") as lock_file:
-                lock_file.write("")  # create the lock file
+                lock_file.write("")
 
-        with FileLock(lock_path):
-            write_header = not os.path.exists(tmp_path)
-            with open(tmp_path, "a", newline="") as f:
-                writer = csv.writer(f, delimiter="\t")
-                if write_header:
-                    writer.writerow(tmp_invalid_df.columns)
-                writer.writerows(tmp_invalid_df.rows())
+        write_header = not os.path.exists(tmp_path)
+        with open(tmp_path, "a", newline="") as f:
+            writer = csv.writer(f, delimiter="\t")
+            if write_header:
+                writer.writerow(tmp_invalid_df.columns)
+            writer.writerows(tmp_invalid_df.rows())
 
     else:
         if not invalid_reads_df.empty:
-            with invalid_file_lock:
-                add_header = not os.path.exists(invalid_output_file) or os.path.getsize(invalid_output_file) == 0
-                invalid_reads_df.to_csv(invalid_output_file, sep="\t", index=False, mode="a", header=add_header)
-        # del invalid_reads_df
+            os.makedirs(os.path.join(chunk_output_dir, "invalid_chunks"), exist_ok=True)
+            invalid_chunk_file = os.path.join(
+                chunk_output_dir, "invalid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.tsv"
+            )
+            invalid_reads_df.to_csv(invalid_chunk_file, sep="\t", index=False)
 
     column_mapping = {barcode: barcode for barcode in barcodes}
 
@@ -174,17 +158,22 @@ def process_full_length_reads_in_chunks_and_save(
                 axis=1,
             )
 
-        with valid_file_lock:
-            add_header = not os.path.exists(valid_output_file) or os.path.getsize(valid_output_file) == 0
-            output_df.to_csv(valid_output_file, sep="\t", index=False, mode="a", header=add_header)
+        os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
+        valid_chunk_file = os.path.join(
+            chunk_output_dir, "valid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.tsv"
+        )
+        output_df.to_csv(valid_chunk_file, sep="\t", index=False)
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
-
-        return {}, {}, cumulative_barcodes_stats
 
     for local_df in ["chunk_df", "corrected_df", "invalid_reads_df", "valid_reads_df"]:
         if local_df:
             del local_df
+
+    os.makedirs(os.path.join(chunk_output_dir, "done"), exist_ok=True)
+    done_file = os.path.join(chunk_output_dir, "done", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.done")
+    with open(done_file, "w") as f:
+        f.write("done\n")
 
     # Clean up after each chunk to free memory
     gc.collect()
@@ -231,8 +220,9 @@ def post_process_reads(
     include_polya,
     run_barcode_correction=True,
     run_demux=True,
+    chunk_output_dir=None,
 ):
-    results = process_full_length_reads_in_chunks_and_save(
+    process_full_length_reads_in_chunks_and_save(
         reads,
         read_names,
         strand,
@@ -267,21 +257,12 @@ def post_process_reads(
         include_polya,
         run_barcode_correction,
         run_demux,
+        chunk_output_dir,
     )
-
-    if results is not None:
-        match_type_counts, cell_id_counts, cumulative_barcodes_stats = results
-
-        for key, value in match_type_counts.items():
-            match_type_counter[key] += value
-        for key, value in cell_id_counts.items():
-            cell_id_counter[key] += value
-
-    save_checkpoint(checkpoint_file, bin_name, chunk_start)
 
     gc.collect()  # Clean up memory after processing each chunk
 
-    return cumulative_barcodes_stats, match_type_counter, cell_id_counter
+    return True
 
 
 def filtering_reason_stats(reason_counter_by_bin, output_dir):

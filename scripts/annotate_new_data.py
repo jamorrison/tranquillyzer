@@ -305,6 +305,7 @@ def model_predictions(
     safety_margin: float = 0.35,  # keep ~35% VRAM headroom
     min_batch: int = 1,
     max_batch: int = 8192,
+    should_process_chunk=None,
 ):
     total_rows = calculate_total_rows(parquet_file)
     bin_name = os.path.basename(parquet_file).replace(".parquet", "")
@@ -338,6 +339,10 @@ def model_predictions(
     model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=strategy)
 
     for chunk_idx in range(chunk_start, num_chunks + 1):
+        if callable(should_process_chunk) and not should_process_chunk(bin_name, chunk_idx):
+            logger.info(f"Skipping {bin_name}: chunk {chunk_idx} (already completed)")
+            continue
+
         logger.info(f"Inferring labels for {bin_name}: chunk {chunk_idx}")
 
         df_chunk = scan_df.slice((chunk_idx - 1) * dynamic_chunk_size, dynamic_chunk_size).collect()
