@@ -6,6 +6,14 @@ import tensorflow as tf
 
 logger = logging.getLogger(__name__)
 
+_POLY_SET = {"polyA", "polyT"}
+
+
+def _labels_match(a, b):
+    """Match two labels, treating polyA and polyT as interchangeable."""
+    return a == b or (a in _POLY_SET and b in _POLY_SET)
+
+
 # ======================= collapse labels into order ======================= #
 
 
@@ -56,7 +64,7 @@ def flexible_sliding_match(array, pattern):
     i = 0
     while i <= len(core_array) - len(pattern):
         window = core_array[i : i + len(pattern)]
-        if window == pattern:
+        if all(_labels_match(w, p) for w, p in zip(window, pattern)):
             # Match found
             matches.append((start + i, start + i + len(pattern) - 1))
             i += len(pattern)
@@ -135,6 +143,17 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path_w_CRF):
     decoded_prediction = decoded_prediction[0:read_length]
 
     collapsed_array, count_dict, indices_dict = collapse_labels(decoded_prediction, read_length)
+
+    # Normalize polyA/polyT: if the model predicted the opposite of what seq_order uses,
+    # merge those coordinates under the canonical name so annotations are populated correctly.
+    _poly_canonical = next((x for x in seq_order if x in _POLY_SET), None)
+    if _poly_canonical is not None:
+        _poly_other = "polyT" if _poly_canonical == "polyA" else "polyA"
+        if _poly_other in indices_dict:
+            indices_dict.setdefault(_poly_canonical, []).extend(indices_dict.pop(_poly_other))
+        # Also normalize collapsed_array so check_order sees the canonical label
+        collapsed_array = [_poly_canonical if x in _POLY_SET else x for x in collapsed_array]
+
     order_match, order, reasons = check_order(collapsed_array, count_dict, seq_order)
 
     annotations = {element: {"Starts": [], "Ends": [], "Sequences": []} for element in seq_order}
