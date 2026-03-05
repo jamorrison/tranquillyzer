@@ -257,6 +257,7 @@ def annotate_reads_wrap(
     resume=True,
     combine_chunk_outputs=True,
     models_dir=None,
+    preprocess_dir=None,
 ):
     (
         os,
@@ -343,7 +344,8 @@ def annotate_reads_wrap(
         whitelist_df = pd.DataFrame()
     num_labels = len(seq_order)
 
-    base_folder_path = os.path.join(output_dir, "full_length_pp_fa")
+    pp_base = preprocess_dir if preprocess_dir is not None else output_dir
+    base_folder_path = os.path.join(pp_base, "full_length_pp_fa")
 
     invalid_output_file = os.path.join(output_dir, "annotations_invalid.tsv")
     valid_output_file = os.path.join(output_dir, "annotations_valid.tsv")
@@ -392,8 +394,14 @@ def annotate_reads_wrap(
                 "Base quality scores not available; requested FASTQ demux output will be written as FASTA."
             )
             effective_output_fmt = "fasta"
+    if run_demux and not run_barcode_correction:
+        logger.info("Bulk export mode enabled: demux output will contain all valid reads without barcode correction.")
     if run_demux and include_barcode_quals:
-        if effective_output_fmt == "fastq":
+        if not run_barcode_correction:
+            logger.warning(
+                "--include-barcode-quals requested, but barcode correction is disabled; barcode quality tags will be omitted."
+            )
+        elif effective_output_fmt == "fastq":
             logger.info("Barcode quality strings will be appended to FASTQ headers for demuxed reads.")
         else:
             logger.warning(

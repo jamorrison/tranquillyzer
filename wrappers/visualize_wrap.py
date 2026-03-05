@@ -1,12 +1,11 @@
 import logging
-
+import os
 import polars as pl
 
 logger = logging.getLogger(__name__)
 
 
 def load_libs():
-    import os
     import sys
     import time
     import resource
@@ -61,6 +60,7 @@ def visualize_wrap(
     num_reads,
     read_names,
     threads,
+    preprocess_dir=None,
 ):
     (
         os,
@@ -136,7 +136,8 @@ def visualize_wrap(
             i += 1
 
     # Path to the read_index.parquet
-    index_file_path = os.path.join(output_dir, "full_length_pp_fa/read_index.parquet")
+    pp_base = preprocess_dir if preprocess_dir is not None else output_dir
+    index_file_path = os.path.join(pp_base, "full_length_pp_fa/read_index.parquet")
 
     os.makedirs(f"{output_dir}/plots", exist_ok=True)
     pdf_filename = f"{output_dir}/plots/{output_file}.pdf"
@@ -207,11 +208,14 @@ def visualize_wrap(
     # Perform annotation and plotting
     encoded_data = preprocess_sequences(selected_reads, max_read_len + 10)
     try:
+        logger.info(f"Annotating selected reads with the {model_type} model")
         predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        logger.info("Annotation completed successfully")
     except Exception as e:
         logger.error(f"Encountered an error during annotation: {e}")
         sys.exit(1)
 
+    logger.info("Extracting annotated sequences for visualization")
     annotated_reads = extract_annotated_full_length_seqs(
         selected_reads,
         predictions,
@@ -222,7 +226,10 @@ def visualize_wrap(
         barcodes,
         n_jobs=threads,
     )
+    logger.info("Finished extracting annotated sequences")
+    logger.info("Generating visualization plots")
     save_plots_to_pdf(selected_reads, annotated_reads, selected_read_names, pdf_filename, colors, chars_per_line=150)
+    logger.info(f"Visualization saved to {pdf_filename}\n")
 
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB
@@ -235,4 +242,5 @@ def load_read_index(index_file_path, read_name):
     if df.is_empty():
         logger.warning(f"Read {read_name} not found in the index.")
         return None
-    return df["ParquetFile"][0]
+    parquet_filename = df["ParquetFile"][0]
+    return os.path.join(os.path.dirname(index_file_path), parquet_filename)

@@ -176,7 +176,7 @@ def convert_tsv_to_parquet(tsv_dir, row_group_size=1000000):
                 .to_list()
             )
             for rn in names:
-                read_index[rn] = parquet_file
+                read_index[rn] = os.path.basename(parquet_file)
 
             os.remove(tsv_file)
             logger.info(f"Removed original TSV file: {tsv_file}")

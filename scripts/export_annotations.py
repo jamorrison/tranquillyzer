@@ -12,6 +12,66 @@ from scripts.extract_annotated_seqs import extract_annotated_full_length_seqs
 logger = logging.getLogger(__name__)
 
 
+def _parse_first_int(value):
+    if value is None or pd.isna(value):
+        return None
+    token = str(value).split(",")[0].strip()
+    if token in {"", "None", "nan", "NaN"}:
+        return None
+    try:
+        return int(float(token))
+    except (TypeError, ValueError):
+        return None
+
+
+def _bulk_export_record(row, output_fmt, include_polya=False):
+    cDNA_start = _parse_first_int(row.get("cDNA_Starts"))
+    cDNA_end = _parse_first_int(row.get("cDNA_Ends"))
+    read = row.get("read")
+    if cDNA_start is None or cDNA_end is None or read is None or cDNA_end <= cDNA_start:
+        return None
+
+    sequence = str(read)[cDNA_start:cDNA_end]
+    quality = None
+    if output_fmt == "fastq":
+        base_q = row.get("base_qualities")
+        quality = str(base_q)[cDNA_start:cDNA_end] if base_q is not None and not pd.isna(base_q) else ""
+
+    if include_polya:
+        polya_start = _parse_first_int(row.get("polyA_Starts"))
+        polya_end = _parse_first_int(row.get("polyA_Ends"))
+        if polya_start is None or polya_end is None:
+            polya_start = _parse_first_int(row.get("polyT_Starts"))
+            polya_end = _parse_first_int(row.get("polyT_Ends"))
+        if (
+            polya_start is not None
+            and polya_end is not None
+            and polya_end > polya_start
+            and polya_end <= len(str(read))
+        ):
+            polya_seq = str(read)[polya_start:polya_end]
+            sequence = sequence + polya_seq
+            if output_fmt == "fastq":
+                base_q = row.get("base_qualities")
+                polya_q = str(base_q)[polya_start:polya_end] if base_q is not None and not pd.isna(base_q) else ""
+                quality = (quality or "") + polya_q
+
+    orientation = row.get("orientation", "NA")
+    read_name = row.get("ReadName", "read")
+
+    if output_fmt == "fastq":
+        header = f"@{read_name} orientation:{orientation}"
+        quality = quality or ""
+        if len(quality) < len(sequence):
+            quality = quality + ("!" * (len(sequence) - len(quality)))
+        elif len(quality) > len(sequence):
+            quality = quality[: len(sequence)]
+        return header, sequence, quality
+
+    header = f">{read_name} orientation:{orientation}"
+    return header, sequence
+
+
 def process_full_length_reads_in_chunks_and_save(
     reads,
     original_read_names,
@@ -157,6 +217,21 @@ def process_full_length_reads_in_chunks_and_save(
                 - int(float(str(row["cDNA_Starts"]).split(",")[0].strip())),
                 axis=1,
             )
+            if run_demux and demuxed_fasta and demuxed_fasta_lock:
+                bulk_reads = []
+                for _, row in valid_reads_df.iterrows():
+                    record = _bulk_export_record(row, output_fmt, include_polya)
+                    if record is not None:
+                        bulk_reads.append(record)
+                if bulk_reads:
+                    with demuxed_fasta_lock:
+                        with open(demuxed_fasta, "a") as out_fh:
+                            if output_fmt == "fastq":
+                                for header, sequence, quality in bulk_reads:
+                                    out_fh.write(f"{header}\n{sequence}\n+\n{quality}\n")
+                            else:
+                                for header, sequence in bulk_reads:
+                                    out_fh.write(f"{header}\n{sequence}\n")
 
         os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
         valid_chunk_file = os.path.join(
