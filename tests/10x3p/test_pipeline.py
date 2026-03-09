@@ -122,6 +122,7 @@ def test_annotate_reads():
     )
     assert not demux_dir.exists(), "annotate-reads created demuxed_fasta even though demux was not requested"
 
+
 @pytest.mark.order(5)
 def test_barcode_correct():
     run_cmd(
@@ -130,8 +131,6 @@ def test_barcode_correct():
             "barcode-correct",
             OUT_DIR,
             BARCODES,
-            # "--output-fmt",
-            # "fasta",
             "--threads",
             THREADS,
         ]
@@ -203,6 +202,32 @@ def test_split_bam():
             "--filter-supplementary",
         ]
     )
+
+
+# @pytest.mark.order(10)
+# def test_annotate_reads():
+#     demux_dir = OUT_DIR / "demuxed_fasta"
+#     if demux_dir.exists():
+#         shutil.rmtree(demux_dir)
+
+#     run_cmd(
+#         [
+#             "tranquillyzer",
+#             "annotate-reads",
+#             OUT_DIR,
+#             "--model-type",
+#             "CRF",
+#             "--models-dir",
+#             MODELS_DIR,
+#             "--chunk-size",
+#             100000,
+#             "--no-combine-chunk-outputs",
+#             "--no-resume",
+#             "--threads",
+#             THREADS,
+#         ]
+#     )
+#     assert not demux_dir.exists(), "annotate-reads created demuxed_fasta even though demux was not requested"
 
 
 # @pytest.mark.order(8)
