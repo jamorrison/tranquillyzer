@@ -43,15 +43,15 @@ def _has_usable_base_qualities_in_parquets(parquet_files, pl, sample_rows=5000):
     return False
 
 
-CHUNK_FILE_RE = re.compile(r"^pass(?P<pass>\d+)__(?P<bin>.+)__chunk(?P<chunk>\d{6})\.(?:tsv|done)$")
+CHUNK_FILE_RE = re.compile(r"^pass(?P<pass>\d+)__(?P<bin>.+)__chunk(?P<chunk>\d{6})\.(?:tsv|done|parquet|fasta|fastq)$")
 
 
-def _save_checkpoint(checkpoint_file, pass_num, bin_name, chunk_idx):
+def _save_checkpoint(checkpoint_file, pass_num, bin_name, chunk_idx, chunk_size):
     with open(checkpoint_file, "w") as fh:
-        fh.write(f"{pass_num}\t{bin_name}\t{int(chunk_idx)}\n")
+        fh.write(f"{pass_num}\t{bin_name}\t{int(chunk_idx)}\t{int(chunk_size)}\n")
 
 
-def _load_checkpoint(checkpoint_file):
+def _load_checkpoint(checkpoint_file, expected_chunk_size=None):
     if not os.path.exists(checkpoint_file):
         return None
     with open(checkpoint_file, "r") as fh:
@@ -59,12 +59,40 @@ def _load_checkpoint(checkpoint_file):
     if not raw:
         return None
     parts = raw.split("\t")
-    if len(parts) != 3:
+    if len(parts) not in {3, 4}:
         return None
     try:
-        return int(parts[0]), parts[1], int(parts[2])
+        pass_num = int(parts[0])
+        bin_name = parts[1]
+        chunk_idx = int(parts[2])
     except ValueError:
         return None
+
+    if len(parts) == 4:
+        try:
+            saved_chunk_size = int(parts[3])
+        except ValueError:
+            return None
+    else:
+        saved_chunk_size = None
+
+    if saved_chunk_size is None and expected_chunk_size is not None:
+        logger.warning(
+            "Checkpoint is in legacy format without chunk size; cannot validate resume chunk_size consistency."
+        )
+
+    if (
+        saved_chunk_size is not None
+        and expected_chunk_size is not None
+        and int(saved_chunk_size) != int(expected_chunk_size)
+    ):
+        raise ValueError(
+            "Checkpoint chunk_size mismatch: checkpoint was created with chunk_size="
+            f"{saved_chunk_size}, but current run uses chunk_size={int(expected_chunk_size)}. "
+            "Use the same chunk_size or start with a fresh checkpoint/output directory."
+        )
+
+    return pass_num, bin_name, chunk_idx
 
 
 def _chunk_key_from_filename(name, bin_order):
@@ -98,41 +126,152 @@ def _cleanup_from_checkpoint(chunk_output_dir, checkpoint_tuple, bin_order):
                 os.remove(os.path.join(root, fn))
 
 
-def _convert_chunk_outputs(chunk_output_dir, output_dir, combine_chunks, pl, chunk_size):
-    def _sorted_chunk_files(path):
+def _cleanup_annotation_outputs_for_fresh_start(output_dir, checkpoint_file):
+    paths_to_remove = [
+        os.path.join(output_dir, "annotation_chunks"),
+        os.path.join(output_dir, "annotations_valid_chunks"),
+        os.path.join(output_dir, "annotations_invalid_chunks"),
+        os.path.join(output_dir, "demuxed_fasta"),
+        os.path.join(output_dir, "tmp_invalid_reads"),
+        os.path.join(output_dir, "annotations_valid.tsv"),
+        os.path.join(output_dir, "annotations_invalid.tsv"),
+        os.path.join(output_dir, "annotations_valid.tsv.lock"),
+        os.path.join(output_dir, "annotations_invalid.tsv.lock"),
+        os.path.join(output_dir, "annotations_valid.parquet"),
+        os.path.join(output_dir, "annotations_invalid.parquet"),
+        checkpoint_file,
+        checkpoint_file + ".lock",
+    ]
+    for path in paths_to_remove:
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except FileNotFoundError:
+            continue
+
+
+def _convert_chunk_outputs(
+    chunk_output_dir,
+    output_dir,
+    combine_chunks,
+    keep_chunk_tsv_after_combine,
+    pl,
+    chunk_size,
+):
+    def _sorted_chunk_files(path, suffix):
         if not os.path.isdir(path):
             return []
-        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".tsv")]
+        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(suffix)]
         files.sort(key=lambda f: _chunk_key_from_filename(os.path.basename(f), {}) or (10**9, 10**9, "", 10**9))
         return files
 
-    valid_files = _sorted_chunk_files(os.path.join(chunk_output_dir, "valid_chunks"))
-    invalid_files = _sorted_chunk_files(os.path.join(chunk_output_dir, "invalid_chunks"))
+    def _write_chunk_parquets(tsv_files, parquet_out_dir):
+        wrote_any = False
+        os.makedirs(parquet_out_dir, exist_ok=True)
+        for tsv_path in tsv_files:
+            stem = os.path.splitext(os.path.basename(tsv_path))[0]
+            pl.scan_csv(tsv_path, separator="\t", infer_schema_length=5000).sink_parquet(
+                os.path.join(parquet_out_dir, f"{stem}.parquet"), compression="snappy", row_group_size=chunk_size
+            )
+            wrote_any = True
+        return wrote_any
+
+    valid_files = _sorted_chunk_files(os.path.join(chunk_output_dir, "valid_chunks"), ".tsv")
+    invalid_files = _sorted_chunk_files(os.path.join(chunk_output_dir, "invalid_chunks"), ".tsv")
+    valid_chunk_parquets = _sorted_chunk_files(os.path.join(chunk_output_dir, "valid_chunks"), ".parquet")
+    invalid_chunk_parquets = _sorted_chunk_files(os.path.join(chunk_output_dir, "invalid_chunks"), ".parquet")
+    valid_out_dir = os.path.join(chunk_output_dir, "valid_chunks")
+    invalid_out_dir = os.path.join(chunk_output_dir, "invalid_chunks")
 
     if combine_chunks:
+        logger.info(
+            f"Starting chunk combination: valid={len(valid_files)} TSV ({len(valid_chunk_parquets)} parquet), "
+            f"invalid={len(invalid_files)} TSV ({len(invalid_chunk_parquets)} parquet)."
+        )
         if valid_files:
             pl.scan_csv(valid_files, separator="\t", infer_schema_length=5000).sink_parquet(
+                f"{output_dir}/annotations_valid.parquet", compression="snappy", row_group_size=chunk_size
+            )
+        elif valid_chunk_parquets:
+            pl.scan_parquet(valid_chunk_parquets).sink_parquet(
                 f"{output_dir}/annotations_valid.parquet", compression="snappy", row_group_size=chunk_size
             )
         if invalid_files:
             pl.scan_csv(invalid_files, separator="\t", infer_schema_length=5000).sink_parquet(
                 f"{output_dir}/annotations_invalid.parquet", compression="snappy", row_group_size=chunk_size
             )
+        elif invalid_chunk_parquets:
+            pl.scan_parquet(invalid_chunk_parquets).sink_parquet(
+                f"{output_dir}/annotations_invalid.parquet", compression="snappy", row_group_size=chunk_size
+            )
+        logger.info("Finished chunk combination into annotations_valid.parquet and annotations_invalid.parquet.")
+        if keep_chunk_tsv_after_combine:
+            logger.info(
+                f"Starting TSV-to-parquet conversion for chunk outputs: valid={len(valid_files)}, "
+                f"invalid={len(invalid_files)}."
+            )
+            _write_chunk_parquets(valid_files, valid_out_dir)
+            _write_chunk_parquets(invalid_files, invalid_out_dir)
+            logger.info("Finished TSV-to-parquet conversion for chunk outputs.")
+        if valid_files or invalid_files:
+            for tsv_path in valid_files + invalid_files:
+                os.remove(tsv_path)
     else:
-        valid_out_dir = os.path.join(output_dir, "annotations_valid_chunks")
-        invalid_out_dir = os.path.join(output_dir, "annotations_invalid_chunks")
-        os.makedirs(valid_out_dir, exist_ok=True)
-        os.makedirs(invalid_out_dir, exist_ok=True)
-        for tsv_path in valid_files:
-            stem = os.path.splitext(os.path.basename(tsv_path))[0]
-            pl.scan_csv(tsv_path, separator="\t", infer_schema_length=5000).sink_parquet(
-                os.path.join(valid_out_dir, f"{stem}.parquet"), compression="snappy", row_group_size=chunk_size
-            )
-        for tsv_path in invalid_files:
-            stem = os.path.splitext(os.path.basename(tsv_path))[0]
-            pl.scan_csv(tsv_path, separator="\t", infer_schema_length=5000).sink_parquet(
-                os.path.join(invalid_out_dir, f"{stem}.parquet"), compression="snappy", row_group_size=chunk_size
-            )
+        logger.info(
+            f"Starting TSV-to-parquet conversion for chunk outputs: valid={len(valid_files)}, "
+            f"invalid={len(invalid_files)}."
+        )
+        wrote_valid = _write_chunk_parquets(valid_files, valid_out_dir)
+        wrote_invalid = _write_chunk_parquets(invalid_files, invalid_out_dir)
+        logger.info("Finished TSV-to-parquet conversion for chunk outputs.")
+        if wrote_valid or wrote_invalid:
+            for tsv_path in valid_files + invalid_files:
+                os.remove(tsv_path)
+
+
+def _combine_demux_chunk_outputs(chunk_output_dir, output_dir, output_fmt, keep_demux_chunk_outputs_after_combine):
+    ext = "fastq" if output_fmt == "fastq" else "fasta"
+    demux_chunk_dir = os.path.join(chunk_output_dir, "demuxed_chunks")
+    ambiguous_chunk_dir = os.path.join(chunk_output_dir, "ambiguous_chunks")
+    final_dir = os.path.join(output_dir, "demuxed_fasta")
+    os.makedirs(final_dir, exist_ok=True)
+
+    def _sorted_chunk_files(path):
+        if not os.path.isdir(path):
+            return []
+        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}")]
+        files.sort(key=lambda f: _chunk_key_from_filename(os.path.basename(f), {}) or (10**9, 10**9, "", 10**9))
+        return files
+
+    def _concatenate(files, out_path):
+        if not files:
+            return False
+        with open(out_path, "w") as out_fh:
+            for src in files:
+                with open(src, "r") as src_fh:
+                    shutil.copyfileobj(src_fh, out_fh)
+        return True
+
+    demux_files = _sorted_chunk_files(demux_chunk_dir)
+    amb_files = _sorted_chunk_files(ambiguous_chunk_dir)
+    demux_out = os.path.join(final_dir, f"demuxed.{ext}")
+    amb_out = os.path.join(final_dir, f"ambiguous.{ext}")
+
+    logger.info(
+        f"Starting demux chunk combination: demuxed_chunks={len(demux_files)}, ambiguous_chunks={len(amb_files)}."
+    )
+    wrote_demux = _concatenate(demux_files, demux_out)
+    wrote_amb = _concatenate(amb_files, amb_out)
+    logger.info("Finished demux chunk combination.")
+
+    if not keep_demux_chunk_outputs_after_combine:
+        for chunk_file in demux_files + amb_files:
+            os.remove(chunk_file)
+        logger.info("Deleted demux chunk FASTA/FASTQ files after successful demux combination.")
+
+    return demux_out if wrote_demux else None, amb_out if wrote_amb else None
 
 
 def load_libs():
@@ -256,6 +395,8 @@ def annotate_reads_wrap(
     checkpoint_file=None,
     resume=True,
     combine_chunk_outputs=True,
+    keep_chunk_tsv_after_combine=False,
+    keep_demux_chunk_outputs_after_combine=False,
     models_dir=None,
     preprocess_dir=None,
 ):
@@ -350,10 +491,15 @@ def annotate_reads_wrap(
     invalid_output_file = os.path.join(output_dir, "annotations_invalid.tsv")
     valid_output_file = os.path.join(output_dir, "annotations_valid.tsv")
     chunk_output_dir = os.path.join(output_dir, "annotation_chunks")
+    checkpoint_file = checkpoint_file or os.path.join(output_dir, "annotation_checkpoint.txt")
+
+    if not resume:
+        logger.info("Resume disabled. Removing existing annotation outputs and starting from scratch.")
+        _cleanup_annotation_outputs_for_fresh_start(output_dir, checkpoint_file)
+
     os.makedirs(os.path.join(chunk_output_dir, "done"), exist_ok=True)
     os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
     os.makedirs(os.path.join(chunk_output_dir, "invalid_chunks"), exist_ok=True)
-    checkpoint_file = checkpoint_file or os.path.join(output_dir, "annotation_checkpoint.txt")
 
     parquet_files = sorted(
         [
@@ -364,7 +510,7 @@ def annotate_reads_wrap(
         key=lambda f: estimate_average_read_length_from_bin(os.path.basename(f).replace(".parquet", "")),
     )
     bin_order = {os.path.basename(f).replace(".parquet", ""): i for i, f in enumerate(parquet_files)}
-    checkpoint_tuple = _load_checkpoint(checkpoint_file) if resume else None
+    checkpoint_tuple = _load_checkpoint(checkpoint_file, expected_chunk_size=chunk_size) if resume else None
     if checkpoint_tuple:
         cp_pass, cp_bin, cp_chunk = checkpoint_tuple
         cp_done = _done_marker_path(chunk_output_dir, cp_pass, cp_bin, cp_chunk)
@@ -425,9 +571,6 @@ def annotate_reads_wrap(
             demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta")
             ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta")
 
-        demuxed_fasta_lock = FileLock(demuxed_fasta + ".lock")
-        ambiguous_fasta_lock = FileLock(ambiguous_fasta + ".lock")
-
     invalid_file_lock = FileLock(invalid_output_file + ".lock")
     valid_file_lock = FileLock(valid_output_file + ".lock")
 
@@ -478,7 +621,7 @@ def annotate_reads_wrap(
                     add_header = header_track.value == 0
 
                 with FileLock(checkpoint_lock_path):
-                    _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx)
+                    _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx, chunk_size)
 
                 result = post_process_reads(
                     reads,
@@ -524,7 +667,7 @@ def annotate_reads_wrap(
 
                 if result:
                     with FileLock(checkpoint_lock_path):
-                        _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx)
+                        _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx, chunk_size)
                     result_queue.put((True, bin_name, chunk_idx))
                 else:
                     logger.warning(f"No result from post_process_reads in {bin_name}, chunk {chunk_idx}")
@@ -646,9 +789,8 @@ def annotate_reads_wrap(
                 worker.join()
                 worker.close()
 
-            # TODO: Update error message when checkpoint restart is re-enabled
             logger.error(
-                f"Error found while annotating: {e}. Output files may be corrupted - PLEASE DELETE AND START AGAIN. Exiting!"
+                f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
             )
             sys.exit(1)
 
@@ -769,9 +911,8 @@ def annotate_reads_wrap(
                     worker.join()
                     worker.close()
 
-                # TODO: Update error message when checkpoint restart is re-enabled
                 logger.error(
-                    f"Error found while annotating: {e}. Output files may be corrupted - PLEASE DELETE AND START AGAIN. Exiting!"
+                    f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
                 )
                 sys.exit(1)
 
@@ -869,9 +1010,8 @@ def annotate_reads_wrap(
                 worker.join()
                 worker.close()
 
-            # TODO: Update error message when checkpoint restart is re-enabled
             logger.error(
-                f"Error found while annotating: {e}. Output files may be corrupted - PLEASE DELETE AND START AGAIN. Exiting!"
+                f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
             )
             sys.exit(1)
 
@@ -886,24 +1026,43 @@ def annotate_reads_wrap(
             worker.join()
             worker.close()
 
-    _convert_chunk_outputs(chunk_output_dir, output_dir, combine_chunk_outputs, pl, chunk_size)
+    skip_chunk_output_conversion = False
     if resume and total_queued_chunks == 0:
         logger.info("All annotation chunks are already completed. Dataset has already been annotated.")
+        if combine_chunk_outputs:
+            valid_parquet = os.path.join(output_dir, "annotations_valid.parquet")
+            invalid_parquet = os.path.join(output_dir, "annotations_invalid.parquet")
+            if os.path.exists(valid_parquet) and os.path.exists(invalid_parquet):
+                logger.info(
+                    "Skipping chunk combination because combined parquet outputs already exist "
+                    "and no new chunks were processed."
+                )
+                skip_chunk_output_conversion = True
+
+    if not skip_chunk_output_conversion:
+        _convert_chunk_outputs(
+            chunk_output_dir,
+            output_dir,
+            combine_chunk_outputs,
+            keep_chunk_tsv_after_combine,
+            pl,
+            chunk_size,
+        )
 
     if run_demux:
-        if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fasta.lock"):
-            os.system(f"rm {output_dir}/demuxed_fasta/demuxed.fasta.lock")
-        if os.path.exists(f"{output_dir}/demuxed_fasta/ambiguous.fasta.lock"):
-            os.system(f"rm {output_dir}/demuxed_fasta/ambiguous.fasta.lock")
-        if os.path.exists(f"{output_dir}/demuxed_fasta/demuxed.fastq.lock"):
-            os.system(f"rm {output_dir}/demuxed_fasta/demuxed.fastq.lock")
-        if os.path.exists(f"{output_dir}/demuxed_fasta/ambiguous.fastq.lock"):
-            os.system(f"rm {output_dir}/demuxed_fasta/ambiguous.fastq.lock")
+        demuxed_fasta, ambiguous_fasta = _combine_demux_chunk_outputs(
+            chunk_output_dir,
+            output_dir,
+            effective_output_fmt,
+            keep_demux_chunk_outputs_after_combine,
+        )
         _gzip_file(demuxed_fasta)
         _gzip_file(ambiguous_fasta)
 
     if model_type == "HYB":
-        os.system(f"rm -r {output_dir}/tmp_invalid_reads")
+        tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")
+        if os.path.isdir(tmp_invalid_dir):
+            shutil.rmtree(tmp_invalid_dir)
 
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB

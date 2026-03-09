@@ -6,7 +6,6 @@ import shutil
 
 import pandas as pd
 import polars as pl
-from filelock import FileLock
 
 from scripts.correct_barcodes import bc_n_demultiplex
 from scripts.trained_models import seq_orders
@@ -38,6 +37,38 @@ def _scan_annotations_in_chunks(input_file, chunk_size):
             break
         yield chunk
         offset += chunk_size
+
+
+def _combine_demux_chunk_outputs(
+    demux_chunk_dir,
+    ambiguous_chunk_dir,
+    demuxed_fasta,
+    ambiguous_fasta,
+    ext,
+    keep_demux_chunk_outputs_after_combine,
+):
+    def _sorted_files(path):
+        if not os.path.isdir(path):
+            return []
+        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}")]
+        files.sort()
+        return files
+
+    def _concat(src_files, out_path):
+        if not src_files:
+            return
+        with open(out_path, "w") as out_fh:
+            for src in src_files:
+                with open(src, "r") as src_fh:
+                    out_fh.write(src_fh.read())
+
+    demux_files = _sorted_files(demux_chunk_dir)
+    amb_files = _sorted_files(ambiguous_chunk_dir)
+    _concat(demux_files, demuxed_fasta)
+    _concat(amb_files, ambiguous_fasta)
+    if not keep_demux_chunk_outputs_after_combine:
+        for path in demux_files + amb_files:
+            os.remove(path)
 
 
 def _has_usable_base_qualities(lazy_df):
@@ -84,6 +115,7 @@ def barcode_correction_wrap(
     include_barcode_quals,
     include_polya,
     run_demux,
+    keep_demux_chunk_outputs_after_combine=False,
 ):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -131,24 +163,37 @@ def barcode_correction_wrap(
 
     demuxed_fasta = None
     ambiguous_fasta = None
-    demuxed_fasta_lock = None
-    ambiguous_fasta_lock = None
+    demux_chunk_dir = None
+    ambiguous_chunk_dir = None
+    demux_ext = None
     if run_demux:
         fasta_dir = os.path.join(output_dir, "demuxed_fasta")
         os.makedirs(fasta_dir, exist_ok=True)
         if effective_output_fmt == "fastq":
             demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq")
             ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq")
+            demux_ext = "fastq"
         else:
             demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta")
             ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta")
-        demuxed_fasta_lock = FileLock(demuxed_fasta + ".lock")
-        ambiguous_fasta_lock = FileLock(ambiguous_fasta + ".lock")
+            demux_ext = "fasta"
+        demux_chunk_dir = os.path.join(fasta_dir, "demuxed_chunks")
+        ambiguous_chunk_dir = os.path.join(fasta_dir, "ambiguous_chunks")
+        os.makedirs(demux_chunk_dir, exist_ok=True)
+        os.makedirs(ambiguous_chunk_dir, exist_ok=True)
 
     first_write = True
+    chunk_idx = 0
 
     for chunk_df in chain([first_chunk], chunk_iter):
+        chunk_idx += 1
         chunk_pd = pd.DataFrame(chunk_df.to_dicts())
+        chunk_demuxed = None
+        chunk_ambiguous = None
+        if run_demux:
+            chunk_name = f"chunk{chunk_idx:06d}.{demux_ext}"
+            chunk_demuxed = os.path.join(demux_chunk_dir, chunk_name)
+            chunk_ambiguous = os.path.join(ambiguous_chunk_dir, chunk_name)
         corrected_df, _, _ = bc_n_demultiplex(
             chunk_pd,
             strand,
@@ -158,10 +203,10 @@ def barcode_correction_wrap(
             bc_lv_threshold,
             output_dir,
             effective_output_fmt,
-            demuxed_fasta,
-            demuxed_fasta_lock,
-            ambiguous_fasta,
-            ambiguous_fasta_lock,
+            chunk_demuxed,
+            None,
+            chunk_ambiguous,
+            None,
             threads,
             include_barcode_quals_in_header=include_barcode_quals,
             include_polya_in_output=include_polya,
@@ -172,9 +217,14 @@ def barcode_correction_wrap(
         first_write = False
 
     if run_demux:
-        for lock_path in [f"{demuxed_fasta}.lock", f"{ambiguous_fasta}.lock"]:
-            if os.path.exists(lock_path):
-                os.remove(lock_path)
+        _combine_demux_chunk_outputs(
+            demux_chunk_dir,
+            ambiguous_chunk_dir,
+            demuxed_fasta,
+            ambiguous_fasta,
+            demux_ext,
+            keep_demux_chunk_outputs_after_combine,
+        )
         _gzip_file(demuxed_fasta)
         _gzip_file(ambiguous_fasta)
 

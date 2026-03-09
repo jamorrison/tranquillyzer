@@ -348,11 +348,31 @@ def annotate_reads(
             "Disable to keep per-chunk parquet outputs."
         ),
     ),
+    keep_chunk_tsv_after_combine: bool = typer.Option(
+        False,
+        help=(
+            "Keep chunk TSV files after successful combine.\n\n"
+            "By default they are deleted when [cyan]--combine-chunk-outputs[/cyan] is enabled."
+        ),
+    ),
+    keep_demux_chunk_outputs_after_combine: bool = typer.Option(
+        False,
+        help=(
+            "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
+            "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."
+        ),
+    ),
     checkpoint_file: str = typer.Option(
         None,
         help="Checkpoint file path. Defaults to [cyan]<output_dir>/annotation_checkpoint.txt[/cyan].",
     ),
-    resume: bool = typer.Option(True, help="Resume from checkpoint and chunk markers when available."),
+    resume: bool = typer.Option(
+        True,
+        help=(
+            "Resume from checkpoint and chunk markers when available.\n\n"
+            "Disable to clear prior annotate-reads outputs and re-run from the start."
+        ),
+    ),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
     target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS)] = 1_200_000,
     vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom."),
@@ -422,6 +442,8 @@ def annotate_reads(
         checkpoint_file: Path to checkpoint file storing pass/bin/chunk progress.
         resume: If true, restart from checkpoint and skip done chunks.
         combine_chunk_outputs: If true, merge chunk TSVs into annotations_valid/invalid.parquet.
+        keep_chunk_tsv_after_combine: If true with combine enabled, keep chunk TSVs and also write per-chunk parquet.
+        keep_demux_chunk_outputs_after_combine: If true with demux enabled, keep chunk FASTA/FASTQ after combine.
 
     Outputs:
         - Chunk outputs under `<output_dir>/annotation_chunks/`
@@ -464,6 +486,8 @@ def annotate_reads(
         checkpoint_file,
         resume,
         combine_chunk_outputs,
+        keep_chunk_tsv_after_combine,
+        keep_demux_chunk_outputs_after_combine,
         models_dir=models_dir,
         preprocess_dir=preprocess_dir,
     )
@@ -497,6 +521,13 @@ def barcode_correct(
         False,
         help="Run demuxing concurrently while correcting barcodes (single pass through annotations).",
     ),
+    keep_demux_chunk_outputs_after_combine: bool = typer.Option(
+        False,
+        help=(
+            "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
+            "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."
+        ),
+    ),
 ):
     """
     Correct barcode segments on annotated valid reads, with optional concurrent demultiplexing.
@@ -517,6 +548,7 @@ def barcode_correct(
         include_barcode_quals=include_barcode_quals,
         include_polya=include_polya,
         run_demux=run_demux,
+        keep_demux_chunk_outputs_after_combine=keep_demux_chunk_outputs_after_combine,
     )
 
 

@@ -50,10 +50,16 @@ def write_reads_to_fasta(
 ):
     for cell_id, reads in batch_reads.items():
         if cell_id == "ambiguous":
-            with ambiguous_fasta_lock:
+            if ambiguous_fasta_lock:
+                with ambiguous_fasta_lock:
+                    fasta_file = open(ambiguous_fasta, "a")
+            else:
                 fasta_file = open(ambiguous_fasta, "a")
         else:
-            with demuxed_fasta_lock:
+            if demuxed_fasta_lock:
+                with demuxed_fasta_lock:
+                    fasta_file = open(demuxed_fasta, "a")
+            else:
                 fasta_file = open(demuxed_fasta, "a")
 
         if output_fmt == "fastq":

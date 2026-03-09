@@ -72,6 +72,18 @@ def _bulk_export_record(row, output_fmt, include_polya=False):
     return header, sequence
 
 
+def _chunk_demux_paths(chunk_output_dir, pass_num, bin_name, chunk_idx, output_fmt):
+    if chunk_output_dir is None:
+        return None, None
+    ext = "fastq" if output_fmt == "fastq" else "fasta"
+    demux_dir = os.path.join(chunk_output_dir, "demuxed_chunks")
+    ambiguous_dir = os.path.join(chunk_output_dir, "ambiguous_chunks")
+    os.makedirs(demux_dir, exist_ok=True)
+    os.makedirs(ambiguous_dir, exist_ok=True)
+    chunk_stub = f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.{ext}"
+    return os.path.join(demux_dir, chunk_stub), os.path.join(ambiguous_dir, chunk_stub)
+
+
 def process_full_length_reads_in_chunks_and_save(
     reads,
     original_read_names,
@@ -151,6 +163,13 @@ def process_full_length_reads_in_chunks_and_save(
     invalid_reads_df = chunk_df[chunk_df["architecture"] == "invalid"]
     valid_reads_df = chunk_df[chunk_df["architecture"] != "invalid"]
 
+    if run_demux:
+        demuxed_chunk_file, ambiguous_chunk_file = _chunk_demux_paths(
+            chunk_output_dir, pass_num, bin_name, chunk_idx, output_fmt
+        )
+    else:
+        demuxed_chunk_file, ambiguous_chunk_file = None, None
+
     if model_type == "HYB" and pass_num == 1:
         tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")
         os.makedirs(tmp_invalid_dir, exist_ok=True)
@@ -200,10 +219,10 @@ def process_full_length_reads_in_chunks_and_save(
                 threshold,
                 output_dir,
                 output_fmt,
-                demuxed_fasta,
-                demuxed_fasta_lock,
-                ambiguous_fasta,
-                ambiguous_fasta_lock,
+                demuxed_chunk_file,
+                None,
+                ambiguous_chunk_file,
+                None,
                 n_jobs,
                 include_barcode_quals,
                 include_polya,
@@ -217,21 +236,20 @@ def process_full_length_reads_in_chunks_and_save(
                 - int(float(str(row["cDNA_Starts"]).split(",")[0].strip())),
                 axis=1,
             )
-            if run_demux and demuxed_fasta and demuxed_fasta_lock:
+            if run_demux and demuxed_chunk_file:
                 bulk_reads = []
                 for _, row in valid_reads_df.iterrows():
                     record = _bulk_export_record(row, output_fmt, include_polya)
                     if record is not None:
                         bulk_reads.append(record)
                 if bulk_reads:
-                    with demuxed_fasta_lock:
-                        with open(demuxed_fasta, "a") as out_fh:
-                            if output_fmt == "fastq":
-                                for header, sequence, quality in bulk_reads:
-                                    out_fh.write(f"{header}\n{sequence}\n+\n{quality}\n")
-                            else:
-                                for header, sequence in bulk_reads:
-                                    out_fh.write(f"{header}\n{sequence}\n")
+                    with open(demuxed_chunk_file, "a") as out_fh:
+                        if output_fmt == "fastq":
+                            for header, sequence, quality in bulk_reads:
+                                out_fh.write(f"{header}\n{sequence}\n+\n{quality}\n")
+                        else:
+                            for header, sequence in bulk_reads:
+                                out_fh.write(f"{header}\n{sequence}\n")
 
         os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
         valid_chunk_file = os.path.join(
