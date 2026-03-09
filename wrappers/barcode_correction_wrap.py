@@ -119,7 +119,15 @@ def barcode_correction_wrap(
 ):
     os.makedirs(output_dir, exist_ok=True)
 
-    input_file = input_file or f"{input_dir}/annotations_valid.parquet"
+    if input_file is None:
+        annotation_default = f"{input_dir}/annotations_valid.parquet"
+        corrected_default = f"{input_dir}/annotations_valid_bc_corrected.parquet"
+        if os.path.exists(annotation_default):
+            input_file = annotation_default
+        elif os.path.exists(corrected_default):
+            input_file = corrected_default
+        else:
+            input_file = annotation_default
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"Annotation file not found: {input_file}")
 
@@ -156,9 +164,15 @@ def barcode_correction_wrap(
 
     corrected_tsv = f"{output_dir}/annotations_valid_bc_corrected.tsv"
     corrected_parquet = f"{output_dir}/annotations_valid_bc_corrected.parquet"
+    in_place_corrected_overwrite = os.path.abspath(input_file) == os.path.abspath(corrected_parquet)
+    corrected_parquet_tmp = (
+        f"{corrected_parquet}.tmp" if in_place_corrected_overwrite else corrected_parquet
+    )
     if os.path.exists(corrected_tsv):
         os.remove(corrected_tsv)
-    if os.path.exists(corrected_parquet):
+    if os.path.exists(corrected_parquet_tmp):
+        os.remove(corrected_parquet_tmp)
+    if os.path.exists(corrected_parquet) and not in_place_corrected_overwrite:
         os.remove(corrected_parquet)
 
     demuxed_fasta = None
@@ -229,8 +243,10 @@ def barcode_correction_wrap(
         _gzip_file(ambiguous_fasta)
 
     pl.scan_csv(corrected_tsv, separator="\t", infer_schema_length=5000).sink_parquet(
-        corrected_parquet, compression="snappy"
+        corrected_parquet_tmp, compression="snappy"
     )
+    if in_place_corrected_overwrite:
+        os.replace(corrected_parquet_tmp, corrected_parquet)
     if os.path.exists(corrected_tsv):
         os.remove(corrected_tsv)
     if os.path.basename(input_file) == "annotations_valid.parquet" and os.path.exists(input_file):

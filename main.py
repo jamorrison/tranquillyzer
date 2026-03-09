@@ -357,6 +357,7 @@ def annotate_reads(
     ),
     keep_demux_chunk_outputs_after_combine: bool = typer.Option(
         False,
+        "--keep-demux-chunk-after-combine",
         help=(
             "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
             "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."
@@ -499,7 +500,12 @@ def barcode_correct(
     whitelist_file: str,
     output_dir: str = typer.Option(None, help="Output directory. Defaults to [cyan]input_dir[/cyan]."),
     input_file: str = typer.Option(
-        None, help="Annotations file. Defaults to [cyan]<input_dir>/annotations_valid.parquet[/cyan]."
+        None,
+        help=(
+            "Annotations file. Defaults to\n\n"
+            " [cyan]<input_dir>/annotations_valid.parquet[/cyan],\n\n"
+            " or falls back to [cyan]<input_dir>/annotations_valid_bc_corrected.parquet[/cyan]."
+        ),
     ),
     output_fmt: str = typer.Option(
         "fasta",
@@ -523,6 +529,7 @@ def barcode_correct(
     ),
     keep_demux_chunk_outputs_after_combine: bool = typer.Option(
         False,
+        "--keep-demux-chunk-after-combine",
         help=(
             "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
             "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."

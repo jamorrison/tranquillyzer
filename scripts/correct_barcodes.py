@@ -95,19 +95,18 @@ def process_row(
         except (TypeError, ValueError):
             return None
 
-    result = {
-        "ReadName": row["ReadName"],
-        "read_length": row["read_length"],
-        "cDNA_Starts": row["cDNA_Starts"],
-        "cDNA_Ends": row["cDNA_Ends"],
-        "cDNA_length": int(row["cDNA_Ends"]) - int(row["cDNA_Starts"]),
-        "UMI_Starts": row.get("UMI_Starts"),
-        "UMI_Ends": row.get("UMI_Ends"),
-        "random_s_Starts": row["random_s_Starts"],
-        "random_s_Ends": row["random_s_Ends"],
-        "random_e_Starts": row["random_e_Starts"],
-        "random_e_Ends": row["random_e_Ends"],
-    }
+    cDNA_start = _parse_optional_int(row.get("cDNA_Starts"))
+    cDNA_end = _parse_optional_int(row.get("cDNA_Ends"))
+    if cDNA_start is None or cDNA_end is None or cDNA_end <= cDNA_start:
+        raise ValueError(
+            f"Invalid cDNA coordinates for read {row.get('ReadName', 'unknown')}: "
+            f"cDNA_Starts={row.get('cDNA_Starts')}, cDNA_Ends={row.get('cDNA_Ends')}"
+        )
+
+    # Start from the original row so corrected outputs retain all annotation columns
+    # (including barcode *_Sequences) and then append correction/demux fields.
+    result = row.to_dict()
+    result["cDNA_length"] = cDNA_end - cDNA_start
 
     polyA_start = _parse_optional_int(row.get("polyA_Starts"))
     polyA_end = _parse_optional_int(row.get("polyA_Ends"))
@@ -138,6 +137,7 @@ def process_row(
         result[f"corrected_{barcode_column}"] = corrected_seq
         result[f"corrected_{barcode_column}_min_dist"] = min_dist
         result[f"corrected_{barcode_column}_counts_with_min_dist"] = count
+        result[f"{barcode_column}_Sequences"] = row.get(f"{barcode_column}_Sequences")
         result[f"{barcode_column}_Starts"] = row[f"{barcode_column}_Starts"]
         result[f"{barcode_column}_Ends"] = row[f"{barcode_column}_Ends"]
         corrected_barcodes.append(f"{barcode_column}:{corrected_seq}")
@@ -157,8 +157,6 @@ def process_row(
 
     corrected_barcode_seqs_str = whitelist_dict["cell_ids"][cell_id] if cell_id != "ambiguous" else "ambiguous"
 
-    cDNA_start = int(row["cDNA_Starts"])
-    cDNA_end = int(row["cDNA_Ends"])
     cDNA_sequence = row["read"][cDNA_start:cDNA_end]
     _umi_start = _parse_optional_int(row.get("UMI_Starts"))
     _umi_end = _parse_optional_int(row.get("UMI_Ends"))

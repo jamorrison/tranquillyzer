@@ -138,6 +138,7 @@ def _cleanup_annotation_outputs_for_fresh_start(output_dir, checkpoint_file):
         os.path.join(output_dir, "annotations_valid.tsv.lock"),
         os.path.join(output_dir, "annotations_invalid.tsv.lock"),
         os.path.join(output_dir, "annotations_valid.parquet"),
+        os.path.join(output_dir, "annotations_valid_bc_corrected.parquet"),
         os.path.join(output_dir, "annotations_invalid.parquet"),
         checkpoint_file,
         checkpoint_file + ".lock",
@@ -157,6 +158,7 @@ def _convert_chunk_outputs(
     output_dir,
     combine_chunks,
     keep_chunk_tsv_after_combine,
+    run_barcode_correction,
     pl,
     chunk_size,
 ):
@@ -184,6 +186,7 @@ def _convert_chunk_outputs(
     invalid_chunk_parquets = _sorted_chunk_files(os.path.join(chunk_output_dir, "invalid_chunks"), ".parquet")
     valid_out_dir = os.path.join(chunk_output_dir, "valid_chunks")
     invalid_out_dir = os.path.join(chunk_output_dir, "invalid_chunks")
+    valid_output_name = "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
 
     if combine_chunks:
         logger.info(
@@ -192,11 +195,11 @@ def _convert_chunk_outputs(
         )
         if valid_files:
             pl.scan_csv(valid_files, separator="\t", infer_schema_length=5000).sink_parquet(
-                f"{output_dir}/annotations_valid.parquet", compression="snappy", row_group_size=chunk_size
+                f"{output_dir}/{valid_output_name}", compression="snappy", row_group_size=chunk_size
             )
         elif valid_chunk_parquets:
             pl.scan_parquet(valid_chunk_parquets).sink_parquet(
-                f"{output_dir}/annotations_valid.parquet", compression="snappy", row_group_size=chunk_size
+                f"{output_dir}/{valid_output_name}", compression="snappy", row_group_size=chunk_size
             )
         if invalid_files:
             pl.scan_csv(invalid_files, separator="\t", infer_schema_length=5000).sink_parquet(
@@ -206,7 +209,7 @@ def _convert_chunk_outputs(
             pl.scan_parquet(invalid_chunk_parquets).sink_parquet(
                 f"{output_dir}/annotations_invalid.parquet", compression="snappy", row_group_size=chunk_size
             )
-        logger.info("Finished chunk combination into annotations_valid.parquet and annotations_invalid.parquet.")
+        logger.info(f"Finished chunk combination into {valid_output_name} and annotations_invalid.parquet.")
         if keep_chunk_tsv_after_combine:
             logger.info(
                 f"Starting TSV-to-parquet conversion for chunk outputs: valid={len(valid_files)}, "
@@ -1030,7 +1033,8 @@ def annotate_reads_wrap(
     if resume and total_queued_chunks == 0:
         logger.info("All annotation chunks are already completed. Dataset has already been annotated.")
         if combine_chunk_outputs:
-            valid_parquet = os.path.join(output_dir, "annotations_valid.parquet")
+            valid_parquet_name = "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
+            valid_parquet = os.path.join(output_dir, valid_parquet_name)
             invalid_parquet = os.path.join(output_dir, "annotations_invalid.parquet")
             if os.path.exists(valid_parquet) and os.path.exists(invalid_parquet):
                 logger.info(
@@ -1045,6 +1049,7 @@ def annotate_reads_wrap(
             output_dir,
             combine_chunk_outputs,
             keep_chunk_tsv_after_combine,
+            run_barcode_correction,
             pl,
             chunk_size,
         )
