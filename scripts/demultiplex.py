@@ -34,60 +34,58 @@ def assign_cell_id(row, whitelist_df, barcode_columns):
             match_type_counter[f"No match ({barcode_type})"] += 1
             return "ambiguous", match_type_counter, cell_id_counter
 
+    # Generalized multi-barcode matching based on the model-defined barcode columns.
+    corrected_values = {}
+    for barcode_type in barcode_columns:
+        corrected_key = f"corrected_{barcode_type}"
+        corrected_raw = row.get(corrected_key, "")
+        corrected_values[barcode_type] = {
+            token.strip() for token in str(corrected_raw).split(",") if token and token.strip() and token.strip() != "NMF"
+        }
+
+    combinations = list(product(*(sorted(corrected_values[barcode]) for barcode in barcode_columns)))
+    matched_cells_by_count = defaultdict(set)
+
+    for combination in combinations:
+        mask = pd.Series(True, index=whitelist_df.index)
+        for barcode_type, candidate in zip(barcode_columns, combination):
+            mask &= whitelist_df[barcode_type] == candidate
+
+        for idx in whitelist_df[mask].index:
+            matched_cells_by_count[len(barcode_columns)].add(idx + 1)
+
+        for match_count in range(len(barcode_columns) - 1, 0, -1):
+            for matched_columns in product([True, False], repeat=len(barcode_columns)):
+                if sum(matched_columns) != match_count:
+                    continue
+                partial_mask = pd.Series(True, index=whitelist_df.index)
+                for include_col, barcode_type, candidate in zip(matched_columns, barcode_columns, combination):
+                    if include_col:
+                        partial_mask &= whitelist_df[barcode_type] == candidate
+                for idx in whitelist_df[partial_mask].index:
+                    matched_cells_by_count[match_count].add(idx + 1)
+
+    match_type_counter = defaultdict(int)
+    cell_id_counter = defaultdict(int)
+
+    best_match_count = max((count for count, cells in matched_cells_by_count.items() if cells), default=0)
+    if best_match_count == 0:
+        match_type_counter["Ambiguous"] += 1
+        return "ambiguous", match_type_counter, cell_id_counter
+
+    best_cells = matched_cells_by_count[best_match_count]
+    if len(best_cells) != 1:
+        match_type_counter["Ambiguous"] += 1
+        return "ambiguous", match_type_counter, cell_id_counter
+
+    cell_id = next(iter(best_cells))
+    if best_match_count == len(barcode_columns):
+        label = f"Exact match ({' + '.join(barcode_columns)})"
     else:
-        # Original logic when multiple barcodes are present
-        i7_seqs = row["corrected_i7"].split(",")
-        i5_seqs = row["corrected_i5"].split(",")
-        cbc_seqs = row["corrected_CBC"].split(",")
-
-        # Generate all possible combinations of i7, i5, and CBC sequences
-        combinations = list(product(i7_seqs, i5_seqs, cbc_seqs))
-
-        exact_matches = []
-        two_matches = []
-        one_match = []
-
-        # Test each combination against the whitelist
-        for i7, i5, cbc in combinations:
-            match_all = whitelist_df[
-                (whitelist_df["i7"] == i7) & (whitelist_df["i5"] == i5) & (whitelist_df["CBC"] == cbc)
-            ]
-
-            match_two = whitelist_df[
-                ((whitelist_df["i7"] == i7) & (whitelist_df["i5"] == i5))
-                | ((whitelist_df["i7"] == i7) & (whitelist_df["CBC"] == cbc))
-                | ((whitelist_df["i5"] == i5) & (whitelist_df["CBC"] == cbc))
-            ]
-
-            match_cbc_only = whitelist_df[whitelist_df["CBC"] == cbc]
-
-            if not match_all.empty:
-                exact_matches.append(match_all.index[0] + 1)  # Make 1-based
-            elif not match_two.empty:
-                two_matches.append(match_two.index[0] + 1)  # Make 1-based
-            elif not match_cbc_only.empty:
-                one_match.append(match_cbc_only.index[0] + 1)  # Make 1-based
-
-        # Prepare result and counters
-        match_type_counter = defaultdict(int)
-        cell_id_counter = defaultdict(int)
-
-        # Determine the result and update local counters
-        if len(exact_matches) == 1:
-            match_type_counter["Exact match (i5 + i7 + CBC)"] += 1
-            cell_id_counter[str(exact_matches[0])] += 1  # Convert to str
-            return exact_matches[0], match_type_counter, cell_id_counter  # Exact match of i5, i7, CBC
-        elif len(two_matches) == 1:
-            match_type_counter["Two out of three match"] += 1
-            cell_id_counter[str(two_matches[0])] += 1  # Convert to str
-            return two_matches[0], match_type_counter, cell_id_counter  # Two out of three match
-        elif len(one_match) == 1:
-            match_type_counter["Only CBC match"] += 1
-            cell_id_counter[str(one_match[0])] += 1  # Convert to str
-            return one_match[0], match_type_counter, cell_id_counter  # Only CBC matches
-        else:
-            match_type_counter["Ambiguous"] += 1
-            return "ambiguous", match_type_counter, cell_id_counter  # Multiple or no matches
+        label = f"{best_match_count} of {len(barcode_columns)} match"
+    match_type_counter[label] += 1
+    cell_id_counter[str(cell_id)] += 1
+    return cell_id, match_type_counter, cell_id_counter
 
 
 def generate_demux_stats_pdf(

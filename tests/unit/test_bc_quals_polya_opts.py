@@ -4,6 +4,8 @@ import sys
 import types
 
 from scripts.correct_barcodes import process_row
+from scripts.demultiplex import assign_cell_id
+from scripts.trained_models import seq_orders
 from wrappers.annotate_reads_wrap import annotate_reads_wrap
 
 # Stub optional training-time deps so unit tests don't require them.
@@ -110,3 +112,31 @@ def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
     msg = str(excinfo.value)
     assert "missing_model" in msg
     assert "model_a" in msg and "model_b" in msg
+
+
+def test_assign_cell_id_supports_dynamic_multi_barcode_columns():
+    whitelist_df = pd.DataFrame([{"i5": "GGGG", "i7": "AAAA", "cbc": "CCCC"}])
+    row = {
+        "corrected_i5": "GGGG",
+        "corrected_i7": "AAAA",
+        "corrected_cbc": "CCCC",
+    }
+
+    cell_id, match_counts, cell_counts = assign_cell_id(row, whitelist_df, ["i5", "i7", "cbc"])
+
+    assert cell_id == 1
+    assert match_counts["Exact match (i5 + i7 + cbc)"] == 1
+    assert cell_counts["1"] == 1
+
+
+def test_seq_orders_strips_whitespace_in_barcode_fields(tmp_path):
+    seq_orders_file = tmp_path / "seq_orders.tsv"
+    seq_orders_file.write_text(
+        'model_a\t"5p,i5,i7,cbc,cDNA"\t"A,B,C,D,E"\t"i5, i7, cbc"\t"UMI"\tfwd\n'
+    )
+
+    _, _, barcodes, umis, strand = seq_orders(str(seq_orders_file), "model_a")
+
+    assert barcodes == ["i5", "i7", "cbc"]
+    assert umis == ["UMI"]
+    assert strand == "fwd"

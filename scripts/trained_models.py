@@ -4,6 +4,10 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _split_field(field):
+    return [token.strip() for token in str(field).split(",") if token.strip()]
+
+
 def trained_models():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.path.join(base_dir, "..", "models")
@@ -85,10 +89,10 @@ def seq_orders(file_path, model):
                 # If so, process rest of the line
                 model_name = fields[0].strip()
                 if model_name == model:
-                    sequence_order = fields[1].strip().split(",")
-                    sequences = fields[2].strip().split(",")
-                    barcodes = fields[3].strip().split(",")
-                    UMIs = fields[4].strip().split(",")
+                    sequence_order = _split_field(fields[1].strip())
+                    sequences = _split_field(fields[2].strip())
+                    barcodes = _split_field(fields[3].strip())
+                    UMIs = _split_field(fields[4].strip())
                     strand = fields[5].strip()
 
                     return sequence_order, sequences, barcodes, UMIs, strand
