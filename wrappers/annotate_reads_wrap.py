@@ -24,6 +24,7 @@ def _gzip_file(path):
     with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
         shutil.copyfileobj(src, dst)
     os.remove(path)
+    return gz_path
 
 
 def _has_usable_base_qualities_in_parquets(parquet_files, pl, sample_rows=5000):
@@ -43,7 +44,9 @@ def _has_usable_base_qualities_in_parquets(parquet_files, pl, sample_rows=5000):
     return False
 
 
-CHUNK_FILE_RE = re.compile(r"^pass(?P<pass>\d+)__(?P<bin>.+)__chunk(?P<chunk>\d{6})\.(?:tsv|done|parquet|fasta|fastq)$")
+CHUNK_FILE_RE = re.compile(
+    r"^pass(?P<pass>\d+)__(?P<bin>.+)__chunk(?P<chunk>\d{6})\.(?:tsv|done|parquet|fasta|fastq)(?:\.gz)?$"
+)
 
 
 def _save_checkpoint(checkpoint_file, pass_num, bin_name, chunk_idx, chunk_size):
@@ -114,7 +117,7 @@ def _cleanup_from_checkpoint(chunk_output_dir, checkpoint_tuple, bin_order):
         return
     cp_pass, cp_bin, cp_chunk = checkpoint_tuple
     cp_key = (cp_pass, bin_order.get(cp_bin, 10**9), cp_bin, cp_chunk)
-    for subdir in ["done", "valid_chunks", "invalid_chunks"]:
+    for subdir in ["done", "valid_chunks", "invalid_chunks", "demuxed_chunks", "ambiguous_chunks"]:
         root = os.path.join(chunk_output_dir, subdir)
         if not os.path.isdir(root):
             continue
@@ -234,7 +237,12 @@ def _convert_chunk_outputs(
                 os.remove(tsv_path)
 
 
-def _combine_demux_chunk_outputs(chunk_output_dir, output_dir, output_fmt, keep_demux_chunk_outputs_after_combine):
+def _combine_demux_chunk_outputs(
+    chunk_output_dir,
+    output_dir,
+    output_fmt,
+    keep_demux_chunk_outputs_after_combine,
+):
     ext = "fastq" if output_fmt == "fastq" else "fasta"
     demux_chunk_dir = os.path.join(chunk_output_dir, "demuxed_chunks")
     ambiguous_chunk_dir = os.path.join(chunk_output_dir, "ambiguous_chunks")
@@ -244,35 +252,35 @@ def _combine_demux_chunk_outputs(chunk_output_dir, output_dir, output_fmt, keep_
     def _sorted_chunk_files(path):
         if not os.path.isdir(path):
             return []
-        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}")]
+        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}.gz")]
         files.sort(key=lambda f: _chunk_key_from_filename(os.path.basename(f), {}) or (10**9, 10**9, "", 10**9))
         return files
 
-    def _concatenate(files, out_path):
+    def _concatenate_binary(files, out_path):
         if not files:
             return False
-        with open(out_path, "w") as out_fh:
+        with open(out_path, "wb") as out_fh:
             for src in files:
-                with open(src, "r") as src_fh:
+                with open(src, "rb") as src_fh:
                     shutil.copyfileobj(src_fh, out_fh)
         return True
 
     demux_files = _sorted_chunk_files(demux_chunk_dir)
     amb_files = _sorted_chunk_files(ambiguous_chunk_dir)
-    demux_out = os.path.join(final_dir, f"demuxed.{ext}")
-    amb_out = os.path.join(final_dir, f"ambiguous.{ext}")
+    demux_out = os.path.join(final_dir, f"demuxed.{ext}.gz")
+    amb_out = os.path.join(final_dir, f"ambiguous.{ext}.gz")
 
     logger.info(
         f"Starting demux chunk combination: demuxed_chunks={len(demux_files)}, ambiguous_chunks={len(amb_files)}."
     )
-    wrote_demux = _concatenate(demux_files, demux_out)
-    wrote_amb = _concatenate(amb_files, amb_out)
+    wrote_demux = _concatenate_binary(demux_files, demux_out)
+    wrote_amb = _concatenate_binary(amb_files, amb_out)
     logger.info("Finished demux chunk combination.")
 
     if not keep_demux_chunk_outputs_after_combine:
         for chunk_file in demux_files + amb_files:
             os.remove(chunk_file)
-        logger.info("Deleted demux chunk FASTA/FASTQ files after successful demux combination.")
+        logger.info("Deleted demux chunk gzip members after successful demux combination.")
 
     return demux_out if wrote_demux else None, amb_out if wrote_amb else None
 
@@ -1061,8 +1069,6 @@ def annotate_reads_wrap(
             effective_output_fmt,
             keep_demux_chunk_outputs_after_combine,
         )
-        _gzip_file(demuxed_fasta)
-        _gzip_file(ambiguous_fasta)
 
     if model_type == "HYB":
         tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")

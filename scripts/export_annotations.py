@@ -1,6 +1,8 @@
 import os
 import gc
 import csv
+import gzip
+import shutil
 import logging
 import numpy as np
 import pandas as pd
@@ -10,6 +12,18 @@ from scripts.correct_barcodes import bc_n_demultiplex
 from scripts.extract_annotated_seqs import extract_annotated_full_length_seqs
 
 logger = logging.getLogger(__name__)
+
+
+def _gzip_chunk_output(path):
+    if not path or not os.path.exists(path):
+        return None
+    gz_path = path + ".gz"
+    if os.path.exists(gz_path):
+        os.remove(gz_path)
+    with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    os.remove(path)
+    return gz_path
 
 
 def _parse_first_int(value):
@@ -258,6 +272,10 @@ def process_full_length_reads_in_chunks_and_save(
         output_df.to_csv(valid_chunk_file, sep="\t", index=False)
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
+
+    if run_demux:
+        _gzip_chunk_output(demuxed_chunk_file)
+        _gzip_chunk_output(ambiguous_chunk_file)
 
     for local_df in ["chunk_df", "corrected_df", "invalid_reads_df", "valid_reads_df"]:
         if local_df:

@@ -590,6 +590,79 @@ def demux_reads(
 
 
 # ======================================
+# QC metrics
+# ======================================
+
+
+@app.command(no_args_is_help=True)
+def qc_metrics(
+    input_dir: str,
+    output_dir: str = typer.Option(
+        None,
+        help="Output directory for QC files. Defaults to [cyan]<input_dir>/qc_metrics/[/cyan].",
+    ),
+    valid_file: str = typer.Option(
+        None,
+        help=(
+            "Path to valid-reads parquet.\n\n"
+            "Defaults to [cyan]annotations_valid_bc_corrected.parquet[/cyan]"
+            " or [cyan]annotations_valid.parquet[/cyan] inside [cyan]input_dir[/cyan]."
+        ),
+    ),
+    invalid_file: str = typer.Option(
+        None,
+        help=(
+            "Path to invalid-reads parquet.\n\n"
+            "Defaults to [cyan]annotations_invalid.parquet[/cyan] inside [cyan]input_dir[/cyan]."
+        ),
+    ),
+    sample_name: str = typer.Option(
+        None,
+        help=(
+            "Sample label used as a prefix in all output file names and as the MultiQC sample name.\n\n"
+            "Defaults to the base name of [cyan]input_dir[/cyan]."
+        ),
+    ),
+    read_len_bin_width: int = typer.Option(
+        100,
+        help="Bin width (bp) for the read-length distribution plots.",
+    ),
+):
+    """
+    Generate QC metrics from tranquillyzer annotation parquet files.
+
+    Produces MultiQC-compatible ``*_mqc.tsv`` files plus a plain summary TSV.
+
+    Metrics computed:
+      1) Total / valid / invalid read counts and rates.
+      2) Demuxed and ambiguous read counts (when barcode-corrected parquet is used).
+      3) Minimum edit-distance frequency tables for every barcode type present.
+      4) Read-length distributions as line plots — all, valid, invalid, demuxed,
+         ambiguous.
+      5) Cell-barcode knee plot: per-cell read count (log rank vs log count) and
+         cumulative fraction of reads.
+      6) Per-cell read count table.
+
+    MultiQC usage:
+      Run ``multiqc <output_dir>`` (or the parent directory) after this command
+      to pick up all ``*_mqc.tsv`` files automatically.
+    """
+    from wrappers.qc_metrics_wrap import qc_metrics_wrap
+
+    resolved_output = output_dir or os.path.join(input_dir, "qc_metrics")
+    resolved_sample = sample_name or os.path.basename(os.path.abspath(input_dir))
+
+    qc_metrics_wrap(
+        input_dir=input_dir,
+        output_dir=resolved_output,
+        valid_file=valid_file,
+        invalid_file=invalid_file,
+        sample_name=resolved_sample,
+        read_len_bin_width=read_len_bin_width,
+    )
+
+
+# ======================================
 # align inserts to the reference genome
 # ======================================
 
