@@ -1,15 +1,14 @@
 import logging
 import gc
+import gzip
 import os
 import tensorflow as tf
 import pandas as pd
 from tqdm import tqdm
 from rapidfuzz import process
-import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from collections import defaultdict
 from rapidfuzz.distance import Levenshtein
-from matplotlib.backends.backend_pdf import PdfPages
 
 from scripts.demultiplex import assign_cell_id
 
@@ -52,15 +51,15 @@ def write_reads_to_fasta(
         if cell_id == "ambiguous":
             if ambiguous_fasta_lock:
                 with ambiguous_fasta_lock:
-                    fasta_file = open(ambiguous_fasta, "a")
+                    fasta_file = gzip.open(ambiguous_fasta, "at")
             else:
-                fasta_file = open(ambiguous_fasta, "a")
+                fasta_file = gzip.open(ambiguous_fasta, "at")
         else:
             if demuxed_fasta_lock:
                 with demuxed_fasta_lock:
-                    fasta_file = open(demuxed_fasta, "a")
+                    fasta_file = gzip.open(demuxed_fasta, "at")
             else:
-                fasta_file = open(demuxed_fasta, "a")
+                fasta_file = gzip.open(demuxed_fasta, "at")
 
         if output_fmt == "fastq":
             for header, sequence, quality in reads:
@@ -151,9 +150,9 @@ def process_row(
     result["reason"] = row["reason"]
     result["orientation"] = orientation
 
-    cell_id, local_match_counts, local_cell_counts = assign_cell_id(result, whitelist_df, barcode_columns)
+    cell_id = assign_cell_id(result, whitelist_df, barcode_columns)
     result["cell_id"] = cell_id
-    result["match_type"] = next(iter(local_match_counts.keys()), "Unknown")
+    result["match_type"] = "Exact match" if cell_id != "ambiguous" else "Ambiguous"
 
     corrected_barcode_seqs_str = whitelist_dict["cell_ids"][cell_id] if cell_id != "ambiguous" else "ambiguous"
 
@@ -289,7 +288,7 @@ def process_row(
         result["demux_sequence"] = sequence_out
         result["demux_quality"] = quality_out if quality_out is not None else _fallback_q
     result["demux_bucket"] = corrected_barcode_seqs_str
-    return result, local_match_counts, local_cell_counts, batch_reads
+    return result, batch_reads
 
 
 def bc_n_demultiplex(
@@ -345,11 +344,9 @@ def bc_n_demultiplex(
     gc.collect()
 
     processed_results = [res[0] for res in results]
-    all_match_type_counts = [res[1] for res in results]
-    all_cell_id_counts = [res[2] for res in results]
 
     for res in results:
-        for cell_id, reads in res[3].items():
+        for cell_id, reads in res[1].items():
             batch_reads[cell_id].extend(reads)
 
     if write_demuxed_reads:
@@ -357,100 +354,4 @@ def bc_n_demultiplex(
             batch_reads, output_fmt, demuxed_fasta, demuxed_fasta_lock, ambiguous_fasta, ambiguous_fasta_lock
         )
 
-    match_type_counts = defaultdict(int)
-    cell_id_counts = defaultdict(int)
-
-    for match_counts in all_match_type_counts:
-        for key, value in match_counts.items():
-            match_type_counts[key] += value
-
-    for cell_counts in all_cell_id_counts:
-        for key, value in cell_counts.items():
-            cell_id_counts[key] += value
-
-    corrected_df = pd.DataFrame(processed_results)
-
-    return corrected_df, match_type_counts, cell_id_counts
-
-
-def generate_barcodes_stats_pdf(
-    cumulative_barcodes_stats,
-    barcode_columns,
-    pdf_filename="barcode_plots.pdf",
-    tsv_output_dir=None,
-):
-    plt.style.use("seaborn-v0_8-whitegrid")
-    primary = "#2A6F97"
-    accent = "#8AAE92"
-    grid_color = "#DDE3EA"
-    tsv_output_dir = tsv_output_dir or os.path.dirname(os.path.abspath(pdf_filename))
-    os.makedirs(tsv_output_dir, exist_ok=True)
-    all_count_rows = []
-    all_min_dist_rows = []
-
-    with PdfPages(pdf_filename) as pdf:
-        for barcode_column in barcode_columns:
-            count_data = pd.Series(cumulative_barcodes_stats[barcode_column]["count_data"]).sort_index()
-            min_dist_data = pd.Series(cumulative_barcodes_stats[barcode_column]["min_dist_data"]).sort_index()
-            count_df = pd.DataFrame(
-                {
-                    "barcode": barcode_column,
-                    "num_matches": count_data.index.astype(str),
-                    "read_count": count_data.values,
-                }
-            )
-            min_dist_df = pd.DataFrame(
-                {
-                    "barcode": barcode_column,
-                    "min_distance": min_dist_data.index.astype(str),
-                    "read_count": min_dist_data.values,
-                }
-            )
-            count_df.to_csv(
-                os.path.join(tsv_output_dir, f"{barcode_column}_match_count_distribution.tsv"),
-                sep="\t",
-                index=False,
-            )
-            min_dist_df.to_csv(
-                os.path.join(tsv_output_dir, f"{barcode_column}_min_distance_distribution.tsv"),
-                sep="\t",
-                index=False,
-            )
-            all_count_rows.append(count_df)
-            all_min_dist_rows.append(min_dist_df)
-
-            fig, axs = plt.subplots(1, 2, figsize=(14, 6), facecolor="white")
-            fig.suptitle(f"Barcode QC Summary: {barcode_column}", fontsize=14, fontweight="semibold", y=1.02)
-
-            axs[0].bar(count_data.index, count_data.values, color=primary, edgecolor="white", linewidth=0.8)
-            axs[0].set_xlabel("Number of Matches")
-            axs[0].set_ylabel("Frequency")
-            axs[0].set_title("Closest Whitelist Matches", fontsize=11, pad=10)
-            axs[0].grid(axis="y", color=grid_color, linewidth=0.8)
-            axs[0].grid(axis="x", visible=False)
-            axs[0].spines["top"].set_visible(False)
-            axs[0].spines["right"].set_visible(False)
-
-            axs[1].bar(min_dist_data.index, min_dist_data.values, color=accent, edgecolor="white", linewidth=0.8)
-            axs[1].set_xlabel("Minimum Distance")
-            axs[1].set_ylabel("Frequency")
-            axs[1].set_title("Levenshtein Distance Distribution", fontsize=11, pad=10)
-            axs[1].grid(axis="y", color=grid_color, linewidth=0.8)
-            axs[1].grid(axis="x", visible=False)
-            axs[1].spines["top"].set_visible(False)
-            axs[1].spines["right"].set_visible(False)
-
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close()
-
-    pd.concat(all_count_rows, ignore_index=True).to_csv(
-        os.path.join(tsv_output_dir, "barcode_match_count_distribution.tsv"),
-        sep="\t",
-        index=False,
-    )
-    pd.concat(all_min_dist_rows, ignore_index=True).to_csv(
-        os.path.join(tsv_output_dir, "barcode_min_distance_distribution.tsv"),
-        sep="\t",
-        index=False,
-    )
+    return pd.DataFrame(processed_results)

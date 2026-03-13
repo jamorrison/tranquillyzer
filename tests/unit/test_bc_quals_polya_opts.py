@@ -58,7 +58,7 @@ def test_process_row_appends_polya_and_bq():
         "base_qualities": "ABCDEFGHIJKLMNOPQRST",
     }
 
-    result, _, _, batch_reads = process_row(
+    result, batch_reads = process_row(
         row,
         strand="fwd",
         barcode_columns=["i7", "i5", "CBC"],
@@ -122,11 +122,9 @@ def test_assign_cell_id_supports_dynamic_multi_barcode_columns():
         "corrected_cbc": "CCCC",
     }
 
-    cell_id, match_counts, cell_counts = assign_cell_id(row, whitelist_df, ["i5", "i7", "cbc"])
+    cell_id = assign_cell_id(row, whitelist_df, ["i5", "i7", "cbc"])
 
     assert cell_id == 1
-    assert match_counts["Exact match (i5 + i7 + cbc)"] == 1
-    assert cell_counts["1"] == 1
 
 
 def test_seq_orders_strips_whitespace_in_barcode_fields(tmp_path):

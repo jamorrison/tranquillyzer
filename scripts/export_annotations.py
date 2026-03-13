@@ -2,9 +2,7 @@ import os
 import gc
 import csv
 import gzip
-import shutil
 import logging
-import numpy as np
 import pandas as pd
 import polars as pl
 import tensorflow as tf
@@ -12,18 +10,6 @@ from scripts.correct_barcodes import bc_n_demultiplex
 from scripts.extract_annotated_seqs import extract_annotated_full_length_seqs
 
 logger = logging.getLogger(__name__)
-
-
-def _gzip_chunk_output(path):
-    if not path or not os.path.exists(path):
-        return None
-    gz_path = path + ".gz"
-    if os.path.exists(gz_path):
-        os.remove(gz_path)
-    with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
-        shutil.copyfileobj(src, dst)
-    os.remove(path)
-    return gz_path
 
 
 def _parse_first_int(value):
@@ -94,7 +80,7 @@ def _chunk_demux_paths(chunk_output_dir, pass_num, bin_name, chunk_idx, output_f
     ambiguous_dir = os.path.join(chunk_output_dir, "ambiguous_chunks")
     os.makedirs(demux_dir, exist_ok=True)
     os.makedirs(ambiguous_dir, exist_ok=True)
-    chunk_stub = f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.{ext}"
+    chunk_stub = f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.{ext}.gz"
     return os.path.join(demux_dir, chunk_stub), os.path.join(ambiguous_dir, chunk_stub)
 
 
@@ -111,22 +97,12 @@ def process_full_length_reads_in_chunks_and_save(
     bin_name,
     chunk_idx,
     label_binarizer,
-    cumulative_barcodes_stats,
     actual_lengths,
     seq_order,
-    add_header,
     output_dir,
-    invalid_output_file,
-    invalid_file_lock,
-    valid_output_file,
-    valid_file_lock,
     barcodes,
     whitelist_df,
     whitelist_dict,
-    demuxed_fasta,
-    demuxed_fasta_lock,
-    ambiguous_fasta,
-    ambiguous_fasta_lock,
     threshold,
     n_jobs,
     include_barcode_quals,
@@ -224,7 +200,7 @@ def process_full_length_reads_in_chunks_and_save(
 
     if not valid_reads_df.empty:
         if run_barcode_correction:
-            corrected_df, _, _ = bc_n_demultiplex(
+            corrected_df = bc_n_demultiplex(
                 valid_reads_df,
                 strand,
                 list(column_mapping.keys()),
@@ -257,7 +233,7 @@ def process_full_length_reads_in_chunks_and_save(
                     if record is not None:
                         bulk_reads.append(record)
                 if bulk_reads:
-                    with open(demuxed_chunk_file, "a") as out_fh:
+                    with gzip.open(demuxed_chunk_file, "at") as out_fh:
                         if output_fmt == "fastq":
                             for header, sequence, quality in bulk_reads:
                                 out_fh.write(f"{header}\n{sequence}\n+\n{quality}\n")
@@ -272,10 +248,6 @@ def process_full_length_reads_in_chunks_and_save(
         output_df.to_csv(valid_chunk_file, sep="\t", index=False)
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
-
-    if run_demux:
-        _gzip_chunk_output(demuxed_chunk_file)
-        _gzip_chunk_output(ambiguous_chunk_file)
 
     for local_df in ["chunk_df", "corrected_df", "invalid_reads_df", "valid_reads_df"]:
         if local_df:
@@ -303,29 +275,15 @@ def post_process_reads(
     model_path_w_CRF,
     predictions,
     label_binarizer,
-    cumulative_barcodes_stats,
     read_lengths,
     seq_order,
-    add_header,
     bin_name,
     chunk_idx,
     output_dir,
-    invalid_output_file,
-    invalid_file_lock,
-    valid_output_file,
-    valid_file_lock,
     barcodes,
     whitelist_df,
     whitelist_dict,
     threshold,
-    checkpoint_file,
-    chunk_start,
-    match_type_counter,
-    cell_id_counter,
-    demuxed_fasta,
-    demuxed_fasta_lock,
-    ambiguous_fasta,
-    ambiguous_fasta_lock,
     njobs,
     include_barcode_quals,
     include_polya,
@@ -346,22 +304,12 @@ def post_process_reads(
         bin_name,
         chunk_idx,
         label_binarizer,
-        cumulative_barcodes_stats,
         read_lengths,
         seq_order,
-        add_header,
         output_dir,
-        invalid_output_file,
-        invalid_file_lock,
-        valid_output_file,
-        valid_file_lock,
         barcodes,
         whitelist_df,
         whitelist_dict,
-        demuxed_fasta,
-        demuxed_fasta_lock,
-        ambiguous_fasta,
-        ambiguous_fasta_lock,
         threshold,
         njobs,
         include_barcode_quals,
@@ -376,61 +324,3 @@ def post_process_reads(
     return True
 
 
-def filtering_reason_stats(reason_counter_by_bin, output_dir):
-    # Convert dictionary to DataFrame (Bins as Columns, Reasons as Rows)
-    raw_counts_df = pd.DataFrame.from_dict(reason_counter_by_bin, orient="index").fillna(0).T
-
-    # Compute total reads per bin
-    total_reads = raw_counts_df.sum(axis=0)
-
-    # Normalize each column (fraction per bin)
-    normalized_data = raw_counts_df.div(total_reads, axis=1)
-
-    # Save both raw counts and normalized fractions
-    raw_counts_df.to_csv(f"{output_dir}/filtered_raw_counts_by_bins.tsv", sep="\t")
-    normalized_data.to_csv(f"{output_dir}/filtered_normalized_fractions_by_bins.tsv", sep="\t")
-
-    print(f"Saved raw counts to {output_dir}/filtered_raw_counts_by_bins.tsv")
-    print(f"Saved normalized fractions to {output_dir}/filtered_normalized_fractions_by_bins.tsv")
-
-
-def plot_read_n_cDNA_lengths(output_dir):
-
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
-
-    df = pl.read_parquet(f"{output_dir}/annotations_valid.parquet", columns=["read_length", "cDNA_length"])
-    read_lengths = []
-    cDNA_lengths = []
-
-    read_lengths.extend(df["read_length"].to_list())
-    read_lengths = np.array(read_lengths, dtype=int)
-
-    cDNA_lengths.extend(df["cDNA_length"].to_list())
-    cDNA_lengths = np.array(cDNA_lengths, dtype=int)
-
-    log_read_lengths = np.log10(read_lengths[read_lengths > 0])
-    log_cDNA_lengths = np.log10(cDNA_lengths[cDNA_lengths > 0])
-
-    with PdfPages(f"{output_dir}/plots/cDNA_len_distr.pdf") as pdf:
-        # valid read length distribution
-        if len(log_read_lengths[log_read_lengths > 0]):
-            plt.figure(figsize=(8, 6))
-            plt.hist(log_read_lengths[log_read_lengths > 0], bins=100, color="blue", edgecolor="black")
-            plt.title("Read Length Distribution (Log Scale)")
-            plt.xlabel("Log10(Read Length)")
-            plt.ylabel("Frequency")
-            plt.tight_layout()
-            pdf.savefig()
-            plt.close()
-
-        # cDNA length distribution
-        if len(log_cDNA_lengths[log_cDNA_lengths > 0]):
-            plt.figure(figsize=(8, 6))
-            plt.hist(log_cDNA_lengths[log_cDNA_lengths > 0], bins=100, color="blue", edgecolor="black")
-            plt.title("cDNA Length Distribution (Log Scale)")
-            plt.xlabel("Log10(cDNA Length)")
-            plt.ylabel("Frequency")
-            plt.tight_layout()
-            pdf.savefig()
-            plt.close()

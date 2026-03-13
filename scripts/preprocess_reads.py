@@ -27,14 +27,14 @@ def determine_bin(length, bin_size=500):
     return f"{bin_start}_{bin_end}bp"
 
 
-def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual):
+def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual, bin_size=500):
     reads_by_bin = {}
     file_format = "fasta" if file_path.endswith((".fa", ".fasta", ".fa.gz", ".fasta.gz")) else "fastq"
 
     with gzip.open(file_path, "rt") if file_path.endswith(".gz") else open(file_path, "r") as handle:
         for record in SeqIO.parse(handle, file_format):
             read_length = len(record.seq)
-            bin_name = determine_bin(read_length)
+            bin_name = determine_bin(read_length, bin_size)
 
             # Ensure that the bin is initialized with all required keys
             if output_base_qual:
@@ -100,7 +100,7 @@ def dump_bin_data(output_dir, output_base_qual, bin_name, data):
         logger.error(f"Error writing {tsv_filename}: {e}")
 
 
-def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual, num_workers=4):
+def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual, bin_size=500, num_workers=4):
     total_files = len(file_list)
 
     if total_files < num_workers:
@@ -111,7 +111,7 @@ def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         for file_path in file_list:
-            executor.submit(extract_and_bin_reads, file_path, batch_size, output_dir, output_base_qual)
+            executor.submit(extract_and_bin_reads, file_path, batch_size, output_dir, output_base_qual, bin_size)
 
     end_time = time.time()
     logger.info(f"Processed {total_files} files in {end_time - start_time:.2f} seconds.")

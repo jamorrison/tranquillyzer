@@ -1,7 +1,6 @@
 import logging
 import os
 from itertools import chain
-import gzip
 import shutil
 
 import pandas as pd
@@ -11,17 +10,6 @@ from scripts.correct_barcodes import bc_n_demultiplex
 from scripts.trained_models import seq_orders
 
 logger = logging.getLogger(__name__)
-
-
-def _gzip_file(path):
-    if path is None or not os.path.exists(path):
-        return
-    gz_path = path + ".gz"
-    if os.path.exists(gz_path):
-        os.remove(gz_path)
-    with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
-        shutil.copyfileobj(src, dst)
-    os.remove(path)
 
 
 def _scan_annotations_in_chunks(input_file, chunk_size):
@@ -50,17 +38,17 @@ def _combine_demux_chunk_outputs(
     def _sorted_files(path):
         if not os.path.isdir(path):
             return []
-        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}")]
+        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}.gz")]
         files.sort()
         return files
 
     def _concat(src_files, out_path):
         if not src_files:
             return
-        with open(out_path, "w") as out_fh:
+        with open(out_path, "wb") as out_fh:
             for src in src_files:
-                with open(src, "r") as src_fh:
-                    out_fh.write(src_fh.read())
+                with open(src, "rb") as src_fh:
+                    shutil.copyfileobj(src_fh, out_fh)
 
     demux_files = _sorted_files(demux_chunk_dir)
     amb_files = _sorted_files(ambiguous_chunk_dir)
@@ -184,12 +172,12 @@ def barcode_correction_wrap(
         fasta_dir = os.path.join(output_dir, "demuxed_fasta")
         os.makedirs(fasta_dir, exist_ok=True)
         if effective_output_fmt == "fastq":
-            demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq")
-            ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq")
+            demuxed_fasta = os.path.join(fasta_dir, "demuxed.fastq.gz")
+            ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fastq.gz")
             demux_ext = "fastq"
         else:
-            demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta")
-            ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta")
+            demuxed_fasta = os.path.join(fasta_dir, "demuxed.fasta.gz")
+            ambiguous_fasta = os.path.join(fasta_dir, "ambiguous.fasta.gz")
             demux_ext = "fasta"
         demux_chunk_dir = os.path.join(fasta_dir, "demuxed_chunks")
         ambiguous_chunk_dir = os.path.join(fasta_dir, "ambiguous_chunks")
@@ -205,10 +193,10 @@ def barcode_correction_wrap(
         chunk_demuxed = None
         chunk_ambiguous = None
         if run_demux:
-            chunk_name = f"chunk{chunk_idx:06d}.{demux_ext}"
+            chunk_name = f"chunk{chunk_idx:06d}.{demux_ext}.gz"
             chunk_demuxed = os.path.join(demux_chunk_dir, chunk_name)
             chunk_ambiguous = os.path.join(ambiguous_chunk_dir, chunk_name)
-        corrected_df, _, _ = bc_n_demultiplex(
+        corrected_df = bc_n_demultiplex(
             chunk_pd,
             strand,
             barcode_columns,
@@ -239,8 +227,6 @@ def barcode_correction_wrap(
             demux_ext,
             keep_demux_chunk_outputs_after_combine,
         )
-        _gzip_file(demuxed_fasta)
-        _gzip_file(ambiguous_fasta)
 
     pl.scan_csv(corrected_tsv, separator="\t", infer_schema_length=5000).sink_parquet(
         corrected_parquet_tmp, compression="snappy"

@@ -185,6 +185,7 @@ def preprocess(
     chunk_size: int = typer.Option(
         100000, help="Base chunk size; effective size scales with the read-length distribution."
     ),
+    bin_size: int = typer.Option(500, help="Bin width (bp) for length-binning reads with length < 10 000 bp."),
     threads: int = typer.Option(12, help="Number of CPU threads."),
 ):
     """
@@ -216,7 +217,7 @@ def preprocess(
     """
     from wrappers.preprocess_wrap import preprocess_wrap
 
-    preprocess_wrap(fasta_dir, output_dir, output_base_qual, chunk_size, threads)
+    preprocess_wrap(fasta_dir, output_dir, output_base_qual, chunk_size, bin_size, threads)
 
 
 # ==============================
