@@ -110,20 +110,22 @@ def process_full_length_reads_in_chunks_and_save(
     run_barcode_correction=True,
     run_demux=True,
     chunk_output_dir=None,
+    split_concatenated=False,
 ):
     reads_in_chunk = len(reads)
 
     logger.info(f"Post-processing {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
 
     n_jobs_extract = min(16, reads_in_chunk)
-    chunk_contiguous_annotated_sequences = extract_annotated_full_length_seqs(
-        reads, predictions, model_path_w_CRF, actual_lengths, label_binarizer, seq_order, barcodes, n_jobs_extract
+    chunk_contiguous_annotated_sequences, expanded_read_names, source_indices = extract_annotated_full_length_seqs(
+        reads, predictions, model_path_w_CRF, actual_lengths, label_binarizer, seq_order, barcodes, n_jobs_extract,
+        original_read_names=original_read_names, split_concatenated=split_concatenated,
     )
 
     chunk_df = pd.DataFrame.from_records(
         (
             {
-                "ReadName": original_read_names[i],
+                "ReadName": expanded_read_names[i],
                 "read_length": annotated_read["read_length"],
                 "read": annotated_read["read"],
                 **{
@@ -141,7 +143,7 @@ def process_full_length_reads_in_chunks_and_save(
                     for label in barcodes
                     if label in annotated_read and "Sequences" in annotated_read[label]
                 },
-                "base_qualities": base_qualities[i] if output_fmt == "fastq" else None,
+                "base_qualities": base_qualities[source_indices[i]] if output_fmt == "fastq" else None,
                 "architecture": annotated_read["architecture"],
                 "reason": annotated_read["reason"],
                 "orientation": annotated_read["orientation"],
@@ -290,6 +292,7 @@ def post_process_reads(
     run_barcode_correction=True,
     run_demux=True,
     chunk_output_dir=None,
+    split_concatenated=False,
 ):
     process_full_length_reads_in_chunks_and_save(
         reads,
@@ -317,6 +320,7 @@ def post_process_reads(
         run_barcode_correction,
         run_demux,
         chunk_output_dir,
+        split_concatenated,
     )
 
     gc.collect()  # Clean up memory after processing each chunk

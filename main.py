@@ -396,6 +396,15 @@ def annotate_reads(
             "into the FASTQ header when writing FASTQ."
         ),
     ),
+    split_concatenated: bool = typer.Option(
+        False,
+        help=(
+            "Split concatenated reads into individual fragments.\n\n"
+            "When enabled, reads containing multiple full structural patterns are split\n\n"
+            "into separate valid entries (one per fragment) instead of being marked invalid.\n\n"
+            "Each fragment is independently barcode-corrected and demultiplexed."
+        ),
+    ),
     run_demux: bool = typer.Option(
         False,
         help=(
@@ -492,6 +501,7 @@ def annotate_reads(
         keep_demux_chunk_outputs_after_combine,
         models_dir=models_dir,
         preprocess_dir=preprocess_dir,
+        split_concatenated=split_concatenated,
     )
 
 

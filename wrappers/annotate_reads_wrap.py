@@ -35,6 +35,7 @@ def annotate_reads_wrap(
     keep_demux_chunk_outputs_after_combine=False,
     models_dir=None,
     preprocess_dir=None,
+    split_concatenated=False,
 ):
     from scripts.annotate_reads_helpers import (
         load_libs,
@@ -279,6 +280,7 @@ def annotate_reads_wrap(
                     run_barcode_correction,
                     run_demux,
                     chunk_output_dir,
+                    split_concatenated,
                 )
 
                 if result:

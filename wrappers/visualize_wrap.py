@@ -216,7 +216,7 @@ def visualize_wrap(
         sys.exit(1)
 
     logger.info("Extracting annotated sequences for visualization")
-    annotated_reads = extract_annotated_full_length_seqs(
+    annotated_reads, _, _ = extract_annotated_full_length_seqs(
         selected_reads,
         predictions,
         model_path_w_CRF,

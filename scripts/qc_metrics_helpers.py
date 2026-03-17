@@ -283,15 +283,42 @@ def _write_html_report(path, row_figs, sample_name):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _count_matching_readnames(path, pattern):
+    """Count rows whose ReadName matches a regex pattern (lazy scan)."""
+    if path is None:
+        return 0
+    schema = _probe_schema(path)
+    if "ReadName" not in schema:
+        return 0
+    return (
+        pl.scan_parquet(path)
+        .select("ReadName")
+        .filter(pl.col("ReadName").cast(pl.Utf8).str.contains(pattern))
+        .select(pl.len())
+        .collect()[0, 0]
+    )
+
+
 def _compute_summary(valid_path, invalid_path, vcols):
     """
     Compute total / valid / invalid / demuxed / ambiguous counts.
-    Needs: valid → [cell_id]; invalid → row count only.
-    Returns a plain dict of counts.
+
+    When ``--split-concatenated`` was used, split fragments (``__frag*``)
+    appear in the valid parquet and remainder entries (``__remainder``) in
+    the invalid parquet.  These are separated so the summary reflects
+    physical reads as the base unit.
     """
-    n_valid   = _count_rows(valid_path)
-    n_invalid = _count_rows(invalid_path)
-    n_total   = n_valid + n_invalid
+    n_valid_rows   = _count_rows(valid_path)
+    n_invalid_rows = _count_rows(invalid_path)
+
+    # Detect split concatenated reads by ReadName suffix
+    n_fragments      = _count_matching_readnames(valid_path,   r"__frag\d+$")
+    n_concat_parents = _count_matching_readnames(invalid_path, r"__remainder$")
+
+    has_split        = n_fragments > 0
+    n_valid_natural  = n_valid_rows - n_fragments
+    n_invalid_true   = n_invalid_rows - n_concat_parents
+    n_total_physical = n_valid_natural + n_concat_parents + n_invalid_true
 
     cell_col = _first_present(vcols, ["cell_id", "corrected_CBC"])
     has_cell = cell_col is not None
@@ -302,34 +329,67 @@ def _compute_summary(valid_path, invalid_path, vcols):
         n_ambiguous = cell_df.filter(_expr_is_ambiguous(cell_col)).height
 
     return {
-        "n_total":     n_total,
-        "n_valid":     n_valid,
-        "n_invalid":   n_invalid,
-        "n_demuxed":   n_demuxed,
-        "n_ambiguous": n_ambiguous,
-        "has_cell":    has_cell,
-        "cell_col":    cell_col,
+        "n_total":           n_total_physical,
+        "n_valid":           n_valid_natural,
+        "n_invalid":         n_invalid_true,
+        "n_concat_parents":  n_concat_parents,
+        "n_fragments":       n_fragments,
+        "n_effective_valid": n_valid_natural + n_fragments,
+        "has_split":         has_split,
+        "n_demuxed":         n_demuxed,
+        "n_ambiguous":       n_ambiguous,
+        "has_cell":          has_cell,
+        "cell_col":          cell_col,
     }
 
 
 def _plot_read_architecture(summary, sample_name):
     """
-    Plot 1 — Read Architecture: Total / Valid / Invalid bars.
+    Plot 1 — Read Architecture: Total / Valid / (Concatenated) / Invalid / (Effective Valid).
+
+    When ``--split-concatenated`` produced fragments, two extra bars are shown:
+    *Concatenated* (physical reads that were split) and *Effective Valid*
+    (natural valid + recovered fragments).
     Returns (title, go.Figure, caption).
     """
-    n_total, n_valid, n_invalid = summary["n_total"], summary["n_valid"], summary["n_invalid"]
+    n_total    = summary["n_total"]
+    n_valid    = summary["n_valid"]
+    n_invalid  = summary["n_invalid"]
+    has_split  = summary["has_split"]
+    n_concat   = summary["n_concat_parents"]
+    n_frags    = summary["n_fragments"]
+    n_eff      = summary["n_effective_valid"]
 
     def _pct(n, d):
         return 100.0 * n / d if d > 0 else 0.0
 
-    labels = ["Total", "Valid", "Invalid"]
-    colors = ["#4C78A8", "#54A24B", "#E45756"]
-    counts = [n_total, n_valid, n_invalid]
+    labels = ["Total", "Valid"]
+    colors = ["#4C78A8", "#54A24B"]
+    counts = [n_total, n_valid]
     text   = [
         f"{n_total:,}",
         f"{n_valid:,}<br>({_pct(n_valid, n_total):.1f}%)",
-        f"{n_invalid:,}<br>({_pct(n_invalid, n_total):.1f}%)",
     ]
+
+    if has_split:
+        labels.append("Concatenated")
+        colors.append("#EECA3B")
+        counts.append(n_concat)
+        text.append(
+            f"{n_concat:,}<br>({_pct(n_concat, n_total):.1f}%)"
+            f"<br>\u2192 {n_frags:,} frags"
+        )
+
+    labels.append("Invalid")
+    colors.append("#E45756")
+    counts.append(n_invalid)
+    text.append(f"{n_invalid:,}<br>({_pct(n_invalid, n_total):.1f}%)")
+
+    if has_split:
+        labels.append("Effective Valid")
+        colors.append("#2D8E2D")
+        counts.append(n_eff)
+        text.append(f"{n_eff:,}<br>({_pct(n_eff, n_total):.1f}%)")
 
     fig = go.Figure(go.Bar(
         x=labels, y=counts, text=text,
@@ -345,26 +405,41 @@ def _plot_read_architecture(summary, sample_name):
     )
 
     caption = (
-        "Reads classified by predicted segment order vs. expected library structure."
+        "Reads classified by predicted segment order vs. expected library structure. "
+        "Counts are based on physical reads (not annotation rows)."
         "\n\n"
-        "<b>Valid</b>: all segments in correct order.&nbsp;&nbsp;"
-        "<b>Invalid</b>: unexpected, missing, or out-of-order segments."
-        "\n\n"
+        "<b>Valid</b>: single complete pattern.&nbsp;&nbsp;"
     )
+    if has_split:
+        caption += (
+            "<b>Concatenated</b>: reads split into fragments "
+            "(arrow shows recovered fragment count).&nbsp;&nbsp;"
+        )
+    caption += "<b>Invalid</b>: no identifiable pattern."
+    if has_split:
+        caption += (
+            "&nbsp;&nbsp;<b>Effective Valid</b>: Valid + recovered fragments."
+        )
+    caption += "\n\n"
+
     return "Read Architecture", fig, caption, -0.14
 
 
 def _plot_barcode_assignment(summary, sample_name):
     """
-    Plot 2 — Barcode Assignment: Demuxed / Ambiguous bars (valid reads only).
+    Plot 2 — Barcode Assignment: Demuxed / Ambiguous bars.
+
+    Denominator is ``n_effective_valid`` (natural valid + recovered fragments)
+    when splitting was used, otherwise ``n_valid`` (natural valid only).
     Returns (title, go.Figure, caption), or None when no cell assignment data.
     """
     if not summary["has_cell"]:
         return None
 
-    n_valid, n_demuxed, n_ambiguous = (
-        summary["n_valid"], summary["n_demuxed"], summary["n_ambiguous"]
-    )
+    has_split  = summary["has_split"]
+    n_denom    = summary["n_effective_valid"] if has_split else summary["n_valid"]
+    n_demuxed  = summary["n_demuxed"]
+    n_ambiguous = summary["n_ambiguous"]
 
     def _pct(n, d):
         return 100.0 * n / d if d > 0 else 0.0
@@ -373,8 +448,8 @@ def _plot_barcode_assignment(summary, sample_name):
     colors = ["#72B7B2", "#F58518"]
     counts = [n_demuxed, n_ambiguous]
     text   = [
-        f"{n_demuxed:,}<br>({_pct(n_demuxed, n_valid):.1f}%)",
-        f"{n_ambiguous:,}<br>({_pct(n_ambiguous, n_valid):.1f}%)",
+        f"{n_demuxed:,}<br>({_pct(n_demuxed, n_denom):.1f}%)",
+        f"{n_ambiguous:,}<br>({_pct(n_ambiguous, n_denom):.1f}%)",
     ]
 
     fig = go.Figure(go.Bar(
@@ -390,11 +465,13 @@ def _plot_barcode_assignment(summary, sample_name):
         plot_bgcolor="white", paper_bgcolor="white",
     )
 
+    denom_label = "effective valid reads (valid + recovered fragments)" if has_split else "valid reads"
     caption = (
-        "From valid reads, each is assigned to a cell barcode via Levenshtein distance."
+        f"From {denom_label}, each is assigned to a cell barcode via Levenshtein distance."
         "\n\n"
     )
-    return "Barcode Assignment (valid reads)", fig, caption, -0.14
+    title = "Barcode Assignment (effective valid)" if has_split else "Barcode Assignment (valid reads)"
+    return title, fig, caption, -0.14
 
 
 def _plot_invalid_reasons(invalid_path):
@@ -411,7 +488,16 @@ def _plot_invalid_reasons(invalid_path):
     if "reason" not in icols:
         return None
 
-    df = _scan_cols(invalid_path, ["reason"]).drop_nulls()
+    load_cols = ["reason"] + (["ReadName"] if "ReadName" in icols else [])
+    df = _scan_cols(invalid_path, load_cols).drop_nulls(subset=["reason"])
+    if df.is_empty():
+        return None
+
+    # Exclude remainder entries from split-concatenated reads — they are
+    # bookkeeping rows whose parent concatenated reason already appears
+    # in the chart via the true invalid entries.
+    if "ReadName" in df.columns:
+        df = df.filter(~pl.col("ReadName").cast(pl.Utf8).str.contains(r"__remainder$"))
     if df.is_empty():
         return None
 
@@ -427,10 +513,22 @@ def _plot_invalid_reasons(invalid_path):
 
     _MAX_LABEL = 60   # truncate long reason strings for display
 
-    def _label(r):
-        return r if len(r) <= _MAX_LABEL else r[:_MAX_LABEL - 1] + "…"
+    def _unique_labels(reasons):
+        """Truncate long reasons and disambiguate collisions with a counter."""
+        raw = [r if len(r) <= _MAX_LABEL else r[:_MAX_LABEL - 1] + "…" for r in reasons]
+        seen: dict[str, int] = {}
+        out = []
+        for lbl in raw:
+            count = seen.get(lbl, 0)
+            seen[lbl] = count + 1
+            out.append(f"{lbl} ({count + 1})" if count else lbl)
+        # Go back and fix the first occurrence if it turned out to have duplicates
+        for i, lbl in enumerate(raw):
+            if seen[lbl] > 1 and out[i] == lbl:
+                out[i] = f"{lbl} (1)"
+        return out
 
-    labels  = [_label(r) for r in all_reasons]
+    labels  = _unique_labels(all_reasons)
     pcts    = [100 * c / total if total else 0 for c in all_counts]
 
     # Pre-slice for each preset; cap at actual count
@@ -584,17 +682,18 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
         return None
 
     _COLORS = {
-        "Total":             "#888888",
-        "Invalid":           "#E45756",
-        "Valid":             "#54A24B",
-        "Valid — Demuxed":   "#72B7B2",
-        "Valid — Ambiguous": "#F58518",
+        "Total":              "#888888",
+        "Invalid":            "#E45756",
+        "Valid":              "#54A24B",
+        "Valid — from split": "#8BC34A",
+        "Valid — Demuxed":    "#72B7B2",
+        "Valid — Ambiguous":  "#F58518",
     }
     _NBIN_PRESETS = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000,
                      200_000, 300_000, 400_000, 500_000, 1_000_000]
 
     cell_col  = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
-    load_cols = ["read_length"] + ([cell_col] if cell_col else [])
+    load_cols = ["read_length", "ReadName"] + ([cell_col] if cell_col else [])
     valid_df  = _scan_cols(valid_path,   load_cols)       if valid_path   else pl.DataFrame()
     inv_df    = _scan_cols(invalid_path, ["read_length"]) if invalid_path else pl.DataFrame()
 
@@ -620,6 +719,12 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
         group_dfs["Invalid"] = inv_df.select("read_length")
     if not valid_df.is_empty():
         group_dfs["Valid"] = valid_df.select("read_length")
+    # "Valid — from split": fragment entries recovered from concatenated reads
+    if not valid_df.is_empty() and "ReadName" in valid_df.columns:
+        split_df = valid_df.filter(pl.col("ReadName").cast(pl.Utf8).str.contains(r"__frag\d+$"))
+        if not split_df.is_empty():
+            group_dfs["Valid — from split"] = split_df.select("read_length")
+
     if cell_col and not valid_df.is_empty() and cell_col in valid_df.columns:
         cell_utf8 = pl.col(cell_col).cast(pl.Utf8)
         vd_df = valid_df.filter(
@@ -741,6 +846,8 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
         "<b>Total</b>: all reads (valid + invalid).&nbsp;&nbsp;"
         "<b>Invalid</b>: incorrect segment architecture.&nbsp;&nbsp;"
         "<b>Valid</b>: correct segment architecture.&nbsp;&nbsp;"
+        "<b>Valid — from split</b>: fragments recovered from concatenated reads "
+        "(subset of Valid; only shown when splitting was used).&nbsp;&nbsp;"
         "<b>Valid — Demuxed</b>: unambiguously assigned to a cell.&nbsp;&nbsp;"
         "<b>Valid — Ambiguous</b>: ambiguous cell assignment."
     )
