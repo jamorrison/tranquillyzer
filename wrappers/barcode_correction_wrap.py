@@ -1,92 +1,6 @@
 import logging
-import os
-from itertools import chain
-import shutil
-
-import pandas as pd
-import polars as pl
-
-from scripts.correct_barcodes import bc_n_demultiplex
-from scripts.trained_models import seq_orders
 
 logger = logging.getLogger(__name__)
-
-
-def _scan_annotations_in_chunks(input_file, chunk_size):
-    if input_file.endswith(".parquet"):
-        lazy_df = pl.scan_parquet(input_file)
-    else:
-        lazy_df = pl.scan_csv(input_file, separator="\t", infer_schema_length=5000)
-
-    offset = 0
-    while True:
-        chunk = lazy_df.slice(offset, chunk_size).collect()
-        if chunk.height == 0:
-            break
-        yield chunk
-        offset += chunk_size
-
-
-def _combine_demux_chunk_outputs(
-    demux_chunk_dir,
-    ambiguous_chunk_dir,
-    demuxed_fasta,
-    ambiguous_fasta,
-    ext,
-    keep_demux_chunk_outputs_after_combine,
-):
-    def _sorted_files(path):
-        if not os.path.isdir(path):
-            return []
-        files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(f".{ext}.gz")]
-        files.sort()
-        return files
-
-    def _concat(src_files, out_path):
-        if not src_files:
-            return
-        with open(out_path, "wb") as out_fh:
-            for src in src_files:
-                with open(src, "rb") as src_fh:
-                    shutil.copyfileobj(src_fh, out_fh)
-
-    demux_files = _sorted_files(demux_chunk_dir)
-    amb_files = _sorted_files(ambiguous_chunk_dir)
-    _concat(demux_files, demuxed_fasta)
-    _concat(amb_files, ambiguous_fasta)
-    if not keep_demux_chunk_outputs_after_combine:
-        for path in demux_files + amb_files:
-            os.remove(path)
-
-
-def _has_usable_base_qualities(lazy_df):
-    schema = lazy_df.collect_schema().names()
-    if "base_qualities" not in schema:
-        return False
-    probe = (
-        lazy_df.select(
-            (
-                pl.col("base_qualities").is_not_null() & (pl.col("base_qualities").cast(pl.Utf8).str.len_chars() > 0)
-            )
-            .any()
-            .alias("has_bq")
-        )
-        .collect()
-        .item()
-    )
-    return bool(probe)
-
-
-def _infer_barcode_columns(columns, whitelist_df, seq_order_file, model_name):
-    if seq_order_file:
-        _, _, barcodes, _, strand = seq_orders(seq_order_file, model_name)
-        if barcodes:
-            return barcodes, strand
-
-    barcode_seq_cols = {col.replace("_Sequences", "") for col in columns if col.endswith("_Sequences")}
-    whitelist_cols = set(whitelist_df.columns.tolist())
-    inferred = [col for col in whitelist_df.columns if col in barcode_seq_cols and col in whitelist_cols]
-    return inferred, "fwd"
 
 
 def barcode_correction_wrap(
@@ -105,6 +19,25 @@ def barcode_correction_wrap(
     run_demux,
     keep_demux_chunk_outputs_after_combine=False,
 ):
+    """Orchestrate barcode correction on annotated reads with optional demux."""
+    from scripts.barcode_correction import (
+        load_libs,
+        _scan_annotations_in_chunks,
+        _combine_demux_chunk_outputs,
+        _has_usable_base_qualities,
+        _infer_barcode_columns,
+    )
+
+    (
+        os,
+        shutil,
+        pd,
+        pl,
+        chain,
+        bc_n_demultiplex,
+        seq_orders,
+    ) = load_libs()
+
     os.makedirs(output_dir, exist_ok=True)
 
     if input_file is None:
@@ -136,7 +69,7 @@ def barcode_correction_wrap(
     if first_chunk is None or first_chunk.height == 0:
         raise ValueError(f"No rows found in annotation file: {input_file}")
 
-    barcode_columns, strand = _infer_barcode_columns(first_chunk.columns, whitelist_df, seq_order_file, model_name)
+    barcode_columns, strand = _infer_barcode_columns(first_chunk.columns, whitelist_df, seq_order_file, model_name, seq_orders)
     if not barcode_columns:
         raise ValueError(
             "Could not infer barcode columns. Provide --seq-order-file/--model-name or ensure whitelist columns "

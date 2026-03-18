@@ -37,7 +37,8 @@ def annotate_reads_wrap(
     preprocess_dir=None,
     split_concatenated=False,
 ):
-    from scripts.annotate_reads_helpers import (
+    """Orchestrate the multi-pass annotation pipeline with optional barcode correction and demux."""
+    from scripts.annotate_reads import (
         load_libs,
         collect_prediction_stats,
         _empty_results_queue,
@@ -65,6 +66,7 @@ def annotate_reads_wrap(
         model_predictions,
         post_process_reads,
         seq_orders,
+        get_valid_structures,
         estimate_average_read_length_from_bin,
         calculate_total_rows,
         convert_tsv_to_parquet,
@@ -89,19 +91,17 @@ def annotate_reads_wrap(
     utils_dir = os.path.abspath(utils_dir)
 
     if seq_order_file is None:
-        seq_order_file = os.path.join(utils_dir, "seq_orders.tsv")
+        seq_order_file = os.path.join(utils_dir, "seq_orders.yaml")
 
     def _available_models(seq_orders_path):
-        """Return list of model names defined in seq_orders.tsv (best-effort)."""
+        """Return list of model names defined in seq_orders.yaml (best-effort)."""
+        import yaml
         models = []
         try:
             with open(seq_orders_path, "r") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    model_id = (line.strip().replace("'", "").replace('"', "").split("\t")[0]).strip()
-                    if model_id:
-                        models.append(model_id)
+                config = yaml.safe_load(f)
+            if isinstance(config, dict):
+                models = list(config.keys())
         except Exception:
             pass
         return models
@@ -126,6 +126,7 @@ def annotate_reads_wrap(
         available = _available_models(seq_order_file)
         suffix = f" Available models: {', '.join(available)}" if available else " No models found in seq_orders file."
         raise ValueError(f"Model '{model_name}' not found in seq_orders file: {seq_order_file}.{suffix}")
+    valid_structs = get_valid_structures(seq_order_file, model_name)
     if run_barcode_correction:
         if not whitelist_file:
             raise ValueError("whitelist_file is required when run_barcode_correction=True")
@@ -281,6 +282,7 @@ def annotate_reads_wrap(
                     run_demux,
                     chunk_output_dir,
                     split_concatenated,
+                    valid_structs,
                 )
 
                 if result:

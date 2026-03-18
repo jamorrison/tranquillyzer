@@ -27,9 +27,10 @@ def qc_metrics_wrap(
     sample_name,
     read_len_bin_width,
 ):
+    """Generate QC metrics report from annotation outputs."""
     import os
 
-    from scripts.qc_metrics_helpers import (
+    from scripts.qc_metrics import (
         _find_file,
         _probe_schema,
         _detect_barcode_types,

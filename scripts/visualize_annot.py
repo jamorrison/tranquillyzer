@@ -19,6 +19,7 @@ def visualize_sequence_annotations(
     header_max_length=100,
     max_chunks_per_page=50,
 ):
+    """Create a matplotlib figure showing per-position segment annotations for a read."""
     if not read:  # Check for empty reads
         print(f"Warning: Empty read for {read_name}. Skipping this read.")
         return []
@@ -121,6 +122,7 @@ def visualize_sequence_annotations(
 def save_plots_to_pdf(
     sequences, annotated_reads, read_names, filename, colors, chars_per_line=100, max_chunks_per_page=50
 ):
+    """Generate annotation plots for multiple reads and save them to a PDF."""
     with PdfPages(filename) as pdf:
         for sequence, annotated_read, read_name in zip(sequences, annotated_reads, read_names):
             if not sequence:  # Skip if the sequence is empty

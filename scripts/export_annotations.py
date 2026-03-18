@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_first_int(value):
+    """Extract the first integer from a comma-separated string, or return None."""
     if value is None or pd.isna(value):
         return None
     token = str(value).split(",")[0].strip()
@@ -25,6 +26,7 @@ def _parse_first_int(value):
 
 
 def _bulk_export_record(row, output_fmt, include_polya=False):
+    """Build a FASTA/FASTQ record from annotation cDNA coordinates."""
     cDNA_start = _parse_first_int(row.get("cDNA_Starts"))
     cDNA_end = _parse_first_int(row.get("cDNA_Ends"))
     read = row.get("read")
@@ -73,6 +75,7 @@ def _bulk_export_record(row, output_fmt, include_polya=False):
 
 
 def _chunk_demux_paths(chunk_output_dir, pass_num, bin_name, chunk_idx, output_fmt):
+    """Return (demuxed, ambiguous) output paths for a given chunk."""
     if chunk_output_dir is None:
         return None, None
     ext = "fastq" if output_fmt == "fastq" else "fasta"
@@ -111,7 +114,9 @@ def process_full_length_reads_in_chunks_and_save(
     run_demux=True,
     chunk_output_dir=None,
     split_concatenated=False,
+    valid_structures=None,
 ):
+    """Post-process predictions into annotated reads and write chunk outputs."""
     reads_in_chunk = len(reads)
 
     logger.info(f"Post-processing {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
@@ -120,6 +125,7 @@ def process_full_length_reads_in_chunks_and_save(
     chunk_contiguous_annotated_sequences, expanded_read_names, source_indices = extract_annotated_full_length_seqs(
         reads, predictions, model_path_w_CRF, actual_lengths, label_binarizer, seq_order, barcodes, n_jobs_extract,
         original_read_names=original_read_names, split_concatenated=split_concatenated,
+        valid_structures=valid_structures,
     )
 
     chunk_df = pd.DataFrame.from_records(
@@ -293,7 +299,9 @@ def post_process_reads(
     run_demux=True,
     chunk_output_dir=None,
     split_concatenated=False,
+    valid_structures=None,
 ):
+    """Wrapper around process_full_length_reads_in_chunks_and_save with memory cleanup."""
     process_full_length_reads_in_chunks_and_save(
         reads,
         read_names,
@@ -321,6 +329,7 @@ def post_process_reads(
         run_demux,
         chunk_output_dir,
         split_concatenated,
+        valid_structures,
     )
 
     gc.collect()  # Clean up memory after processing each chunk

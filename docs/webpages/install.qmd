@@ -139,7 +139,7 @@ The CRF model, on the other hand, requires the following files:
 ```bash
 <model_name>_w_CRF.h5
 <model_name>_w_CRF_lbl_bin.pkl
-<model_name>_w_CRF_params.json
+<model_name>_w_CRF_params.yaml
 ```
 
 These files are needed for the annotation and visualization functionality.

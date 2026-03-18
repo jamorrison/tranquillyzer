@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_cb_umi(read_name: str):
+    """Extract cell barcode and UMI from a BAM alignment's CB and UR tags."""
     parts = read_name.split("_")
     if len(parts) >= 3:
         # CBC and UMI are at the end
@@ -51,11 +52,13 @@ class BKTree:
         children: dict  # distance -> Node
 
     def __init__(self, dist_fn):
+        """Initialize an empty BK-tree with the given distance function."""
         self.root = None
         self.dist_fn = dist_fn
         self.max_children = 0
 
     def add(self, key: str):
+        """Insert a word into the BK-tree."""
         if self.root is None:
             self.root = BKTree.Node(key, {})
             return
@@ -119,6 +122,7 @@ class Deduper:
         stranded: bool,
         position_tolerance: int = 10,
     ):
+        """Initialize the deduplicator with a UMI distance threshold and CB tag name."""
         self.umi_ld = umi_ld
         self.per_cell = per_cell
         self.stranded = stranded
@@ -133,20 +137,24 @@ class Deduper:
         self.dup_count = 0
 
     def _key_of(self, chrom: str, cb: str, strand: str):
+        """Return the deduplication grouping key for an alignment."""
         if self.per_cell:
             return (chrom, cb, strand) if self.stranded else (chrom, cb)
         return (chrom, strand) if self.stranded else (chrom,)
 
     def _bins(self, start: int, end: int):
+        """Return or create the BK-tree bins dict for a grouping key."""
         return start // self.bin, end // self.bin
 
     def _mk_bktree(self):
+        """Create a new BK-tree seeded with the given UMI."""
         def df(a, b, cutoff=self.umi_ld):
             return _umi_dist(a, b, cutoff)
 
         return BKTree(df)
 
     def evict_before(self, chrom_key, current_start_bin: int):
+        """Remove cached bins for positions before the given reference position."""
         keep_from = max(0, current_start_bin - 2)
         dq = self.active_start_bins[chrom_key]
         while dq and dq[0] < keep_from:
@@ -300,6 +308,7 @@ def process_region(
 
 # Merge temp BAMs in @SQ order
 def merge_in_sq_order(output_bam: str, temp_paths_in_order, template_bam: str, threads_bgzf: int):
+    """Merge sorted BAM shards in reference sequence order into a single output."""
     with pysam.AlignmentFile(template_bam, "rb") as template:
         hdr = template.header.to_dict()
         hdr.setdefault("HD", {})

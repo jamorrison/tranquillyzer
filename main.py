@@ -43,6 +43,7 @@ except ImportError:
 
 
 def get_version() -> str:
+    """Retrieve the package version from importlib.metadata."""
     try:
         return version("tranquillyzer")
     except PackageNotFoundError:
@@ -76,7 +77,7 @@ _HELP_MODEL_NAME = (
 )
 
 _HELP_SEQ_ORDER_FILE = (
-    "Path to [cyan]seq_orders.tsv[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
+    "Path to [cyan]seq_orders.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
 )
 
 _HELP_MODELS_DIR = (
@@ -104,6 +105,7 @@ _HELP_MODEL_TYPE_ANNOT = (
 
 
 def version_callback(value: bool) -> None:
+    """Print the version banner and exit when --version is passed."""
     if value:
         typer.echo(f"tranquillyzer {get_version()}")
         raise typer.Exit()
@@ -874,14 +876,19 @@ def simulate_data(
         ),
     ),
     transcriptome: str = typer.Option(None, help="Transcriptome FASTA. If omitted, random transcripts are generated."),
-    invalid_fraction: float = typer.Option(0.3, help="Fraction of reads to synthesize as invalid."),
+    max_trunc_5p: int = typer.Option(0, help="Max bases to truncate from 5' end when no random flank present. 0 disables."),
+    max_trunc_3p: int = typer.Option(0, help="Max bases to truncate from 3' end when no random flank present. 0 disables."),
+    min_spacer: int = typer.Option(0, help="Minimum length of random cDNA spacer between concatenated read fragments."),
+    max_spacer: int = typer.Option(50, help="Maximum length of random cDNA spacer between concatenated read fragments."),
 ):
     """
     Generate synthetic labeled reads for training, and serialize to PKL.
 
     The generator uses a model-specific segment order/pattern and either
     provided transcripts or synthetic random transcripts to create realistic
-    reads with configurable error profiles.
+    reads with configurable error profiles. Training structure proportions
+    (valid reads, corrupted reads, concatenated reads, etc.) are defined in
+    the seq_orders.yaml config file under `training_structures`.
 
     Args:
         model_name: Model key for segment order specification.
@@ -897,7 +904,6 @@ def simulate_data(
         threads: CPU threads used within the generator.
         rc: If True, include reverse complements (doubling dataset size).
         transcriptome: Optional FASTA of transcripts; otherwise random.
-        invalid_fraction: Fraction of reads to synthesize as invalid.
 
     Outputs:
         `<output_dir>/simulated_data/reads.pkl`
@@ -920,7 +926,10 @@ def simulate_data(
         threads,
         rc,
         transcriptome,
-        invalid_fraction,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
     )
 
 
@@ -934,7 +943,7 @@ def train_model(
     model_name: str,
     output_dir: str,
     param_file: str = typer.Option(
-        None, help="Path to [cyan]training_params.tsv[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
+        None, help="Path to [cyan]training_params.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
     ),
     training_seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     num_val_reads: int = typer.Option(20, help="Number of validation reads to synthesize."),
@@ -954,7 +963,6 @@ def train_model(
         ),
     ),
     transcriptome: str = typer.Option(None, help="Transcriptome FASTA. If omitted, random transcripts are generated."),
-    invalid_fraction: float = typer.Option(0.3, help="Fraction of reads to synthesize as invalid."),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
     target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS)] = 1_200_000,
     vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom."),
@@ -964,7 +972,7 @@ def train_model(
     """
     Grid-train model variants from parameter table and export artifacts.
 
-    For a given `model_name`, this reads `utils/training_params.tsv`,
+    For a given `model_name`, this reads `utils/training_params.yaml`,
     enumerates parameter combinations, trains each variant using a distributed
     strategy when available, and saves:
       - model weights / SavedModel
@@ -972,8 +980,12 @@ def train_model(
       - training history
       - validation visualization PDF on a small synthetic set
 
+    Training structure proportions (valid reads, corrupted reads, concatenated
+    reads, etc.) are defined in the seq_orders.yaml config file under
+    `training_structures`.
+
     Args:
-        model_name: Column in `training_params.tsv` whose parameter grid to use.
+        model_name: Key in `training_params.yaml` whose parameter grid to use.
         output_dir: Base directory to write per-variant subfolders and artifacts.
         num_val_reads: Number of validation reads to synthesize.
         mismatch_rate / insertion_rate / deletion_rate: Error model for validation set.
@@ -983,7 +995,6 @@ def train_model(
         threads: CPU threads for validation read synthesis.
         rc: Include reverse complements for validation set.
         transcriptome: Optional validation FASTA; else random transcripts.
-        invalid_fraction: Fraction of invalid reads to generate for validation set.
         gpu_mem / target_tokens / vram_headroom / min_batch_size / max_batch_size:
             Parameters to guide validation inference batch sizing (plot stage).
 
@@ -994,7 +1005,7 @@ def train_model(
         - `<model_name>_<idx>_val_viz.pdf`
 
     Raises:
-        FileNotFoundError: If `training_params.tsv` missing or `model_name` not present.
+        FileNotFoundError: If `training_params.yaml` missing or `model_name` not present.
         RuntimeError: If training fails.
     """
     from wrappers.train_model_wrap import train_model_wrap
@@ -1015,31 +1026,6 @@ def train_model(
         threads,
         rc,
         transcriptome,
-        invalid_fraction,
-        gpu_mem,
-        target_tokens,
-        vram_headroom,
-        min_batch_size,
-        max_batch_size,
-    )
-
-    train_model_wrap(
-        model_name,
-        output_dir,
-        param_file,
-        training_seq_orders_file,
-        num_val_reads,
-        mismatch_rate,
-        insertion_rate,
-        deletion_rate,
-        min_cDNA,
-        max_cDNA,
-        polyT_error_rate,
-        max_insertions,
-        threads,
-        rc,
-        transcriptome,
-        invalid_fraction,
         gpu_mem,
         target_tokens,
         vram_headroom,

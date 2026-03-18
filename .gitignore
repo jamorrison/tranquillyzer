@@ -11,6 +11,8 @@ __pycache__/
 # Unwanted hidden files
 ._*
 
+CLAUDE.md
+
 # Samba-related files
 .smbdelete*
 

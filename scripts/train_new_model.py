@@ -40,14 +40,17 @@ def encode_sequence(sequence):
 
 class DynamicPaddingDataGenerator(Sequence):
     def __init__(self, X, Y, batch_size, label_binarizer):
+        """Initialize the data generator with sequences, labels, and batch size."""
         self.X = [encode_sequence(seq) for seq in X]
         self.Y = [label_binarizer.transform(labels) for labels in Y]
         self.batch_size = batch_size
 
     def __len__(self):
+        """Return the number of batches per epoch."""
         return int(np.ceil(len(self.X) / self.batch_size))
 
     def __getitem__(self, idx):
+        """Return a padded (X, y) batch for the given index."""
         batch_X = self.X[idx * self.batch_size : (idx + 1) * self.batch_size]
         batch_Y = self.Y[idx * self.batch_size : (idx + 1) * self.batch_size]
         max_len = max(len(x) for x in batch_X)
@@ -63,6 +66,7 @@ def ont_read_annotator(
     conv_layers=3,
     conv_filters=260,
     conv_kernel_size=25,
+    dilation_rates=None,
     lstm_layers=1,
     lstm_units=128,
     bidirectional=True,
@@ -72,12 +76,19 @@ def ont_read_annotator(
     regularization=0.01,
     learning_rate=0.01,
 ):
+    """Build the CNN-LSTM or CNN-LSTM-CRF annotation model."""
+    if dilation_rates is None:
+        dilation_rates = [1] * conv_layers
+    assert len(dilation_rates) == conv_layers, (
+        f"dilation_rates length ({len(dilation_rates)}) must match conv_layers ({conv_layers})"
+    )
     inputs = Input(shape=(None,), dtype="int32", name="input_tokens")
     x = Embedding(vocab_size, embedding_dim, name="embedding")(inputs)
     for i in range(conv_layers):
         x = Conv1D(
             filters=conv_filters,
             kernel_size=conv_kernel_size,
+            dilation_rate=dilation_rates[i],
             activation="relu",
             padding="same",
             kernel_regularizer=l2(regularization),

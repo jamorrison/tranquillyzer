@@ -4,6 +4,7 @@ logger = logging.getLogger(__name__)
 
 
 def dedup_wrap(input_dir, lv_threshold, stranded, per_cell, threads):
+    """Run UMI-based deduplication on an aligned BAM file."""
     import os
     import time
     import resource

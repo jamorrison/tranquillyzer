@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def plot_read_len_distr(parquet_dir, output_dir):
+    """Generate and save a read-length distribution histogram."""
     os.makedirs(output_dir, exist_ok=True)
     parquet_files = [
         os.path.join(parquet_dir, f)

@@ -18,6 +18,7 @@ def _labels_match(a, b):
 
 
 def collapse_labels(arr, read_length):
+    """Collapse consecutive identical per-position labels into (label, start, end) spans."""
     read = arr[0:read_length]
     collapsed_array = []
     count_dict = {}
@@ -77,51 +78,63 @@ def flexible_sliding_match(array, pattern):
     return matches
 
 
-def check_order(collapsed_array, count_dict, expected_order):
-    polyA = "polyA" if "polyA" in expected_order else "polyT"
-    expected_order_wo_polyA = [x for x in expected_order if x != polyA]
+def check_order(collapsed_array, count_dict, expected_orders):
+    """Check if collapsed_array matches ANY of the expected orders.
 
-    match_sets = [
-        ("+", expected_order),
-        ("+", expected_order_wo_polyA),
-        ("-", expected_order[::-1]),
-        ("-", expected_order_wo_polyA[::-1]),
-    ]
+    Uses unified multi-pattern matching so different fragments in a
+    concatenated read can match different valid structures.
 
+    Args:
+        expected_orders: list of acceptable segment orders (list of lists).
+    """
+    # 1. Generate all candidate matches from all patterns/orientations
+    candidates = []
+    for expected_order in expected_orders:
+        for orientation, pattern in [("+", expected_order), ("-", expected_order[::-1])]:
+            matches = flexible_sliding_match(collapsed_array, pattern)
+            for match_start, match_end in matches:
+                candidates.append((match_start, match_end, orientation, len(pattern)))
+
+    if not candidates:
+        reason = "Unexpected pattern: [" + "_".join(collapsed_array) + "]"
+        return False, "", reason, []
+
+    # 2. Sort: longer patterns first (more specific), then by start position
+    candidates.sort(key=lambda x: (-x[3], x[0]))
+
+    # 3. Greedy non-overlapping selection (boundary-only overlap allowed)
+    matched_positions = set()
+    match_details = []
     all_orientations = {}
     first_orientation = ""
-    match_details = []
-    matched_positions = set()
 
-    for orientation, pattern in match_sets:
-        matches = flexible_sliding_match(collapsed_array, pattern)
-        for match_start, match_end in matches:
-            region = set(range(match_start, match_end + 1))
-            if region & matched_positions:
-                continue
-            matched_positions.update(region)
-            if not first_orientation:
-                first_orientation = orientation
-            all_orientations[orientation] = all_orientations.get(orientation, 0) + 1
-            match_details.append((match_start, match_end, orientation))
+    for match_start, match_end, orientation, pat_len in candidates:
+        region = set(range(match_start, match_end + 1))
+        overlap = region & matched_positions
+        if overlap and not overlap <= {match_start, match_end}:
+            continue
+        matched_positions.update(region)
+        if not first_orientation:
+            first_orientation = orientation
+        all_orientations[orientation] = all_orientations.get(orientation, 0) + 1
+        match_details.append((match_start, match_end, orientation))
 
-    if all_orientations:
-        total = sum(all_orientations.values())
-        orientation = first_orientation
-        breakdown = ", ".join(f"{k}:{v}" for k, v in all_orientations.items())
+    # 4. Sort match_details by position for consistent downstream processing
+    match_details.sort(key=lambda x: x[0])
 
-        unmatched = [label for i, label in enumerate(collapsed_array) if i not in matched_positions and label != "cDNA"]
-        extra_info = f" — extra segments: [{'_'.join(unmatched)}]" if unmatched else ""
+    # 5. Build result
+    total = sum(all_orientations.values())
+    orientation = first_orientation
+    breakdown = ", ".join(f"{k}:{v}" for k, v in all_orientations.items())
 
-        if total == 1 and not unmatched:
-            return True, orientation, "valid", match_details
-        else:
-            reason = f"concatenated reads x{total} ({breakdown}){extra_info}"
-            return False, orientation, reason, match_details
+    unmatched = [label for i, label in enumerate(collapsed_array) if i not in matched_positions and label != "cDNA"]
+    extra_info = f" — extra segments: [{'_'.join(unmatched)}]" if unmatched else ""
 
-    # No match at all — fallback
-    reason = "Unexpected pattern: [" + "_".join(collapsed_array) + "]"
-    return False, "", reason, []
+    if total == 1 and not unmatched:
+        return True, orientation, "valid", match_details
+    else:
+        reason = f"concatenated reads x{total} ({breakdown}){extra_info}"
+        return False, orientation, reason, match_details
 
 
 # =================== split concatenated reads =================== #
@@ -174,7 +187,8 @@ def _build_fragment_annotation(read, read_length, collapsed_array, indices_dict,
 
 
 def process_full_len_reads(data, barcodes, label_binarizer, model_path_w_CRF, split_concatenated=False):
-    read, prediction, read_length, seq_order = data
+    """Process a batch of reads: collapse labels, validate structure, extract annotations."""
+    read, prediction, read_length, seq_order, valid_structs = data
 
     if model_path_w_CRF:
         prediction = np.asarray(prediction)
@@ -204,7 +218,7 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path_w_CRF, sp
         if _poly_canonical in indices_dict:
             indices_dict[_poly_canonical].sort()
 
-    order_match, order, reasons, match_details = check_order(collapsed_array, count_dict, seq_order)
+    order_match, order, reasons, match_details = check_order(collapsed_array, count_dict, valid_structs)
 
     # --- Split concatenated reads into individual fragments ---
     if not order_match and split_concatenated and match_details:
@@ -310,9 +324,12 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path_w_CRF, sp
 
 def extract_annotated_full_length_seqs(
     new_data, predictions, model_path_w_CRF, read_lengths, label_binarizer, seq_order, barcodes, n_jobs,
-    original_read_names=None, split_concatenated=False,
+    original_read_names=None, split_concatenated=False, valid_structures=None,
 ):
-    data = [(new_data[i], predictions[i], read_lengths[i], seq_order) for i in range(len(new_data))]
+    """Extract annotated sequences from predictions using label binarizer and seq order."""
+    if valid_structures is None:
+        valid_structures = [seq_order]
+    data = [(new_data[i], predictions[i], read_lengths[i], seq_order, valid_structures) for i in range(len(new_data))]
 
     raw_results = []
 

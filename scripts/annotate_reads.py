@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _has_usable_base_qualities_in_parquets(parquet_files, pl, sample_rows=5000):
+    """Check if any parquet file contains non-null base quality scores."""
     for parquet_file in parquet_files:
         try:
             sample_df = pl.scan_parquet(parquet_file).limit(sample_rows).collect()
@@ -35,11 +36,13 @@ CHUNK_FILE_RE = re.compile(
 
 
 def _save_checkpoint(checkpoint_file, pass_num, bin_name, chunk_idx, chunk_size):
+    """Write checkpoint state (pass, bin, chunk, chunk_size) to file."""
     with open(checkpoint_file, "w") as fh:
         fh.write(f"{pass_num}\t{bin_name}\t{int(chunk_idx)}\t{int(chunk_size)}\n")
 
 
 def _load_checkpoint(checkpoint_file, expected_chunk_size=None):
+    """Load and validate checkpoint from file, returning (pass, bin, chunk) or None."""
     if not os.path.exists(checkpoint_file):
         return None
     with open(checkpoint_file, "r") as fh:
@@ -84,6 +87,7 @@ def _load_checkpoint(checkpoint_file, expected_chunk_size=None):
 
 
 def _chunk_key_from_filename(name, bin_order):
+    """Extract a sortable (pass, bin_order, bin, chunk) key from a chunk filename."""
     m = CHUNK_FILE_RE.match(name)
     if not m:
         return None
@@ -94,10 +98,12 @@ def _chunk_key_from_filename(name, bin_order):
 
 
 def _done_marker_path(chunk_output_dir, pass_num, bin_name, chunk_idx):
+    """Return the path to the done-marker file for a given chunk."""
     return os.path.join(chunk_output_dir, "done", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.done")
 
 
 def _cleanup_from_checkpoint(chunk_output_dir, checkpoint_tuple, bin_order):
+    """Remove chunk output files at or after the checkpoint position."""
     if checkpoint_tuple is None:
         return
     cp_pass, cp_bin, cp_chunk = checkpoint_tuple
@@ -115,6 +121,7 @@ def _cleanup_from_checkpoint(chunk_output_dir, checkpoint_tuple, bin_order):
 
 
 def _cleanup_annotation_outputs_for_fresh_start(output_dir, checkpoint_file):
+    """Remove all annotation output files and directories for a clean restart."""
     paths_to_remove = [
         os.path.join(output_dir, "annotation_chunks"),
         os.path.join(output_dir, "annotations_valid_chunks"),
@@ -150,6 +157,7 @@ def _convert_chunk_outputs(
     pl,
     chunk_size,
 ):
+    """Convert chunk TSV outputs to Parquet and optionally combine into final files."""
     def _sorted_chunk_files(path, suffix):
         if not os.path.isdir(path):
             return []
@@ -228,6 +236,7 @@ def _combine_demux_chunk_outputs(
     output_fmt,
     keep_demux_chunk_outputs_after_combine,
 ):
+    """Concatenate per-chunk demux gzip files into final demuxed/ambiguous outputs."""
     ext = "fastq" if output_fmt == "fastq" else "fasta"
     demux_chunk_dir = os.path.join(chunk_output_dir, "demuxed_chunks")
     ambiguous_chunk_dir = os.path.join(chunk_output_dir, "ambiguous_chunks")
@@ -271,6 +280,7 @@ def _combine_demux_chunk_outputs(
 
 
 def load_libs():
+    """Lazily import and return libraries needed by the annotation pipeline."""
     import os
     import gc
     import sys
@@ -292,7 +302,7 @@ def load_libs():
         estimate_average_read_length_from_bin,
     )
     from scripts.preprocess_reads import convert_tsv_to_parquet
-    from scripts.trained_models import seq_orders
+    from scripts.trained_models import seq_orders, get_valid_structures
     from scripts.available_gpus import log_gpus_used
 
     return (
@@ -309,6 +319,7 @@ def load_libs():
         model_predictions,
         post_process_reads,
         seq_orders,
+        get_valid_structures,
         estimate_average_read_length_from_bin,
         calculate_total_rows,
         convert_tsv_to_parquet,

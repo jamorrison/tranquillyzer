@@ -4,6 +4,7 @@ logger = logging.getLogger(__name__)
 
 
 def preprocess_wrap(fasta_dir, output_dir, output_base_qual, chunk_size, bin_size, threads):
+    """Discover and preprocess FASTA/FASTQ files into length-binned Parquet."""
     import os
     import time
     import resource

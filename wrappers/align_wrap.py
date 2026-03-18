@@ -4,6 +4,7 @@ logger = logging.getLogger(__name__)
 
 
 def align_wrap(input_dir, ref, output_dir, preset, filt_flag, mapq, threads, add_minimap_args):
+    """Align reads with minimap2 and sort/index the output BAM."""
     import os
     import time
     import subprocess

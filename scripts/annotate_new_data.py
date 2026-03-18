@@ -7,6 +7,7 @@ os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 import gc
 import time
 import json
+import yaml
 import logging
 import contextlib
 import numpy as np
@@ -72,6 +73,7 @@ def preprocess_sequences(sequences, max_len):
 
 # Function to calculate the total number of rows in the Parquet file
 def calculate_total_rows(parquet_file):
+    """Return the total number of rows in a Parquet file."""
     df = pl.scan_parquet(parquet_file)
     total_rows = df.collect().shape[0]
     return total_rows
@@ -79,6 +81,7 @@ def calculate_total_rows(parquet_file):
 
 # Modified function to estimate the average read length from the bin name
 def estimate_average_read_length_from_bin(bin_name):
+    """Estimate average read length from a bin name like '100_500bp'."""
     bounds = bin_name.replace("bp", "").split("_")
     lower_bound = int(bounds[0])
     upper_bound = int(bounds[1])
@@ -86,10 +89,12 @@ def estimate_average_read_length_from_bin(bin_name):
 
 
 def num_replicas(strategy=None):
+    """Return the number of replicas in a distribute strategy, or 1."""
     return getattr(strategy, "num_replicas_in_sync", 1) if strategy else 1
 
 
 def bytes_from_gb(gb: float) -> int:
+    """Convert gigabytes to bytes."""
     return int(float(gb) * (1024**3))
 
 
@@ -134,6 +139,7 @@ def usable_bytes_per_gpu(total_bytes_per_gpu: list[int], safety_margin: float = 
 
 
 def pick_per_replica_batch_by_tokens(seq_len, target_tokens_per_replica=1_200_000, min_b=1, max_b=8192):
+    """Compute per-replica batch size from a target token budget."""
     if seq_len <= 0:
         return min_b
     b = target_tokens_per_replica // int(seq_len)
@@ -197,6 +203,7 @@ def choose_global_batch(
 
 
 def predict_with_backoff(model, build_dataset_fn, start_batch: int, min_batch: int = 1):
+    """Run model.predict with exponential batch-size backoff on OOM errors."""
     bs = int(start_batch)
     last_err = None
     while bs >= int(min_batch):
@@ -223,12 +230,14 @@ _batch_log_once = set()
 
 
 def _log_batch_once(bin_name: str, bs: int):
+    """Log the batch size for a bin name only on first call."""
     if bin_name and bin_name not in _batch_log_once:
         logger.info(f"Using batch_size={bs} for bin {bin_name}")
         _batch_log_once.add(bin_name)
 
 
 def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1):
+    """Run model inference on encoded data using GPU or CPU fallback."""
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
     if available_gpus.n_gpus() == 0:
@@ -246,12 +255,19 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1):
     return preds
 
 
-def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None):
-    if model_path_w_CRF:
-        model_params_json_path = model_path_w_CRF.replace(".h5", "_params.json")
-        with open(model_params_json_path) as f:
+def load_model_params(model_path_w_CRF):
+    """Load model hyperparameters from the YAML or JSON params file alongside a CRF model."""
+    if not model_path_w_CRF:
+        return None
+    yaml_path = model_path_w_CRF.replace(".h5", "_params.yaml")
+    json_path = model_path_w_CRF.replace(".h5", "_params.json")
+    if os.path.exists(yaml_path):
+        with open(yaml_path) as f:
+            return yaml.safe_load(f)
+    elif os.path.exists(json_path):
+        with open(json_path) as f:
             raw_params = json.load(f)
-        params = {
+        return {
             k: (
                 v.lower() == "true"
                 if isinstance(v, str) and v.lower() in ["true", "false"]
@@ -263,6 +279,14 @@ def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy
             )
             for k, v in raw_params.items()
         }
+    else:
+        raise FileNotFoundError(f"No params file found at {yaml_path} or {json_path}")
+
+
+def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None):
+    """Build or load a Keras model (CRF or REG) with optional distribution strategy."""
+    if model_path_w_CRF:
+        params = load_model_params(model_path_w_CRF)
         conv_filters = int(params.get("conv_filters", conv_filters))
 
         scope = strategy.scope() if strategy else contextlib.nullcontext()
@@ -274,6 +298,7 @@ def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy
                 conv_layers=params["conv_layers"],
                 conv_filters=conv_filters,
                 conv_kernel_size=params["conv_kernel_size"],
+                dilation_rates=params.get("dilation_rates"),
                 lstm_layers=params["lstm_layers"],
                 lstm_units=params["lstm_units"],
                 bidirectional=params["bidirectional"],
@@ -307,6 +332,7 @@ def model_predictions(
     max_batch: int = 8192,
     should_process_chunk=None,
 ):
+    """Yield per-chunk (predictions, read_names, reads, lengths, qualities) from a Parquet file."""
     total_rows = calculate_total_rows(parquet_file)
     bin_name = os.path.basename(parquet_file).replace(".parquet", "")
 
@@ -323,7 +349,10 @@ def model_predictions(
     min_batch = int(n_gpus) if n_gpus > 0 else min_batch
     strategy = tf.distribute.MirroredStrategy() if n_gpus > 1 else None
 
-    conv_filters = 256  # default, will be overwritten if params present
+    conv_filters = 256  # default for REG models without a params file
+    params = load_model_params(model_path_w_CRF)
+    if params:
+        conv_filters = int(params.get("conv_filters", conv_filters))
 
     max_len = int(int(bin_name.replace("bp", "").split("_")[1]) + 10)
     global_bs = choose_global_batch(

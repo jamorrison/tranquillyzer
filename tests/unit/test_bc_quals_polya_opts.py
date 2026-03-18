@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 import sys
 import types
+import yaml
 
 from scripts.correct_barcodes import process_row
 from scripts.demultiplex import assign_cell_id
@@ -83,8 +84,22 @@ def test_process_row_appends_polya_and_bq():
 
 
 def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
-    seq_orders_file = tmp_path / "seq_orders.tsv"
-    seq_orders_file.write_text('model_a\t"x"\t"y"\t"i7"\tUMI\tfwd\nmodel_b\t"x"\t"y"\t"i7"\tUMI\trev\n')
+    seq_orders_file = tmp_path / "seq_orders.yaml"
+    config = {
+        "model_a": {
+            "strand": "fwd",
+            "barcodes": ["i7"],
+            "umis": ["UMI"],
+            "segments": [{"name": "x", "pattern": "y"}],
+        },
+        "model_b": {
+            "strand": "rev",
+            "barcodes": ["i7"],
+            "umis": ["UMI"],
+            "segments": [{"name": "x", "pattern": "y"}],
+        },
+    }
+    seq_orders_file.write_text(yaml.dump(config))
     whitelist_file = tmp_path / "whitelist.tsv"
     whitelist_file.write_text("i7\ni7_seq\n")
 
@@ -128,10 +143,22 @@ def test_assign_cell_id_supports_dynamic_multi_barcode_columns():
 
 
 def test_seq_orders_strips_whitespace_in_barcode_fields(tmp_path):
-    seq_orders_file = tmp_path / "seq_orders.tsv"
-    seq_orders_file.write_text(
-        'model_a\t"5p,i5,i7,cbc,cDNA"\t"A,B,C,D,E"\t"i5, i7, cbc"\t"UMI"\tfwd\n'
-    )
+    seq_orders_file = tmp_path / "seq_orders.yaml"
+    config = {
+        "model_a": {
+            "strand": "fwd",
+            "barcodes": ["i5", "i7", "cbc"],
+            "umis": ["UMI"],
+            "segments": [
+                {"name": "5p", "pattern": "A"},
+                {"name": "i5", "pattern": "B"},
+                {"name": "i7", "pattern": "C"},
+                {"name": "cbc", "pattern": "D"},
+                {"name": "cDNA", "pattern": "E"},
+            ],
+        }
+    }
+    seq_orders_file.write_text(yaml.dump(config))
 
     _, _, barcodes, umis, strand = seq_orders(str(seq_orders_file), "model_a")
 

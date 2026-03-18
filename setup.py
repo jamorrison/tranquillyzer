@@ -7,7 +7,7 @@ setup(
     py_modules=["main"],
     include_package_data=True,
     package_data={
-        "": ["models/*", "utils/*.tsv"],
+        "": ["models/*", "utils/*.tsv", "utils/*.yaml"],
     },
     install_requires=[
         "numpy",
@@ -26,6 +26,7 @@ setup(
         "biopython",
         "python-Levenshtein",
         "scikit-learn",
+        "pyyaml",
     ],
     entry_points={
         "console_scripts": [

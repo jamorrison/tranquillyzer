@@ -4,6 +4,7 @@ from collections import defaultdict
 
 
 def assign_cell_id(row, whitelist_df, barcode_columns):
+    """Match corrected barcode(s) against the whitelist and return a cell ID or 'ambiguous'."""
     if len(barcode_columns) == 1:
         barcode_type = barcode_columns[0]
         corrected_sequences = row[f"corrected_{barcode_type}"].split(",")

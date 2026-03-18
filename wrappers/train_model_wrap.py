@@ -5,9 +5,11 @@ logger = logging.getLogger(__name__)
 
 
 def load_libs():
+    """Lazily import and return libraries needed by the training pipeline."""
     import os
     import gc
     import json
+    import yaml
     import time
     import pickle
     import random
@@ -27,7 +29,7 @@ def load_libs():
         DynamicPaddingDataGenerator,
         ont_read_annotator,
     )
-    from scripts.trained_models import seq_orders
+    from scripts.trained_models import seq_orders, get_training_structures, get_training_params
     from scripts.simulate_training_data import generate_training_reads
     from scripts.annotate_new_data import (
         annotate_new_data_parallel,
@@ -41,6 +43,7 @@ def load_libs():
         os,
         gc,
         json,
+        yaml,
         time,
         pickle,
         random,
@@ -56,6 +59,8 @@ def load_libs():
         shuffle,
         generate_training_reads,
         seq_orders,
+        get_training_structures,
+        get_training_params,
         ont_read_annotator,
         DynamicPaddingDataGenerator,
         annotate_new_data_parallel,
@@ -82,17 +87,18 @@ def train_model_wrap(
     threads,
     rc,
     transcriptome,
-    invalid_fraction,
     gpu_mem,
     target_tokens,
     vram_headroom,
     min_batch_size,
     max_batch_size,
 ):
+    """Grid-train model variants from a parameter table."""
     (
         os,
         gc,
         json,
+        yaml,
         time,
         pickle,
         random,
@@ -108,6 +114,8 @@ def train_model_wrap(
         shuffle,
         generate_training_reads,
         seq_orders,
+        get_training_structures,
+        get_training_params,
         ont_read_annotator,
         DynamicPaddingDataGenerator,
         annotate_new_data_parallel,
@@ -130,11 +138,11 @@ def train_model_wrap(
     utils_dir = os.path.abspath(utils_dir)
 
     if param_file is None:
-        param_file = f"{utils_dir}/training_params.tsv"
+        param_file = f"{utils_dir}/training_params.yaml"
     if not os.path.exists(param_file):
         raise FileNotFoundError(f"Parameter file not found: {param_file}")
     if training_seq_orders_file is None:
-        training_seq_orders_file = f"{utils_dir}/training_seq_orders.tsv"
+        training_seq_orders_file = f"{utils_dir}/seq_orders.yaml"
     if not os.path.exists(training_seq_orders_file):
         raise FileNotFoundError(f"Seq orders file not found: {training_seq_orders_file}")
 
@@ -143,31 +151,30 @@ def train_model_wrap(
     with open(f"{output_dir}/simulated_data/labels.pkl", "rb") as labs:
         labels = pickle.load(labs)
 
-    df = pd.read_csv(param_file, sep="\t")
-
-    # Ensure the model exists in the file
-    if model_name not in df.columns:
-        logger.info(f"{model_name} not found in the parameter file.")
-        return
+    # Load training parameters from YAML
+    raw_params = get_training_params(param_file, model_name)
     logger.info(f"Extracting parameters for {model_name}")
 
-    # Convert the model's parameter column to a dictionary of lists
-    param_dict = {df.iloc[i, 0]: df.iloc[i][model_name].split(",") for i in range(len(df))}
+    # Extract dilation_rates before grid search (it's a list parameter, not a grid search axis)
+    dilation_rates = raw_params.pop("dilation_rates", None)
+    if dilation_rates is not None:
+        dilation_rates = [int(x) for x in dilation_rates]
+
+    # Build grid search dict: ensure all values are lists for itertools.product
+    param_dict = {}
+    for key, val in raw_params.items():
+        if isinstance(val, list):
+            param_dict[key] = [str(v) for v in val]
+        else:
+            param_dict[key] = [str(val)]
 
     # Generate all possible combinations of parameters for this model
     param_combinations = list(itertools.product(*param_dict.values()))
     length_range = (min_cDNA, max_cDNA)
     seq_order, sequences, barcodes, UMIs, strand = seq_orders(training_seq_orders_file, model_name)
+    training_structs = get_training_structures(training_seq_orders_file, model_name)
 
     print(f"seq orders: {seq_order}")
-
-    validation_segment_order = ["cDNA"]
-    validation_segment_order.extend(seq_order)
-    validation_segment_order.append("cDNA")
-
-    validation_segment_pattern = ["RN"]
-    validation_segment_pattern.extend(sequences)
-    validation_segment_pattern.append("RN")
 
     if transcriptome:
         logger.info("Loading transcriptome fasta file")
@@ -192,13 +199,11 @@ def train_model_wrap(
         deletion_rate,
         polyT_error_rate,
         max_insertions,
-        validation_segment_order,
-        validation_segment_pattern,
+        training_structs,
         length_range,
         threads,
         rc,
         transcriptome_records,
-        invalid_fraction,
     )
 
     palette = ["red", "blue", "green", "purple", "pink", "cyan", "magenta", "orange", "brown"]
@@ -218,7 +223,7 @@ def train_model_wrap(
 
     for idx, param_set in enumerate(param_combinations):
         model_filename = f"{model_name}_{idx}.h5"
-        param_filename = f"{model_name}_{idx}_params.json"
+        param_filename = f"{model_name}_{idx}_params.yaml"
 
         os.makedirs(f"{output_dir}/{model_name}_{idx}", exist_ok=True)
         params = dict(zip(param_dict.keys(), param_set))
@@ -244,10 +249,29 @@ def train_model_wrap(
 
         logger.info(f"Training {model_filename} with parameters: {params}")
 
-        # Save the parameters used in training
+        # Save the parameters used in training (with native types)
+        save_params = {
+            "batch_size": batch_size,
+            "train_fraction": train_fraction,
+            "vocab_size": vocab_size,
+            "embedding_dim": embedding_dim,
+            "conv_layers": conv_layers,
+            "conv_filters": conv_filters,
+            "conv_kernel_size": conv_kernel_size,
+            "dilation_rates": dilation_rates if dilation_rates else [1] * conv_layers,
+            "lstm_layers": lstm_layers,
+            "lstm_units": lstm_units,
+            "bidirectional": bidirectional,
+            "crf_layer": crf_layer,
+            "attention_heads": attention_heads,
+            "dropout_rate": dropout_rate,
+            "regularization": regularization,
+            "learning_rate": learning_rate,
+            "epochs": epochs,
+        }
         os.makedirs(output_dir, exist_ok=True)
         with open(f"{output_dir}/{model_name}_{idx}/{param_filename}", "w") as param_file:
-            json.dump(params, param_file, indent=4)
+            yaml.dump(save_params, param_file, default_flow_style=False, sort_keys=False)
 
         # Shuffle data
         reads, labels = shuffle(reads, labels)
@@ -288,6 +312,7 @@ def train_model_wrap(
                 conv_layers=conv_layers,
                 conv_filters=conv_filters,
                 conv_kernel_size=conv_kernel_size,
+                dilation_rates=dilation_rates,
                 lstm_layers=lstm_layers,
                 lstm_units=lstm_units,
                 bidirectional=bidirectional,

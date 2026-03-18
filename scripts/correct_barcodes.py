@@ -16,11 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 def reverse_complement(seq):
+    """Return the reverse complement of a DNA sequence."""
     complement = {"A": "T", "T": "A", "C": "G", "G": "C"}
     return "".join(complement.get(base, base) for base in reversed(seq))
 
 
 def correct_barcode(row, column_name, whitelist, threshold):
+    """Find the closest whitelist barcode(s) using Levenshtein distance."""
     observed_barcode = row[column_name]
     reverse_comp_barcode = reverse_complement(observed_barcode)
 
@@ -47,6 +49,7 @@ def correct_barcode(row, column_name, whitelist, threshold):
 def write_reads_to_fasta(
     batch_reads, output_fmt, demuxed_fasta, demuxed_fasta_lock, ambiguous_fasta, ambiguous_fasta_lock
 ):
+    """Write batched reads to gzipped demuxed/ambiguous FASTA or FASTQ files."""
     for cell_id, reads in batch_reads.items():
         if cell_id == "ambiguous":
             if ambiguous_fasta_lock:
@@ -83,6 +86,7 @@ def process_row(
     include_barcode_quals_in_header,
     include_polya_in_output,
 ):
+    """Correct barcodes, assign cell ID, and build demux output for a single annotation row."""
     def _parse_optional_int(value):
         if value is None or pd.isna(value):
             return None
@@ -309,6 +313,7 @@ def bc_n_demultiplex(
     include_polya_in_output=False,
     write_demuxed_reads=True,
 ):
+    """Correct barcodes and demultiplex a chunk of annotated reads in parallel."""
     args = [
         (
             row,
