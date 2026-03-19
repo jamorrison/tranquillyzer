@@ -8,7 +8,7 @@ barcode, UMI, cDNA, polyA/T) to every nucleotide position in a read. Training op
 `simulate-data` (stored as `reads.pkl` and `labels.pkl`) and evaluates each trained variant using an independently
 simulated validation set with known ground-truth labels.
 
-For a given `model_name`, `train-model` reads a parameter table (`training_params.tsv`), enumerates the specified
+For a given `model_name`, `train-model` reads a parameter table (`training_params.yaml`), enumerates the specified
 hyperparameter combinations, trains each model variant, and exports a standardized set of artifacts (model weights,
 label binarizer, training history, and a validation visualization PDF).
 
@@ -111,7 +111,7 @@ After feature extraction, a dense layer produces a vector of scores for each lab
 per-position classification step.
 
 - `num_labels`: Derived from the library segment set - equal to the number of segments defined in the
-  `training_seq_orders.tsv`
+  `seq_orders.yaml`
 
 ## Conditional Random Field (Structured Decoding)
 
@@ -125,7 +125,7 @@ consistent label sequences.
 
 # Training Configuration and Hyperparameters
 
-`tranquillyzer` uses a tabular parameter grid specified in `training_params.tsv`, where each column corresponds to a
+`tranquillyzer` uses a tabular parameter grid specified in `training_params.yaml`, where each column corresponds to a
 `model_name` and each row provides one hyperparameter. For each model, values may be single values or comma-delimited
 lists. If a comma-delimited list is given, `train-model` will enumerate all hyperparameter combinations.
 

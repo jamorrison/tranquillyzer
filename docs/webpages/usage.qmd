@@ -175,7 +175,7 @@ Currently available trained models can be downloaded from [this  Dropbox link](h
 and should be placed in the `models/` directory within the cloned Tranquillyzer repository.
 
 If `--include-barcode-quals` is set with FASTQ output, headers gain a `|BQ:` tag containing `segment:quality` pairs
-for the barcode segments listed in the fourth column of `seq_orders.tsv`, plus UMI qualities when present (e.g.,
+for the barcode segments listed in `seq_orders.yaml`, plus UMI qualities when present (e.g.,
 `|BQ:i7:<quals>;i5:<quals>;CBC:<quals>;UMI:<quals>`).
 
 ## Usage
@@ -204,7 +204,7 @@ Optional Arguments
   `_w_CRF` will be appended to the base model name. (default: `10x3p_sc_ont_011`)
 - `--model-type TEXT`: The type of model to run (see above for descriptions of each type): `REG`, `CRF`, or `HYB`
   (default: `HYB`)
-- `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.tsv`
+- `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--chunk-size INTEGER`: Base chunk size for processing, dynamically adjusts based on read length (default: 100000)
 - `--gpu-mem TEXT`: Total memory of the GPU in gigabytes (GB). For a single GPU or multiple GPUs with the same memory,
@@ -221,7 +221,7 @@ Optional Arguments
 - `--bc-lv-threshold INTEGER`: Levenshtein distance threshold for barcode correction (default: 2)
 - `--threads INTEGER`: Number of CPU threads for barcode correction and demultiplexing (default: 12)
 - `--max-queue-size INTEGER`: Max number of Parquet files to queue for post-processing (default: 3)
-- `--include-barcode-quals`: When writing FASTQ, append base qualities for barcode segments (from `seq_orders.tsv`) into the FASTQ header
+- `--include-barcode-quals`: When writing FASTQ, append base qualities for barcode segments (from `seq_orders.yaml`) into the FASTQ header
 - `--include-polya`: Append detected polyA tails to the emitted read sequence (and qualities in FASTQ)
 - `--help`: Print help message and exit
 
@@ -339,7 +339,7 @@ Optional Arguments
   `_w_CRF` will be appended to the base model name. (default: `10x3p_sc_ont_011`)
 - `--model-type TEXT`: The type of model to run (see `annotate-reads` usage for descriptions of each type): REG, CRF,
   or HYB (default: CRF)
-- `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.tsv`
+- `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--gpu-mem TEXT`: Total memory of the GPU in gigabytes (GB). For a single GPU or multiple GPUs with the same memory,
   specify one integer. If there are multiple GPUs with different memory allocations, specify a comma-separated list
@@ -367,7 +367,7 @@ In order to train a new model, simulated training data that mimics the sequencin
 generated. This is accomplished using the `simulate-data` command, which creates synthetic reads based on a user-defined
 label schema and error profile. The schema is defined in a tab-delimited file that specifies the order and sequences of
 structural elements (e.g., adapters, barcodes, UMIs, polyA/T tails, cDNA regions). An example schema file can be found
-on [GitHub](https://github.com/huishenlab/tranquillyzer/blob/main/utils/training_seq_orders.tsv). There are six columns
+on [GitHub](https://github.com/huishenlab/tranquillyzer/blob/main/utils/seq_orders.yaml). There are six columns
 that need to be specified within this file:
 
 1. The model name. This should match the `MODEL_NAME` that you will call from the command line.
@@ -413,7 +413,7 @@ Required Arguments
 Optional Arguments
 
 - `--training-seq-orders-files TEXT`: Path to the sequence order file used for training. If not provided, uses the
-  default: `utils/training_seq_orders.tsv` (default: None)
+  default: `utils/seq_orders.yaml` (default: None)
 - `--num-reads INTEGER`: Number of reads to simulate (default: 50000)
 - `--mismatch-rate FLOAT`: Mismatch rate (default: 0.05)
 - `--insertion-rate FLOAT`: Insertion rate (default: 0.05)
@@ -465,10 +465,10 @@ Required Arguments
 
 Optional Arguments
 
-- `--param-file TEXT`: Path to training parameters file. If not provided, uses the default: `utils/training_params.tsv`
+- `--param-file TEXT`: Path to training parameters file. If not provided, uses the default: `utils/training_params.yaml`
   (default: None)
 - `--training-seq-orders-file TEXT`: Path to the sequence order file. If not provided, uses the default:
-  `utils/training_seq_orders.tsv` (default: None)
+  `utils/seq_orders.yaml` (default: None)
 - `--num-val-reads INTEGER`: Number of reads to simulate (default: 20)
 - `--mismatch-rate FLOAT`: Mismatch rate (default: 0.05)
 - `--insertion-rate FLOAT`: Insertion rate (default: 0.05)

@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 
@@ -14,18 +15,84 @@ def _load_yaml(file_path):
         return yaml.safe_load(f)
 
 
+def _resolve_model(config, model):
+    """Resolve a model entry by merging library defaults with model overrides.
+
+    Supports both legacy flat format (no 'libraries' key) and the new
+    two-level libraries/models format.
+
+    Returns a flat dict with keys matching the legacy per-model structure:
+    strand, barcodes, umis, segments, valid_structures, training_structures.
+    """
+    # Legacy format: no 'libraries' key means old flat dict keyed by model name
+    if "libraries" not in config:
+        if model not in config:
+            available = list(config.keys())
+            raise ValueError(f"Model '{model}' not found. Available: {available}")
+        return config[model]
+
+    # New two-level format
+    models = config.get("models", {})
+    libraries = config.get("libraries", {})
+
+    if model not in models:
+        available = list(models.keys())
+        raise ValueError(f"Model '{model}' not found. Available models: {available}")
+
+    model_entry = models[model]
+
+    if "library" not in model_entry:
+        raise ValueError(
+            f"Model '{model}' must have a 'library' field referencing a library in the 'libraries' section."
+        )
+
+    lib_name = model_entry["library"]
+    if lib_name not in libraries:
+        available_libs = list(libraries.keys())
+        raise ValueError(
+            f"Library '{lib_name}' referenced by model '{model}' not found. "
+            f"Available libraries: {available_libs}"
+        )
+
+    resolved = copy.deepcopy(libraries[lib_name])
+
+    # Simple fields: model value replaces library value entirely
+    for field in ("strand", "barcodes", "umis", "segments", "valid_structures"):
+        if field in model_entry:
+            resolved[field] = model_entry[field]
+
+    # training_structures: dict-level merge
+    if "training_structures" in model_entry:
+        model_ts = model_entry["training_structures"]
+        if model_ts is None:
+            # Explicit null => no training structures (triggers default fallback)
+            resolved["training_structures"] = None
+        else:
+            lib_ts = resolved.get("training_structures")
+            if lib_ts is None:
+                resolved["training_structures"] = model_ts
+            else:
+                merged = copy.deepcopy(lib_ts)
+                for name, value in model_ts.items():
+                    if value is None:
+                        merged.pop(name, None)
+                    elif name in merged:
+                        merged[name].update(value)
+                    else:
+                        merged[name] = value
+                resolved["training_structures"] = merged
+
+    return resolved
+
+
 def seq_orders(file_path, model):
     """Load sequence order config from YAML.
 
     Returns (seq_order, sequences, barcodes, umis, strand) — same 5-tuple as before.
     """
     config = _load_yaml(file_path)
+    entry = _resolve_model(config, model)
 
-    if model not in config:
-        available = [k for k in config.keys()]
-        raise ValueError(f"Model '{model}' not found in {file_path}. Available: {available}")
-
-    entry = config[model]
     seq_order = [s["name"] for s in entry["segments"]]
     sequences = [s["pattern"] for s in entry["segments"]]
     barcodes = entry.get("barcodes", [])
@@ -42,11 +109,8 @@ def get_valid_structures(file_path, model):
     If not defined, defaults to the full segment order from 'segments'.
     """
     config = _load_yaml(file_path)
+    entry = _resolve_model(config, model)
 
-    if model not in config:
-        raise ValueError(f"Model '{model}' not found in {file_path}")
-
-    entry = config[model]
     structures = entry.get("valid_structures", None)
     if structures is None:
         structures = [[s["name"] for s in entry["segments"]]]
@@ -61,20 +125,29 @@ def get_training_structures(file_path, model):
     If not defined, defaults to 100% of the full segment order.
     """
     config = _load_yaml(file_path)
+    entry = _resolve_model(config, model)
+    ts = entry.get("training_structures", None)
 
-    if model not in config:
-        raise ValueError(f"Model '{model}' not found in {file_path}")
-
-    entry = config[model]
-    structs = entry.get("training_structures", None)
-
-    if structs is None:
+    if ts is None:
         return [{
             "order": [s["name"] for s in entry["segments"]],
             "patterns": [s["pattern"] for s in entry["segments"]],
             "repeat": 1,
             "proportion": 1.0,
         }]
+
+    # Convert from named dict (new format) or list (legacy format)
+    if isinstance(ts, dict):
+        structs = list(ts.values())
+    else:
+        structs = ts
+
+    # Validate proportions sum
+    total = sum(s.get("proportion", 0) for s in structs)
+    if abs(total - 1.0) > 0.01:
+        logger.warning(
+            f"Training structure proportions for model '{model}' sum to {total:.4f}, expected ~1.0"
+        )
 
     pattern_map = {s["name"]: s["pattern"] for s in entry["segments"]}
     result = []

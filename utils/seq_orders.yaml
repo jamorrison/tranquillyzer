@@ -1,7 +1,9 @@
 # Sequence order configuration for tranquillyzer
-# Each top-level key is a model name used for lookup by training and inference code.
 #
-# Fields:
+# Two-level structure: libraries define the chemistry, models reference a library.
+#
+# ── Libraries ──
+# Each library defines the shared configuration for a sequencing chemistry:
 #   strand:              Sequencing orientation (fwd or rev)
 #   barcodes:            Which segments are barcodes
 #   umis:                Which segments are UMIs
@@ -9,168 +11,190 @@
 #                        - name: segment label used by the neural network
 #                        - pattern: NX = unknown of length X, NN = unknown variable,
 #                                   T/A = polyT/polyA, literal string = adapter sequence
-#   training_structures: (optional) Read layouts for training data generation.
+#   valid_structures:    (optional) Acceptable segment orders for inference validation.
+#                        A read matching ANY of these is considered valid.
+#                        If omitted, defaults to the full segment order.
+#   training_structures: (optional) Named dict of read layouts for training data generation.
 #                        Each entry has an order (list of segment names from the vocabulary),
 #                        a proportion (fraction of training data), and optional repeat (Nx concat).
 #                        Optional rc_pattern (list of fwd/rev/reverse, length = repeat) controls
 #                        fragment orientation: fwd=forward, rev=reverse-complement, reverse=reverse-only.
-#                        Element names can have :rev, :reverse, or :fwd suffix to override per-element
-#                        (e.g., 3p:rev always RC's the 3p, 5p:reverse reverses without complement).
-#                        Proportions must sum to 1.0.
-#                        Code automatically flanks each structure with short random cDNA.
-#   valid_structures:    (optional) Acceptable segment orders for inference validation.
-#                        A read matching ANY of these is considered valid.
-#                        If omitted, defaults to the full segment order.
+#                        Element names can have :rev, :reverse, or :fwd suffix to override per-element.
+#                        Proportions should sum to 1.0.
+#
+# ── Models ──
+# Each model references a library and optionally overrides fields:
+#   library:             (required) Name of the library to inherit from
+#   strand, barcodes, umis, segments, valid_structures:
+#                        If specified, replaces the library value entirely.
+#   training_structures: Dict-merge with library's training_structures:
+#                        - New keys are added
+#                        - Existing keys are shallow-merged (partial override)
+#                        - Keys set to null are removed
+#                        - Set to null (bare) to clear all inherited training structures
+#
+# ── Examples ──
+#
+# Example 1: Adding a new library
+#
+#   libraries:
+#     my_new_lib:
+#       strand: fwd
+#       barcodes: [CBC]
+#       umis: [UMI]
+#       segments:
+#         - name: 5p
+#           pattern: AGATCGGAAGAGC
+#         - name: CBC
+#           pattern: N16
+#         - name: UMI
+#           pattern: N12
+#         - name: cDNA
+#           pattern: NN
+#         - name: 3p
+#           pattern: GTACTCTGCGTTG
+#       valid_structures:
+#         - [5p, CBC, UMI, cDNA, 3p]
+#       training_structures:
+#         full_read:
+#           order: [5p, CBC, UMI, cDNA, 3p]
+#           proportion: 0.80
+#         truncated_no_3p:
+#           order: [5p, CBC, UMI, cDNA]
+#           proportion: 0.20
+#
+# Example 2: Model that inherits everything from a library (no overrides)
+#
+#   models:
+#     my_new_lib_001:
+#       library: my_new_lib
+#
+# Example 3: Model that overrides training structures
+#
+#   models:
+#     my_new_lib_002:
+#       library: my_new_lib
+#       training_structures:
+#         truncated_no_3p: null    # remove this inherited structure
+#         full_read:               # override just the proportion
+#           proportion: 0.70
+#         concat_fwd_rev:          # add a new structure
+#           order: [5p, CBC, UMI, cDNA, 3p]
+#           repeat: 2
+#           rc_pattern: [fwd, rev]
+#           proportion: 0.30
 
-# ─── Training models ───
+# ─── Libraries ───
 
-10x5p_sc_ont_010:
-  strand: fwd
-  barcodes: [CBC]
-  umis: [UMI]
-  segments:
-    - name: 5p
-      pattern: TCTACACGACGCTCTTCCGATCT
-    - name: CBC
-      pattern: N16
-    - name: UMI
-      pattern: N10
-    - name: SLS
-      pattern: TTTCTTATATGGG
-    - name: cDNA
-      pattern: NN
-    - name: polyA
-      pattern: A
-    - name: 3p
-      pattern: GTACTCTGCGTTGATACCACTGCTT
-  training_structures:
-    - order: [5p, CBC, UMI, SLS, cDNA, polyA, 3p]
-      proportion: 0.50
-    - order: [5p, CBC, UMI, SLS, cDNA, polyA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, rev]
-      proportion: 0.10
-    - order: [CBC, UMI, SLS, cDNA, polyA, 3p]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, SLS, cDNA, polyA]
-      proportion: 0.10
-    - order: [5p, CBC, CBC, CBC, UMI, SLS, cDNA, polyA, 3p]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, SLS, cDNA, polyA, 3p, 3p, 3p]
-      proportion: 0.10
-  valid_structures:
-    - [5p, CBC, UMI, SLS, cDNA, polyA, 3p]
-    - [5p, CBC, UMI, SLS, cDNA, 3p]
+libraries:
 
-10x3p_sc_ont_011:
-  strand: rev
-  barcodes: [CBC]
-  umis: [UMI]
-  segments:
-    - name: 5p
-      pattern: CTACACGACGCTCTTCCGATCT
-    - name: CBC
-      pattern: N16
-    - name: UMI
-      pattern: N12
-    - name: polyT
-      pattern: T
-    - name: cDNA
-      pattern: NN
-    - name: 3p
-      pattern: CCCATGTACTCTGCGTTGATACCACTGCTT
-  valid_structures:
-    - [5p, CBC, UMI, polyT, cDNA, 3p]
-    - [5p, CBC, UMI, cDNA, 3p]
+  10x5p_sc_ont:
+    strand: fwd
+    barcodes: [CBC]
+    umis: [UMI]
+    segments:
+      - name: 5p
+        pattern: TCTACACGACGCTCTTCCGATCT
+      - name: CBC
+        pattern: N16
+      - name: UMI
+        pattern: N10
+      - name: SLS
+        pattern: TTTCTTATATGGG
+      - name: cDNA
+        pattern: NN
+      - name: polyA
+        pattern: A
+      - name: 3p
+        pattern: GTACTCTGCGTTGATACCACTGCTT
+    valid_structures:
+      - [5p, CBC, UMI, SLS, cDNA, polyA, 3p]
+      - [5p, CBC, UMI, SLS, cDNA, 3p]
+    training_structures:
+      full_read:
+        order: [5p, CBC, UMI, SLS, cDNA, polyA, 3p]
+        proportion: 0.50
+      concat_fwd_rev:
+        order: [5p, CBC, UMI, SLS, cDNA, polyA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, rev]
+        proportion: 0.10
+      truncated_no_5p:
+        order: [CBC, UMI, SLS, cDNA, polyA, 3p]
+        proportion: 0.10
+      truncated_no_3p:
+        order: [5p, CBC, UMI, SLS, cDNA, polyA]
+        proportion: 0.10
+      stutter_cbc:
+        order: [5p, CBC, CBC, CBC, UMI, SLS, cDNA, polyA, 3p]
+        proportion: 0.10
+      stutter_3p:
+        order: [5p, CBC, UMI, SLS, cDNA, polyA, 3p, 3p, 3p]
+        proportion: 0.10
 
-10x3p_sc_ont_012:
-  strand: rev
-  barcodes: [CBC]
-  umis: [UMI]
-  segments:
-    - name: 5p
-      pattern: CTACACGACGCTCTTCCGATCT
-    - name: CBC
-      pattern: N16
-    - name: UMI
-      pattern: N12
-    - name: polyT
-      pattern: T
-    - name: cDNA
-      pattern: NN
-    - name: 3p
-      pattern: CCCATGTACTCTGCGTTGATACCACTGCTT
-  valid_structures:
-    - [5p, CBC, UMI, polyT, cDNA, 3p]
-    - [5p, CBC, UMI, cDNA, 3p]
-  training_structures:
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      proportion: 0.50
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, rev]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, fwd]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [rev, fwd]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, reverse]
-      proportion: 0.05
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [reverse, fwd]
-      proportion: 0.05
-    - order: [5p, CBC, UMI, polyT, cDNA, polyT:rev, UMI, CBC, 5p:rev]
-      proportion: 0.10
+  10x3p_sc_ont:
+    strand: rev
+    barcodes: [CBC]
+    umis: [UMI]
+    segments:
+      - name: 5p
+        pattern: CTACACGACGCTCTTCCGATCT
+      - name: CBC
+        pattern: N16
+      - name: UMI
+        pattern: N12
+      - name: polyT
+        pattern: T
+      - name: cDNA
+        pattern: NN
+      - name: 3p
+        pattern: CCCATGTACTCTGCGTTGATACCACTGCTT
+    valid_structures:
+      - [5p, CBC, UMI, polyT, cDNA, 3p]
+      - [5p, CBC, UMI, cDNA, 3p]
+    training_structures:
+      full_read:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        proportion: 0.50
+      concat_fwd_rev:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, rev]
+        proportion: 0.10
+      concat_fwd_fwd:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, fwd]
+        proportion: 0.10
+      concat_rev_fwd:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [rev, fwd]
+        proportion: 0.10
+      concat_fwd_reverse:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, reverse]
+        proportion: 0.05
+      concat_reverse_fwd:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [reverse, fwd]
+        proportion: 0.05
+      hairpin_type:
+        order: [5p, CBC, UMI, polyT, cDNA, polyT:rev, UMI, CBC, 5p:rev]
+        proportion: 0.10
 
-10x3p_sc_ont_013:
-  strand: rev
-  barcodes: [CBC]
-  umis: [UMI]
-  segments:
-    - name: 5p
-      pattern: CTACACGACGCTCTTCCGATCT
-    - name: CBC
-      pattern: N16
-    - name: UMI
-      pattern: N12
-    - name: polyT
-      pattern: T
-    - name: cDNA
-      pattern: NN
-    - name: 3p
-      pattern: CCCATGTACTCTGCGTTGATACCACTGCTT
-  valid_structures:
-    - [5p, CBC, UMI, polyT, cDNA, 3p]
-    - [5p, CBC, UMI, cDNA, 3p]
-  training_structures:
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      proportion: 0.50
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, rev]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, fwd]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [rev, fwd]
-      proportion: 0.10
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [fwd, reverse]
-      proportion: 0.05
-    - order: [5p, CBC, UMI, polyT, cDNA, 3p]
-      repeat: 2
-      rc_pattern: [reverse, fwd]
-      proportion: 0.05
-    - order: [5p, CBC, UMI, polyT, cDNA, polyT:rev, UMI, CBC, 5p:rev]
-      proportion: 0.10
+# ─── Models ───
+
+models:
+
+  10x5p_sc_ont_010:
+    library: 10x5p_sc_ont
+
+  10x3p_sc_ont_011:
+    library: 10x3p_sc_ont
+
+  10x3p_sc_ont_012:
+    library: 10x3p_sc_ont
+
