@@ -189,24 +189,50 @@ def _convert_chunk_outputs(
             f"Starting chunk combination: valid={len(valid_files)} TSV ({len(valid_chunk_parquets)} parquet), "
             f"invalid={len(invalid_files)} TSV ({len(invalid_chunk_parquets)} parquet)."
         )
-        if valid_files:
-            pl.scan_csv(valid_files, separator="\t", infer_schema_length=5000).sink_parquet(
-                f"{output_dir}/{valid_output_name}", compression="snappy", row_group_size=chunk_size
-            )
-        elif valid_chunk_parquets:
-            pl.scan_parquet(valid_chunk_parquets).sink_parquet(
-                f"{output_dir}/{valid_output_name}", compression="snappy", row_group_size=chunk_size
-            )
-        if invalid_files:
-            pl.scan_csv(invalid_files, separator="\t", infer_schema_length=5000).sink_parquet(
-                f"{output_dir}/annotations_invalid.parquet", compression="snappy", row_group_size=chunk_size
-            )
-        elif invalid_chunk_parquets:
-            pl.scan_parquet(invalid_chunk_parquets).sink_parquet(
-                f"{output_dir}/annotations_invalid.parquet", compression="snappy", row_group_size=chunk_size
-            )
+
+        def _combine_valid_invalid(tsv_files, parquet_files, out_path, out_dir):
+            """Combine chunk files (TSV, parquet, or mixed) into a single output parquet."""
+            if tsv_files and parquet_files:
+                # Mixed resume: convert stale TSVs to parquet, then combine all parquets
+                _write_chunk_parquets(tsv_files, out_dir)
+                all_parquets = _sorted_chunk_files(out_dir, ".parquet")
+                pl.concat(
+                    [pl.scan_parquet(f) for f in all_parquets], how="diagonal_relaxed"
+                ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
+                for tsv_path in tsv_files:
+                    os.remove(tsv_path)
+            elif tsv_files:
+                # Legacy: all TSV
+                pl.scan_csv(tsv_files, separator="\t", infer_schema_length=5000).sink_parquet(
+                    out_path, compression="snappy", row_group_size=chunk_size
+                )
+                if keep_chunk_tsv_after_combine:
+                    _write_chunk_parquets(tsv_files, out_dir)
+                for tsv_path in tsv_files:
+                    os.remove(tsv_path)
+            elif parquet_files:
+                # Default: all parquet chunks — diagonal_relaxed unifies mismatched dtypes across chunks
+                pl.concat(
+                    [pl.scan_parquet(f) for f in parquet_files], how="diagonal_relaxed"
+                ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
+
+        _combine_valid_invalid(
+            valid_files, valid_chunk_parquets, f"{output_dir}/{valid_output_name}", valid_out_dir
+        )
+        _combine_valid_invalid(
+            invalid_files, invalid_chunk_parquets, f"{output_dir}/annotations_invalid.parquet", invalid_out_dir
+        )
         logger.info(f"Finished chunk combination into {valid_output_name} and annotations_invalid.parquet.")
-        if keep_chunk_tsv_after_combine:
+
+        if not keep_chunk_tsv_after_combine:
+            # Re-scan for parquet chunks and delete them after successful combine
+            for pq_path in _sorted_chunk_files(valid_out_dir, ".parquet") + _sorted_chunk_files(
+                invalid_out_dir, ".parquet"
+            ):
+                os.remove(pq_path)
+    else:
+        # No-combine mode: ensure chunks are parquet (convert any legacy TSVs)
+        if valid_files or invalid_files:
             logger.info(
                 f"Starting TSV-to-parquet conversion for chunk outputs: valid={len(valid_files)}, "
                 f"invalid={len(invalid_files)}."
@@ -214,18 +240,6 @@ def _convert_chunk_outputs(
             _write_chunk_parquets(valid_files, valid_out_dir)
             _write_chunk_parquets(invalid_files, invalid_out_dir)
             logger.info("Finished TSV-to-parquet conversion for chunk outputs.")
-        if valid_files or invalid_files:
-            for tsv_path in valid_files + invalid_files:
-                os.remove(tsv_path)
-    else:
-        logger.info(
-            f"Starting TSV-to-parquet conversion for chunk outputs: valid={len(valid_files)}, "
-            f"invalid={len(invalid_files)}."
-        )
-        wrote_valid = _write_chunk_parquets(valid_files, valid_out_dir)
-        wrote_invalid = _write_chunk_parquets(invalid_files, invalid_out_dir)
-        logger.info("Finished TSV-to-parquet conversion for chunk outputs.")
-        if wrote_valid or wrote_invalid:
             for tsv_path in valid_files + invalid_files:
                 os.remove(tsv_path)
 

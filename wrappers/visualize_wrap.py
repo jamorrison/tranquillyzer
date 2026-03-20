@@ -130,7 +130,8 @@ def visualize_wrap(
 
     params = load_model_params(model_path_w_CRF)
     if params:
-        conv_filters = int(params.get("conv_filters", conv_filters))
+        cf = params.get("conv_filters", conv_filters)
+        conv_filters = max(cf) if isinstance(cf, list) else int(cf)
 
     try:
         model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None)
@@ -220,7 +221,7 @@ def visualize_wrap(
     encoded_data = preprocess_sequences(selected_reads, max_read_len + 10)
     try:
         logger.info(f"Annotating selected reads with the {model_type} model")
-        predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        predictions, model = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
         logger.info("Annotation completed successfully")
     except Exception as e:
         logger.error(f"Encountered an error during annotation: {e}")

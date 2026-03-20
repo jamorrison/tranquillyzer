@@ -200,9 +200,11 @@ def process_full_length_reads_in_chunks_and_save(
         if not invalid_reads_df.empty:
             os.makedirs(os.path.join(chunk_output_dir, "invalid_chunks"), exist_ok=True)
             invalid_chunk_file = os.path.join(
-                chunk_output_dir, "invalid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.tsv"
+                chunk_output_dir, "invalid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.parquet"
             )
-            invalid_reads_df.to_csv(invalid_chunk_file, sep="\t", index=False)
+            pl.DataFrame(
+                {col: invalid_reads_df[col].tolist() for col in invalid_reads_df.columns}, strict=False
+            ).write_parquet(invalid_chunk_file, compression="snappy")
 
     column_mapping = {barcode: barcode for barcode in barcodes}
 
@@ -251,9 +253,11 @@ def process_full_length_reads_in_chunks_and_save(
 
         os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
         valid_chunk_file = os.path.join(
-            chunk_output_dir, "valid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.tsv"
+            chunk_output_dir, "valid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.parquet"
         )
-        output_df.to_csv(valid_chunk_file, sep="\t", index=False)
+        pl.DataFrame(
+            {col: output_df[col].tolist() for col in output_df.columns}, strict=False
+        ).write_parquet(valid_chunk_file, compression="snappy")
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
 

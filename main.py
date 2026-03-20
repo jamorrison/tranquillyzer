@@ -71,6 +71,16 @@ _HELP_TARGET_TOKENS = (
     "• Also guides batch-size heuristics when running on CPU."
 )
 
+_HELP_TOKEN_CAP_ABOVE = (
+    "Enable auto-calibrated batch sizing for bins shorter than this threshold.\n\n"
+    "• The first (shortest) bin probes GPU capacity via backoff; the proven "
+    "token budget is then used for all subsequent bins below this threshold.\n\n"
+    "• Bins above this threshold use the conservative [cyan]--target-tokens[/cyan] budget.\n\n"
+    "• Set to 0 (default) to always use the fixed [cyan]--target-tokens[/cyan] budget.\n\n"
+    "• Example: [cyan]--token-cap-above 5000[/cyan] auto-calibrates batch sizes for bins "
+    "up to 5000 bp based on actual GPU throughput."
+)
+
 _HELP_MODEL_NAME = (
     "Base model name — omit any suffix.\n\n"
     "For [bold]CRF[/bold] mode, [cyan]_w_CRF[/cyan] is appended automatically."
@@ -346,7 +356,7 @@ def annotate_reads(
     combine_chunk_outputs: bool = typer.Option(
         True,
         help=(
-            "Merge all chunk TSV outputs into a single"
+            "Merge all chunk parquet outputs into a single"
             " [cyan]annotations_valid/invalid.parquet[/cyan].\n\n"
             "Disable to keep per-chunk parquet outputs."
         ),
@@ -354,7 +364,7 @@ def annotate_reads(
     keep_chunk_tsv_after_combine: bool = typer.Option(
         False,
         help=(
-            "Keep chunk TSV files after successful combine.\n\n"
+            "Keep per-chunk parquet files after successful combine.\n\n"
             "By default they are deleted when [cyan]--combine-chunk-outputs[/cyan] is enabled."
         ),
     ),
@@ -379,6 +389,7 @@ def annotate_reads(
     ),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
     target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS)] = 1_200_000,
+    token_cap_above: Annotated[int, typer.Option(help=_HELP_TOKEN_CAP_ABOVE)] = 0,
     vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom."),
     min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference."),
     max_batch_size: int = typer.Option(8192, help="Maximum batch size for model inference."),
@@ -444,6 +455,7 @@ def annotate_reads(
         chunk_size: Row group size for final Parquet conversions.
         gpu_mem: Optional GPU memory budget string (e.g., "12" or "8,16").
         target_tokens: Token budget per replica to guide batching.
+        token_cap_above: Seq length (bp) above which the token budget cap is applied. 0 = always apply.
         vram_headroom: Fraction of VRAM to keep free as safety margin.
         min_batch_size: Min batch size for inference.
         max_batch_size: Max batch size for inference.
@@ -454,8 +466,8 @@ def annotate_reads(
         run_demux: If true, writes `demuxed_fasta/*` files in the same pass (demuxed with barcode correction, bulk otherwise).
         checkpoint_file: Path to checkpoint file storing pass/bin/chunk progress.
         resume: If true, restart from checkpoint and skip done chunks.
-        combine_chunk_outputs: If true, merge chunk TSVs into annotations_valid/invalid.parquet.
-        keep_chunk_tsv_after_combine: If true with combine enabled, keep chunk TSVs and also write per-chunk parquet.
+        combine_chunk_outputs: If true, merge chunk parquets into annotations_valid/invalid.parquet.
+        keep_chunk_tsv_after_combine: If true with combine enabled, keep per-chunk parquet files after combining.
         keep_demux_chunk_outputs_after_combine: If true with demux enabled, keep chunk FASTA/FASTQ after combine.
 
     Outputs:
@@ -486,6 +498,7 @@ def annotate_reads(
         chunk_size,
         gpu_mem,
         target_tokens,
+        token_cap_above,
         vram_headroom,
         min_batch_size,
         max_batch_size,

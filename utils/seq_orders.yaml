@@ -198,3 +198,5 @@ models:
   10x3p_sc_ont_012:
     library: 10x3p_sc_ont
 
+  10x3p_sc_ont_013:
+    library: 10x3p_sc_ont

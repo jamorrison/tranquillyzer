@@ -146,20 +146,37 @@ def pick_per_replica_batch_by_tokens(seq_len, target_tokens_per_replica=1_200_00
     return int(max(min_b, min(max_b, b)))
 
 
-def pick_per_replica_batch_by_conv(
-    usable_bytes_per_gpu,
-    seq_len,
-    conv_filters=256,
-    bytes_per_elem=4,  # assume fp32 conv activations/workspace
-    min_b=1,
-    max_b=8192,
+def estimate_bytes_per_token(
+    embedding_dim=128, conv_filters=128, conv_layers=3,
+    lstm_units=96, bidirectional=True, num_labels=10,
+    overhead_factor=1.12,
 ):
+    """Estimate GPU memory per token from model architecture params.
+
+    Accounts for embedding, conv activations, LSTM outputs + gate activations,
+    and output/CRF layer.  *overhead_factor* covers TF bookkeeping (~12%).
     """
-    For each GPU: B <= usable / (C * L * bytes_per_elem).
+    bidir = 2 if bidirectional else 1
+    cf = sum(conv_filters) if isinstance(conv_filters, list) else int(conv_filters) * int(conv_layers)
+    lu = sum(lstm_units) if isinstance(lstm_units, list) else int(lstm_units)
+    bpt = (
+        4                       # input int32
+        + embedding_dim * 4     # embedding
+        + cf * 4                # conv layer outputs
+        + lu * bidir * 4        # LSTM outputs
+        + lu * 4 * bidir * 4    # LSTM gate activations
+        + num_labels * 4        # CRF/output
+    )
+    return bpt * overhead_factor
+
+
+def pick_per_replica_batch_by_model(usable_bytes_per_gpu, seq_len, bytes_per_token, min_b=1, max_b=8192):
+    """For each GPU: B <= usable / (bytes_per_token * seq_len).
+
     Returns the minimum across GPUs (most constrained device).
     """
     caps = []
-    denom = max(1, int(conv_filters) * int(seq_len) * int(bytes_per_elem))
+    denom = max(1, int(bytes_per_token * int(seq_len)))
     for usable in usable_bytes_per_gpu:
         if usable <= 0:
             caps.append(min_b)
@@ -170,50 +187,62 @@ def pick_per_replica_batch_by_conv(
 
 def choose_global_batch(
     L,
-    conv_filters=256,
+    bytes_per_token,
     strategy=None,
     target_tokens_per_replica=1_200_000,
     min_b=1,
     max_b=8192,
     user_total_gb: Optional[str] = None,
     safety_margin: float = 0.35,
+    token_cap_above: int = 0,
 ):
     """
-    Choose per-replica batch = min( token-based, conv-based across GPUs ),
-    then scale by replicas.
-    'user_total_gb' is a string like "48" or "48,48,24".
-    If None, default 12 GB/GPU.
+    Choose per-replica batch size, then scale by replicas.
+
+    Two-tier logic controlled by *token_cap_above*:
+      - Bins shorter than threshold: GPU capacity only (maximize throughput).
+      - Bins at or above threshold:  min(GPU capacity, token budget) (conservative).
     """
     n_gpus = available_gpus.n_gpus()
     if n_gpus == 0:
-        # CPU-only fallback: use token-based
+        # CPU-only fallback: always use token-based (no VRAM estimate available)
         per_replica = pick_per_replica_batch_by_tokens(L, target_tokens_per_replica, min_b, max_b)
         return per_replica  # global==per_replica on CPU
 
     totals = parse_gpu_total_gb(user_total_gb, num_gpus=n_gpus)
     usable = usable_bytes_per_gpu(totals, safety_margin=safety_margin)
+    limit_gpu = pick_per_replica_batch_by_model(usable, L, bytes_per_token, min_b, max_b)
 
-    limit_conv = pick_per_replica_batch_by_conv(usable, L, conv_filters, 4, min_b, max_b)
-    limit_tok = pick_per_replica_batch_by_tokens(L, target_tokens_per_replica, min_b, max_b)
+    if token_cap_above > 0 and L < token_cap_above:
+        per_replica = limit_gpu  # GPU capacity only
+    else:
+        limit_tok = pick_per_replica_batch_by_tokens(L, target_tokens_per_replica, min_b, max_b)
+        per_replica = max(min_b, min(limit_gpu, limit_tok))
 
-    per_replica = max(min_b, min(limit_conv, limit_tok))
     replicas = num_replicas(strategy)
-    global_b = max(1, per_replica * replicas)
-    return global_b
+    return max(1, per_replica * replicas)
 
 
-def predict_with_backoff(model, build_dataset_fn, start_batch: int, min_batch: int = 1):
-    """Run model.predict with exponential batch-size backoff on OOM errors."""
+def predict_with_backoff(model, build_dataset_fn, start_batch: int, min_batch: int = 1, rebuild_model_fn=None):
+    """Run model.predict with exponential batch-size backoff on OOM errors.
+
+    When *rebuild_model_fn* is provided, the model is reconstructed after
+    clearing the TF session so that MirroredStrategy state is restored.
+    Returns ``(predictions, final_batch_size, model)`` — the model reference
+    may differ from the input if a rebuild occurred.
+    """
     bs = int(start_batch)
     last_err = None
     while bs >= int(min_batch):
         try:
             ds = build_dataset_fn(bs)
             result = model.predict(ds, verbose=0)
-            return result, bs
-        except (tf.errors.ResourceExhaustedError, tf.errors.CancelledError, tf.errors.InternalError) as e:
+            return result, bs, model
+        except (tf.errors.ResourceExhaustedError, tf.errors.CancelledError, tf.errors.InternalError,
+                tf.errors.UnknownError) as e:
             last_err = e
-            logger.warning(f"OOM at batch={bs}. Retrying with smaller batch...")
+            new_bs = max(int(min_batch), bs // 2)
+            logger.warning(f"OOM at batch={bs}. Retrying with batch={new_bs}...")
             K.clear_session()
             gc.collect()
             for dev in available_gpus.get_gpu_names_raw():
@@ -222,7 +251,13 @@ def predict_with_backoff(model, build_dataset_fn, start_batch: int, min_batch: i
                 except Exception:
                     pass
             time.sleep(1.0)
-            bs = max(int(min_batch), bs // 2)
+            if rebuild_model_fn is not None:
+                try:
+                    model = rebuild_model_fn()
+                    logger.info("Model rebuilt after OOM recovery")
+                except Exception as rebuild_err:
+                    logger.error(f"Failed to rebuild model after OOM: {rebuild_err}")
+            bs = new_bs
     raise RuntimeError("Prediction OOM/cancelled even at batch=1") from last_err
 
 
@@ -236,13 +271,17 @@ def _log_batch_once(bin_name: str, bs: int):
         _batch_log_once.add(bin_name)
 
 
-def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1):
-    """Run model inference on encoded data using GPU or CPU fallback."""
+def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1, rebuild_model_fn=None):
+    """Run model inference on encoded data using GPU or CPU fallback.
+
+    Returns ``(predictions, model)`` — the model reference may change if an
+    OOM triggered a rebuild via *rebuild_model_fn*.
+    """
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
     if available_gpus.n_gpus() == 0:
         cpu_bs = min(32, max(1, len(new_encoded_data)))  # small & predictable for tests/CI
-        return model.predict(new_encoded_data, batch_size=cpu_bs, verbose=0)
+        return model.predict(new_encoded_data, batch_size=cpu_bs, verbose=0), model
 
     def build_ds(bs: int):
         return (
@@ -251,8 +290,8 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1):
             .prefetch(tf.data.AUTOTUNE)
         )
 
-    preds, _ = predict_with_backoff(model, build_ds, global_bs, min_batch)
-    return preds
+    preds, _, model = predict_with_backoff(model, build_ds, global_bs, min_batch, rebuild_model_fn)
+    return preds, model
 
 
 def load_model_params(model_path_w_CRF):
@@ -287,7 +326,21 @@ def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy
     """Build or load a Keras model (CRF or REG) with optional distribution strategy."""
     if model_path_w_CRF:
         params = load_model_params(model_path_w_CRF)
-        conv_filters = int(params.get("conv_filters", conv_filters))
+
+        # Normalize scalar-or-list params for backward compat with old params files
+        p_conv_filters = params.get("conv_filters", conv_filters)
+        if isinstance(p_conv_filters, (int, float)):
+            p_conv_filters = [int(p_conv_filters)] * int(params["conv_layers"])
+        conv_filters = max(p_conv_filters)  # scalar for batch-sizing callers
+
+        conv_kernel_sizes = params.get("conv_kernel_sizes")
+        if conv_kernel_sizes is None:
+            scalar = params.get("conv_kernel_size", 25)
+            conv_kernel_sizes = [int(scalar)] * int(params["conv_layers"])
+
+        p_lstm_units = params.get("lstm_units")
+        if isinstance(p_lstm_units, (int, float)):
+            p_lstm_units = [int(p_lstm_units) // (2**i) for i in range(int(params["lstm_layers"]))]
 
         scope = strategy.scope() if strategy else contextlib.nullcontext()
         with scope:
@@ -296,11 +349,11 @@ def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy
                 embedding_dim=params["embedding_dim"],
                 num_labels=num_labels,
                 conv_layers=params["conv_layers"],
-                conv_filters=conv_filters,
-                conv_kernel_size=params["conv_kernel_size"],
+                conv_filters=p_conv_filters,
+                conv_kernel_sizes=conv_kernel_sizes,
                 dilation_rates=params.get("dilation_rates"),
                 lstm_layers=params["lstm_layers"],
-                lstm_units=params["lstm_units"],
+                lstm_units=p_lstm_units,
                 bidirectional=params["bidirectional"],
                 attention_heads=params["attention_heads"],
                 dropout_rate=params["dropout_rate"],
@@ -330,6 +383,7 @@ def model_predictions(
     safety_margin: float = 0.35,  # keep ~35% VRAM headroom
     min_batch: int = 1,
     max_batch: int = 8192,
+    token_cap_above: int = 0,
     should_process_chunk=None,
 ):
     """Yield per-chunk (predictions, read_names, reads, lengths, qualities) from a Parquet file."""
@@ -352,20 +406,35 @@ def model_predictions(
     conv_filters = 256  # default for REG models without a params file
     params = load_model_params(model_path_w_CRF)
     if params:
-        conv_filters = int(params.get("conv_filters", conv_filters))
+        cf = params.get("conv_filters", conv_filters)
+        conv_filters = max(cf) if isinstance(cf, list) else int(cf)
+        bpt = estimate_bytes_per_token(
+            embedding_dim=int(params.get("embedding_dim", 128)),
+            conv_filters=params.get("conv_filters", 256),
+            conv_layers=int(params.get("conv_layers", 3)),
+            lstm_units=params.get("lstm_units", 96),
+            bidirectional=bool(params.get("bidirectional", True)),
+            num_labels=num_labels,
+        )
+    else:
+        bpt = estimate_bytes_per_token(num_labels=num_labels)
 
     max_len = int(int(bin_name.replace("bp", "").split("_")[1]) + 10)
     global_bs = choose_global_batch(
         max_len,
-        conv_filters=conv_filters,
+        bytes_per_token=bpt,
         strategy=strategy,
         target_tokens_per_replica=target_tokens_per_replica,
         min_b=min_batch,
         max_b=max_batch,
         user_total_gb=user_total_gb,
         safety_margin=safety_margin,
+        token_cap_above=token_cap_above,
     )
     model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=strategy)
+
+    def _rebuild_model():
+        return build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=strategy)
 
     for chunk_idx in range(chunk_start, num_chunks + 1):
         if callable(should_process_chunk) and not should_process_chunk(bin_name, chunk_idx):
@@ -386,12 +455,17 @@ def model_predictions(
         if global_bs >= 100 and len(reads) >= 100:
             _log_batch_once(bin_name or "", int(global_bs))
 
-            chunk_predictions = annotate_new_data_parallel(X_new_padded, model, global_bs, min_batch=min_batch)
+            chunk_predictions, model = annotate_new_data_parallel(
+                X_new_padded, model, global_bs, min_batch=min_batch,
+                rebuild_model_fn=_rebuild_model,
+            )
         else:
             model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None)
             _log_batch_once(bin_name or "", int(global_bs))
 
-            chunk_predictions = annotate_new_data_parallel(X_new_padded, model, global_bs, min_batch=min_batch)
+            chunk_predictions, model = annotate_new_data_parallel(
+                X_new_padded, model, global_bs, min_batch=min_batch,
+            )
 
         del df_chunk, X_new_padded
         gc.collect()

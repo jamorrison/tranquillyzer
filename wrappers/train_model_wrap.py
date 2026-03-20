@@ -29,7 +29,7 @@ def load_libs():
         DynamicPaddingDataGenerator,
         ont_read_annotator,
     )
-    from scripts.trained_models import seq_orders, get_training_structures, get_training_params
+    from scripts.trained_models import seq_orders, get_training_structures, get_training_params, get_valid_structures
     from scripts.simulate_training_data import generate_training_reads
     from scripts.annotate_new_data import (
         annotate_new_data_parallel,
@@ -61,6 +61,7 @@ def load_libs():
         seq_orders,
         get_training_structures,
         get_training_params,
+        get_valid_structures,
         ont_read_annotator,
         DynamicPaddingDataGenerator,
         annotate_new_data_parallel,
@@ -116,6 +117,7 @@ def train_model_wrap(
         seq_orders,
         get_training_structures,
         get_training_params,
+        get_valid_structures,
         ont_read_annotator,
         DynamicPaddingDataGenerator,
         annotate_new_data_parallel,
@@ -155,10 +157,22 @@ def train_model_wrap(
     raw_params = get_training_params(param_file, model_name)
     logger.info(f"Extracting parameters for {model_name}")
 
-    # Extract dilation_rates before grid search (it's a list parameter, not a grid search axis)
+    # Extract list parameters before grid search (they're per-layer, not grid search axes)
     dilation_rates = raw_params.pop("dilation_rates", None)
     if dilation_rates is not None:
         dilation_rates = [int(x) for x in dilation_rates]
+
+    conv_filters = raw_params.pop("conv_filters", None)
+    if conv_filters is not None:
+        conv_filters = [int(x) for x in conv_filters]
+
+    conv_kernel_sizes = raw_params.pop("conv_kernel_sizes", None)
+    if conv_kernel_sizes is not None:
+        conv_kernel_sizes = [int(x) for x in conv_kernel_sizes]
+
+    lstm_units = raw_params.pop("lstm_units", None)
+    if lstm_units is not None:
+        lstm_units = [int(x) for x in lstm_units]
 
     # Build grid search dict: ensure all values are lists for itertools.product
     param_dict = {}
@@ -173,6 +187,7 @@ def train_model_wrap(
     length_range = (min_cDNA, max_cDNA)
     seq_order, sequences, barcodes, UMIs, strand = seq_orders(training_seq_orders_file, model_name)
     training_structs = get_training_structures(training_seq_orders_file, model_name)
+    valid_structs = get_valid_structures(training_seq_orders_file, model_name)
 
     print(f"seq orders: {seq_order}")
 
@@ -235,10 +250,7 @@ def train_model_wrap(
         embedding_dim = int(params["embedding_dim"])
         num_labels = int(len(seq_order))
         conv_layers = int(params["conv_layers"])
-        conv_filters = int(params["conv_filters"])
-        conv_kernel_size = int(params["conv_kernel_size"])
         lstm_layers = int(params["lstm_layers"])
-        lstm_units = int(params["lstm_units"])
         bidirectional = params["bidirectional"].lower() == "true"
         crf_layer = params["crf_layer"].lower() == "true"
         attention_heads = int(params["attention_heads"])
@@ -256,11 +268,11 @@ def train_model_wrap(
             "vocab_size": vocab_size,
             "embedding_dim": embedding_dim,
             "conv_layers": conv_layers,
-            "conv_filters": conv_filters,
-            "conv_kernel_size": conv_kernel_size,
+            "conv_filters": conv_filters if conv_filters else [260] * conv_layers,
+            "conv_kernel_sizes": conv_kernel_sizes if conv_kernel_sizes else [25] * conv_layers,
             "dilation_rates": dilation_rates if dilation_rates else [1] * conv_layers,
             "lstm_layers": lstm_layers,
-            "lstm_units": lstm_units,
+            "lstm_units": lstm_units if lstm_units else [128 // (2**i) for i in range(lstm_layers)],
             "bidirectional": bidirectional,
             "crf_layer": crf_layer,
             "attention_heads": attention_heads,
@@ -311,7 +323,7 @@ def train_model_wrap(
                 num_labels,
                 conv_layers=conv_layers,
                 conv_filters=conv_filters,
-                conv_kernel_size=conv_kernel_size,
+                conv_kernel_sizes=conv_kernel_sizes,
                 dilation_rates=dilation_rates,
                 lstm_layers=lstm_layers,
                 lstm_units=lstm_units,
@@ -361,7 +373,7 @@ def train_model_wrap(
         max_read_len = int(max(validation_read_lengths)) + 10
 
         encoded_data = preprocess_sequences(validation_reads, max_read_len)
-        predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        predictions, _ = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
         annotated_reads, _, _ = extract_annotated_full_length_seqs(
             validation_reads,
             predictions,
@@ -371,6 +383,7 @@ def train_model_wrap(
             seq_order,
             barcodes,
             n_jobs=1,
+            valid_structures=valid_structs,
         )
         save_plots_to_pdf(
             validation_reads,

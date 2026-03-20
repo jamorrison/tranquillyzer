@@ -18,6 +18,7 @@ def annotate_reads_wrap(
     chunk_size,
     gpu_mem,
     target_tokens,
+    token_cap_above,
     vram_headroom,
     min_batch_size,
     max_batch_size,
@@ -389,6 +390,7 @@ def annotate_reads_wrap(
                         safety_margin=vram_headroom,
                         min_batch=min_batch_size,
                         max_batch=max_batch_size,
+                        token_cap_above=token_cap_above,
                     ):
                         task_queue.put(item)
                         queued_chunks += 1
@@ -505,6 +507,7 @@ def annotate_reads_wrap(
                             safety_margin=vram_headroom,
                             min_batch=min_batch_size,
                             max_batch=max_batch_size,
+                            token_cap_above=token_cap_above,
                         ):
                             task_queue.put(item)
                             queued_chunks += 1
@@ -600,6 +603,7 @@ def annotate_reads_wrap(
                         safety_margin=vram_headroom,
                         min_batch=min_batch_size,
                         max_batch=max_batch_size,
+                        token_cap_above=token_cap_above,
                     ):
                         task_queue.put(item)
                         queued_chunks += 1
