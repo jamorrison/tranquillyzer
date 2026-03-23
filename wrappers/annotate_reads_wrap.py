@@ -2,7 +2,6 @@
 import logging
 import queue
 import time
-import shutil
 
 # Share logger across all functions in module
 logger = logging.getLogger(__name__)
@@ -13,7 +12,6 @@ def annotate_reads_wrap(
     whitelist_file,
     output_fmt,
     model_name,
-    model_type,
     seq_order_file,
     chunk_size,
     gpu_mem,
@@ -52,6 +50,7 @@ def annotate_reads_wrap(
         _convert_chunk_outputs,
         _combine_demux_chunk_outputs,
     )
+    from scripts.annotate_new_data import load_model_for_inference, load_model_params
 
     (
         os,
@@ -107,15 +106,9 @@ def annotate_reads_wrap(
             pass
         return models
 
-    # TODO: model_path and model_path_w_CRF can probably be moved into the model if-statement
-    #       This may have to wait until post_process_worker has been moved out of this function though
-    model_path_w_CRF = None
-    model_path = None
-
-    if model_type == "REG" or model_type == "HYB":
-        model_path = f"{models_dir}/{model_name}.h5"
-        with open(f"{models_dir}/{model_name}_lbl_bin.pkl", "rb") as f:
-            label_binarizer = pickle.load(f)
+    model_path = f"{models_dir}/{model_name}.h5"
+    with open(f"{models_dir}/{model_name}_lbl_bin.pkl", "rb") as f:
+        label_binarizer = pickle.load(f)
 
     try:
         seq_order, sequences, barcodes, UMIs, strand = seq_orders(seq_order_file, model_name)
@@ -262,9 +255,8 @@ def annotate_reads_wrap(
                     strand,
                     output_fmt,
                     base_qualities,
-                    model_type,
                     pass_num_worker,
-                    model_path_w_CRF,
+                    model_path,
                     predictions,
                     label_binarizer,
                     read_lengths,
@@ -326,315 +318,109 @@ def annotate_reads_wrap(
             start_chunk += 1
         return start_bin_idx, start_chunk
 
-    if model_type == "REG" or model_type == "HYB":
-        task_queue = mp.Queue(maxsize=max_queue_size)
-        result_queue = mp.Queue()
-        count = mp.Value("i", 0)
+    # Load the model once and reuse across all bins
+    model, strategy, params, min_batch_from_model = load_model_for_inference(model_path, num_labels)
+    if min_batch_size < min_batch_from_model:
+        min_batch_size = min_batch_from_model
 
-        pass_num = 1
+    task_queue = mp.Queue(maxsize=max_queue_size)
+    result_queue = mp.Queue()
+    count = mp.Value("i", 0)
 
-        logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
+    pass_num = 1
 
-        workers = [
-            mp.Process(
-                target=post_process_worker,
-                args=(
-                    task_queue,
-                    strand,
-                    effective_output_fmt,
-                    count,
-                    result_queue,
-                    include_barcode_quals,
-                    include_polya,
-                    run_barcode_correction,
-                    run_demux,
-                    pass_num,
-                    checkpoint_file,
-                    checkpoint_file + ".lock",
-                ),
+    logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
+
+    workers = [
+        mp.Process(
+            target=post_process_worker,
+            args=(
+                task_queue,
+                strand,
+                effective_output_fmt,
+                count,
+                result_queue,
+                include_barcode_quals,
+                include_polya,
+                run_barcode_correction,
+                run_demux,
+                pass_num,
+                checkpoint_file,
+                checkpoint_file + ".lock",
+            ),
+        )
+        for _ in range(num_workers)
+    ]
+
+    logger.info(f"Number of workers = {len(workers)}")
+
+    for worker in workers:
+        worker.start()
+
+    logger.info("Starting annotation pass on all reads")
+    try:
+        pass1_pointer = _resume_pointer_for_pass(1, parquet_files)
+        if pass1_pointer is None:
+            logger.info("Skipping annotation: checkpoint indicates it is already complete")
+        else:
+            start_bin_idx, start_chunk = pass1_pointer
+            logger.info(
+                f"Resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if (run_files := parquet_files[start_bin_idx:]) else 'N/A'}, "
+                f"start_chunk={start_chunk}"
             )
-            for _ in range(num_workers)
-        ]
-
-        logger.info(f"Number of workers = {len(workers)}")
-
-        for worker in workers:
-            worker.start()
-
-        # process all the reads with CNN-LSTM model first
-        logger.info("Starting first pass with regular model on all the reads")
-        try:
-            pass1_pointer = _resume_pointer_for_pass(1, parquet_files)
-            if pass1_pointer is None:
-                logger.info("Skipping pass 1: checkpoint indicates it is already complete")
-            else:
-                start_bin_idx, start_chunk = pass1_pointer
-                logger.info(
-                    f"Pass 1 resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if (run_files := parquet_files[start_bin_idx:]) else 'N/A'}, "
-                    f"start_chunk={start_chunk}"
-                )
-                run_files = parquet_files[start_bin_idx:]
-                queued_chunks = 0
-                for i, parquet_file in enumerate(run_files):
-                    chunk_start_local = start_chunk if i == 0 else 1
-                    for item in model_predictions(
-                        parquet_file,
-                        chunk_start_local,
-                        chunk_size,
-                        model_path,
-                        model_path_w_CRF,
-                        model_type,
-                        num_labels,
-                        user_total_gb=gpu_mem,
-                        target_tokens_per_replica=target_tokens,
-                        safety_margin=vram_headroom,
-                        min_batch=min_batch_size,
-                        max_batch=max_batch_size,
-                        token_cap_above=token_cap_above,
-                    ):
-                        task_queue.put(item)
-                        queued_chunks += 1
-                total_queued_chunks += queued_chunks
-                if queued_chunks == 0:
-                    logger.info("No pending chunks found for pass 1. This pass is already annotated.")
-        except Exception as e:
-            # Wind down queues, close workers when done, print error and exit
-            for _ in range(threads):
-                task_queue.put(None)
-
-            _empty_results_queue(result_queue, workers)
-            for worker in workers:
-                worker.join()
-                worker.close()
-
-            logger.error(
-                f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
-            )
-            sys.exit(1)
-
-        logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
-
+            run_files = parquet_files[start_bin_idx:]
+            queued_chunks = 0
+            for i, parquet_file in enumerate(run_files):
+                chunk_start_local = start_chunk if i == 0 else 1
+                for item in model_predictions(
+                    parquet_file,
+                    chunk_start_local,
+                    chunk_size,
+                    model,
+                    model_path,
+                    strategy,
+                    params,
+                    num_labels,
+                    user_total_gb=gpu_mem,
+                    target_tokens_per_replica=target_tokens,
+                    safety_margin=vram_headroom,
+                    min_batch=min_batch_size,
+                    max_batch=max_batch_size,
+                    token_cap_above=token_cap_above,
+                ):
+                    task_queue.put(item)
+                    queued_chunks += 1
+            total_queued_chunks += queued_chunks
+            if queued_chunks == 0:
+                logger.info("No pending chunks found. Dataset is already annotated.")
+    except Exception as e:
+        # Wind down queues, close workers when done, print error and exit
         for _ in range(threads):
             task_queue.put(None)
 
-        logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
-        collect_prediction_stats(result_queue, workers)
-        logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
-
-        logger.info("Finished first pass with regular model on all the reads")
-
-        for worker in workers:
-            worker.join()
-
-        logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
-        model_path_w_CRF = f"{models_dir}/{model_name}_w_CRF.h5"
-
-        if model_type == "HYB":
-            tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")
-
-            convert_tsv_to_parquet(tmp_invalid_dir, row_group_size=1000000)
-            invalid_parquet_files = sorted(
-                [
-                    os.path.join(tmp_invalid_dir, f)
-                    for f in os.listdir(tmp_invalid_dir)
-                    if f.endswith(".parquet") and not f.endswith("read_index.parquet")
-                ],
-                key=lambda f: estimate_average_read_length_from_bin(os.path.basename(f).replace(".parquet", "")),
-            )
-
-            with open(f"{models_dir}/{model_name}_w_CRF_lbl_bin.pkl", "rb") as f:
-                label_binarizer = pickle.load(f)
-
-            # if model type selcted is HYB, process the failed reads in step 1 with CNN-LSTM-CRF model
-            pass_num = 2
-            task_queue = mp.Queue(maxsize=max_queue_size)
-            result_queue = mp.Queue()
-
-            with count.get_lock():
-                count.value = 0
-
-            workers = [
-                mp.Process(
-                    target=post_process_worker,
-                    args=(
-                        task_queue,
-                        strand,
-                        effective_output_fmt,
-                        count,
-                        result_queue,
-                        include_barcode_quals,
-                        include_polya,
-                        run_barcode_correction,
-                        run_demux,
-                        pass_num,
-                        checkpoint_file,
-                        checkpoint_file + ".lock",
-                    ),
-                )
-                for _ in range(num_workers)
-            ]
-
-            for worker in workers:
-                worker.start()
-
-            logger.info("Starting second pass with CRF model on invalid reads")
-            try:
-                pass2_pointer = _resume_pointer_for_pass(2, invalid_parquet_files)
-                if pass2_pointer is None:
-                    logger.info("Skipping pass 2: checkpoint indicates it is already complete")
-                else:
-                    start_bin_idx, start_chunk = pass2_pointer
-                    run_files = invalid_parquet_files[start_bin_idx:]
-                    logger.info(
-                        f"Pass 2 resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if run_files else 'N/A'}, "
-                        f"start_chunk={start_chunk}"
-                    )
-                    queued_chunks = 0
-                    for i, invalid_parquet_file in enumerate(run_files):
-                        if calculate_total_rows(invalid_parquet_file) < 100:
-                            continue
-                        chunk_start_local = start_chunk if i == 0 else 1
-                        for item in model_predictions(
-                            invalid_parquet_file,
-                            chunk_start_local,
-                            chunk_size,
-                            model_path,
-                            model_path_w_CRF,
-                            model_type,
-                            num_labels,
-                            user_total_gb=gpu_mem,
-                            target_tokens_per_replica=target_tokens,
-                            safety_margin=vram_headroom,
-                            min_batch=min_batch_size,
-                            max_batch=max_batch_size,
-                            token_cap_above=token_cap_above,
-                        ):
-                            task_queue.put(item)
-                            queued_chunks += 1
-                    total_queued_chunks += queued_chunks
-                    if queued_chunks == 0:
-                        logger.info("No pending chunks found for pass 2. This pass is already annotated.")
-            except Exception as e:
-                # Wind down queues, close workers when done, print error and exit
-                for _ in range(threads):
-                    task_queue.put(None)
-
-                _empty_results_queue(result_queue, workers)
-                for worker in workers:
-                    worker.join()
-                    worker.close()
-
-                logger.error(
-                    f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
-                )
-                sys.exit(1)
-
-            for _ in range(threads):
-                task_queue.put(None)
-
-            collect_prediction_stats(result_queue, workers)
-            logger.info("Finished second pass with CRF model on invalid reads")
-
-            for worker in workers:
-                worker.join()
-
-    if model_type == "CRF":
-        # process all the reads with CNN-LSTM-CRF model
-        model_path_w_CRF = f"{models_dir}/{model_name}_w_CRF.h5"
-
-        with open(f"{models_dir}/{model_name}_w_CRF_lbl_bin.pkl", "rb") as f:
-            label_binarizer = pickle.load(f)
-
-        task_queue = mp.Queue(maxsize=max_queue_size)
-        result_queue = mp.Queue()
-        count = mp.Value("i", 0)
-
-        pass_num = 1
-
-        workers = [
-            mp.Process(
-                target=post_process_worker,
-                args=(
-                    task_queue,
-                    strand,
-                    effective_output_fmt,
-                    count,
-                    result_queue,
-                    include_barcode_quals,
-                    include_polya,
-                    run_barcode_correction,
-                    run_demux,
-                    pass_num,
-                    checkpoint_file,
-                    checkpoint_file + ".lock",
-                ),
-            )
-            for _ in range(num_workers)
-        ]
-
-        for worker in workers:
-            worker.start()
-
-        logger.info("Starting first pass with CRF model on all the reads")
-        try:
-            pass1_pointer = _resume_pointer_for_pass(1, parquet_files)
-            if pass1_pointer is None:
-                logger.info("Skipping CRF pass: checkpoint indicates it is already complete")
-            else:
-                start_bin_idx, start_chunk = pass1_pointer
-                run_files = parquet_files[start_bin_idx:]
-                logger.info(
-                    f"CRF pass resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if run_files else 'N/A'}, "
-                    f"start_chunk={start_chunk}"
-                )
-                queued_chunks = 0
-                for i, parquet_file in enumerate(run_files):
-                    chunk_start_local = start_chunk if i == 0 else 1
-                    for item in model_predictions(
-                        parquet_file,
-                        chunk_start_local,
-                        chunk_size,
-                        None,
-                        model_path_w_CRF,
-                        model_type,
-                        num_labels,
-                        user_total_gb=gpu_mem,
-                        target_tokens_per_replica=target_tokens,
-                        safety_margin=vram_headroom,
-                        min_batch=min_batch_size,
-                        max_batch=max_batch_size,
-                        token_cap_above=token_cap_above,
-                    ):
-                        task_queue.put(item)
-                        queued_chunks += 1
-                total_queued_chunks += queued_chunks
-                if queued_chunks == 0:
-                    logger.info("No pending chunks found for CRF pass. This pass is already annotated.")
-        except Exception as e:
-            # Wind down queues, close workers when done, print error and exit
-            for _ in range(threads):
-                task_queue.put(None)
-
-            _empty_results_queue(result_queue, workers)
-            for worker in workers:
-                worker.join()
-                worker.close()
-
-            logger.error(
-                f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
-            )
-            sys.exit(1)
-
-        for _ in range(threads):
-            task_queue.put(None)
-
-        collect_prediction_stats(result_queue, workers)
-
-        logger.info("Finished first pass with CRF model on all the reads")
-
+        _empty_results_queue(result_queue, workers)
         for worker in workers:
             worker.join()
             worker.close()
+
+        logger.error(
+            f"Error found while annotating: {e}. Resume from the last checkpoint by re-running with resume enabled. Exiting!"
+        )
+        sys.exit(1)
+
+    logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
+
+    for _ in range(threads):
+        task_queue.put(None)
+
+    logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
+    collect_prediction_stats(result_queue, workers)
+    logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
+
+    logger.info("Finished annotation pass on all reads")
+
+    for worker in workers:
+        worker.join()
 
     skip_chunk_output_conversion = False
     if resume and total_queued_chunks == 0:
@@ -668,11 +454,6 @@ def annotate_reads_wrap(
             effective_output_fmt,
             keep_demux_chunk_outputs_after_combine,
         )
-
-    if model_type == "HYB":
-        tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")
-        if os.path.isdir(tmp_invalid_dir):
-            shutil.rmtree(tmp_invalid_dir)
 
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB

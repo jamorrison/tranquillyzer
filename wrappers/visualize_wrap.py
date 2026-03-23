@@ -52,7 +52,6 @@ def visualize_wrap(
     output_dir,
     output_file,
     model_name,
-    model_type,
     seq_order_file,
     models_dir,
     gpu_mem,
@@ -114,27 +113,19 @@ def visualize_wrap(
     valid_structs = get_valid_structures(seq_order_file, model_name)
 
     num_labels = len(seq_order)
-    model_path_w_CRF = None
-    model_path = None
 
-    conv_filters = 256  # default for REG models without a params file
+    model_path = os.path.join(models_dir, model_name + ".h5")
+    with open(os.path.join(models_dir, model_name + "_lbl_bin.pkl"), "rb") as f:
+        label_binarizer = pickle.load(f)
 
-    if model_type == "REG":
-        model_path = os.path.join(models_dir, model_name + ".h5")
-        with open(os.path.join(models_dir, model_name + "_lbl_bin.pkl"), "rb") as f:
-            label_binarizer = pickle.load(f)
-    else:
-        model_path_w_CRF = os.path.join(models_dir, model_name + "_w_CRF.h5")
-        with open(os.path.join(models_dir, model_name + "_w_CRF_lbl_bin.pkl"), "rb") as f:
-            label_binarizer = pickle.load(f)
-
-    params = load_model_params(model_path_w_CRF)
+    conv_filters = 256
+    params = load_model_params(model_path)
     if params:
         cf = params.get("conv_filters", conv_filters)
         conv_filters = max(cf) if isinstance(cf, list) else int(cf)
 
     try:
-        model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None)
+        model = build_model(model_path, conv_filters, num_labels, strategy=None)
     except Exception as e:
         logger.error(f"Error encountered while building model: {e}")
         sys.exit(1)
@@ -220,7 +211,7 @@ def visualize_wrap(
     # Perform annotation and plotting
     encoded_data = preprocess_sequences(selected_reads, max_read_len + 10)
     try:
-        logger.info(f"Annotating selected reads with the {model_type} model")
+        logger.info("Annotating selected reads with the CRF model")
         predictions, model = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
         logger.info("Annotation completed successfully")
     except Exception as e:
@@ -231,7 +222,7 @@ def visualize_wrap(
     annotated_reads, _, _ = extract_annotated_full_length_seqs(
         selected_reads,
         predictions,
-        model_path_w_CRF,
+        model_path,
         selected_read_lengths,
         label_binarizer,
         seq_order,

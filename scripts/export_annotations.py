@@ -1,10 +1,9 @@
 import os
 import gc
-import csv
 import gzip
 import logging
 import pandas as pd
-import polars as pl
+
 import tensorflow as tf
 from scripts.correct_barcodes import bc_n_demultiplex
 from scripts.extract_annotated_seqs import extract_annotated_full_length_seqs
@@ -93,9 +92,8 @@ def process_full_length_reads_in_chunks_and_save(
     strand,
     output_fmt,
     base_qualities,
-    model_type,
     pass_num,
-    model_path_w_CRF,
+    model_path,
     predictions,
     bin_name,
     chunk_idx,
@@ -123,7 +121,7 @@ def process_full_length_reads_in_chunks_and_save(
 
     n_jobs_extract = min(16, reads_in_chunk)
     chunk_contiguous_annotated_sequences, expanded_read_names, source_indices = extract_annotated_full_length_seqs(
-        reads, predictions, model_path_w_CRF, actual_lengths, label_binarizer, seq_order, barcodes, n_jobs_extract,
+        reads, predictions, model_path, actual_lengths, label_binarizer, seq_order, barcodes, n_jobs_extract,
         original_read_names=original_read_names, split_concatenated=split_concatenated,
         valid_structures=valid_structures,
     )
@@ -168,43 +166,12 @@ def process_full_length_reads_in_chunks_and_save(
     else:
         demuxed_chunk_file, ambiguous_chunk_file = None, None
 
-    if model_type == "HYB" and pass_num == 1:
-        tmp_invalid_dir = os.path.join(output_dir, "tmp_invalid_reads")
-        os.makedirs(tmp_invalid_dir, exist_ok=True)
-
-        tmp_invalid_payload = {
-            "ReadName": invalid_reads_df["ReadName"],
-            "read": invalid_reads_df["read"],
-            "read_length": invalid_reads_df["read_length"],
-        }
-        if output_fmt == "fastq":
-            tmp_invalid_payload["base_qualities"] = invalid_reads_df["base_qualities"]
-
-        tmp_invalid_df = pl.DataFrame(tmp_invalid_payload)
-
-        tmp_path = f"{tmp_invalid_dir}/{bin_name}.tsv"
-        lock_path = f"{tmp_path}.lock"
-
-        if not os.path.exists(lock_path):
-            with open(lock_path, "w") as lock_file:
-                lock_file.write("")
-
-        write_header = not os.path.exists(tmp_path)
-        with open(tmp_path, "a", newline="") as f:
-            writer = csv.writer(f, delimiter="\t")
-            if write_header:
-                writer.writerow(tmp_invalid_df.columns)
-            writer.writerows(tmp_invalid_df.rows())
-
-    else:
-        if not invalid_reads_df.empty:
-            os.makedirs(os.path.join(chunk_output_dir, "invalid_chunks"), exist_ok=True)
-            invalid_chunk_file = os.path.join(
-                chunk_output_dir, "invalid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.parquet"
-            )
-            pl.DataFrame(
-                {col: invalid_reads_df[col].tolist() for col in invalid_reads_df.columns}, strict=False
-            ).write_parquet(invalid_chunk_file, compression="snappy")
+    if not invalid_reads_df.empty:
+        os.makedirs(os.path.join(chunk_output_dir, "invalid_chunks"), exist_ok=True)
+        invalid_chunk_file = os.path.join(
+            chunk_output_dir, "invalid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.tsv"
+        )
+        invalid_reads_df.to_csv(invalid_chunk_file, sep="\t", index=False)
 
     column_mapping = {barcode: barcode for barcode in barcodes}
 
@@ -253,11 +220,9 @@ def process_full_length_reads_in_chunks_and_save(
 
         os.makedirs(os.path.join(chunk_output_dir, "valid_chunks"), exist_ok=True)
         valid_chunk_file = os.path.join(
-            chunk_output_dir, "valid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.parquet"
+            chunk_output_dir, "valid_chunks", f"pass{pass_num}__{bin_name}__chunk{int(chunk_idx):06d}.tsv"
         )
-        pl.DataFrame(
-            {col: output_df[col].tolist() for col in output_df.columns}, strict=False
-        ).write_parquet(valid_chunk_file, compression="snappy")
+        output_df.to_csv(valid_chunk_file, sep="\t", index=False)
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
 
@@ -282,9 +247,8 @@ def post_process_reads(
     strand,
     output_fmt,
     base_qualities,
-    model_type,
     pass_num,
-    model_path_w_CRF,
+    model_path,
     predictions,
     label_binarizer,
     read_lengths,
@@ -312,9 +276,8 @@ def post_process_reads(
         strand,
         output_fmt,
         base_qualities,
-        model_type,
         pass_num,
-        model_path_w_CRF,
+        model_path,
         predictions,
         bin_name,
         chunk_idx,

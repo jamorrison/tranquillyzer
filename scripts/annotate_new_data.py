@@ -19,7 +19,6 @@ import tensorflow as tf
 from scripts.train_new_model import ont_read_annotator
 import scripts.available_gpus as available_gpus
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import load_model
 from tensorflow.keras import backend as K
 
 # TODO: Will need to think about how to handle this when users are able to pick
@@ -294,12 +293,12 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1, 
     return preds, model
 
 
-def load_model_params(model_path_w_CRF):
-    """Load model hyperparameters from the YAML or JSON params file alongside a CRF model."""
-    if not model_path_w_CRF:
+def load_model_params(model_path):
+    """Load model hyperparameters from the YAML or JSON params file alongside a model."""
+    if not model_path:
         return None
-    yaml_path = model_path_w_CRF.replace(".h5", "_params.yaml")
-    json_path = model_path_w_CRF.replace(".h5", "_params.json")
+    yaml_path = model_path.replace(".h5", "_params.yaml")
+    json_path = model_path.replace(".h5", "_params.json")
     if os.path.exists(yaml_path):
         with open(yaml_path) as f:
             return yaml.safe_load(f)
@@ -322,61 +321,76 @@ def load_model_params(model_path_w_CRF):
         raise FileNotFoundError(f"No params file found at {yaml_path} or {json_path}")
 
 
-def build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None):
-    """Build or load a Keras model (CRF or REG) with optional distribution strategy."""
-    if model_path_w_CRF:
-        params = load_model_params(model_path_w_CRF)
+def build_model(model_path, conv_filters, num_labels, strategy=None):
+    """Build a CRF Keras model from params and load weights, with optional distribution strategy."""
+    params = load_model_params(model_path)
 
-        # Normalize scalar-or-list params for backward compat with old params files
-        p_conv_filters = params.get("conv_filters", conv_filters)
-        if isinstance(p_conv_filters, (int, float)):
-            p_conv_filters = [int(p_conv_filters)] * int(params["conv_layers"])
-        conv_filters = max(p_conv_filters)  # scalar for batch-sizing callers
+    # Normalize scalar-or-list params for backward compat with old params files
+    p_conv_filters = params.get("conv_filters", conv_filters)
+    if isinstance(p_conv_filters, (int, float)):
+        p_conv_filters = [int(p_conv_filters)] * int(params["conv_layers"])
+    conv_filters = max(p_conv_filters)  # scalar for batch-sizing callers
 
-        conv_kernel_sizes = params.get("conv_kernel_sizes")
-        if conv_kernel_sizes is None:
-            scalar = params.get("conv_kernel_size", 25)
-            conv_kernel_sizes = [int(scalar)] * int(params["conv_layers"])
+    conv_kernel_sizes = params.get("conv_kernel_sizes", params.get("conv_kernel_size", [25]))
+    if isinstance(conv_kernel_sizes, (int, float)):
+        conv_kernel_sizes = [int(conv_kernel_sizes)] * int(params["conv_layers"])
 
-        p_lstm_units = params.get("lstm_units")
-        if isinstance(p_lstm_units, (int, float)):
-            p_lstm_units = [int(p_lstm_units) // (2**i) for i in range(int(params["lstm_layers"]))]
+    p_lstm_units = params.get("lstm_units")
+    if isinstance(p_lstm_units, (int, float)):
+        p_lstm_units = [int(p_lstm_units) // (2**i) for i in range(int(params["lstm_layers"]))]
 
-        scope = strategy.scope() if strategy else contextlib.nullcontext()
-        with scope:
-            model = ont_read_annotator(
-                vocab_size=params["vocab_size"],
-                embedding_dim=params["embedding_dim"],
-                num_labels=num_labels,
-                conv_layers=params["conv_layers"],
-                conv_filters=p_conv_filters,
-                conv_kernel_sizes=conv_kernel_sizes,
-                dilation_rates=params.get("dilation_rates"),
-                lstm_layers=params["lstm_layers"],
-                lstm_units=p_lstm_units,
-                bidirectional=params["bidirectional"],
-                attention_heads=params["attention_heads"],
-                dropout_rate=params["dropout_rate"],
-                regularization=params["regularization"],
-                learning_rate=params["learning_rate"],
-                crf_layer=True,
-            )
-        _ = model(tf.zeros((1, 512), dtype=tf.int32), training=False)
-        model.load_weights(model_path_w_CRF)
-    else:
-        scope = strategy.scope() if strategy else contextlib.nullcontext()
-        with scope:
-            model = load_model(model_path)
+    scope = strategy.scope() if strategy else contextlib.nullcontext()
+    with scope:
+        model = ont_read_annotator(
+            vocab_size=params["vocab_size"],
+            embedding_dim=params["embedding_dim"],
+            num_labels=num_labels,
+            conv_layers=params["conv_layers"],
+            conv_filters=p_conv_filters,
+            conv_kernel_sizes=conv_kernel_sizes,
+            dilation_rates=params.get("dilation_rates"),
+            lstm_layers=params["lstm_layers"],
+            lstm_units=p_lstm_units,
+            bidirectional=params["bidirectional"],
+            attention_heads=params["attention_heads"],
+            dropout_rate=params["dropout_rate"],
+            regularization=params["regularization"],
+            learning_rate=params["learning_rate"],
+            crf_layer=True,
+        )
+    _ = model(tf.zeros((1, 512), dtype=tf.int32), training=False)
+    model.load_weights(model_path)
     return model
+
+
+def load_model_for_inference(model_path, num_labels):
+    """Build the CRF model once for reuse across all bins.
+
+    Returns ``(model, strategy, params, min_batch)`` so the caller can
+    pass them into :func:`model_predictions` for each bin.
+    """
+    n_gpus = available_gpus.n_gpus()
+    min_batch = int(n_gpus) if n_gpus > 0 else 1
+    strategy = tf.distribute.MirroredStrategy() if n_gpus > 1 else None
+
+    conv_filters = 256
+    params = load_model_params(model_path)
+    if params:
+        cf = params.get("conv_filters", conv_filters)
+        conv_filters = max(cf) if isinstance(cf, list) else int(cf)
+
+    model = build_model(model_path, conv_filters, num_labels, strategy=strategy)
+    return model, strategy, params, min_batch
 
 
 def model_predictions(
     parquet_file,
     chunk_start,
     chunk_size,
+    model,
     model_path,
-    model_path_w_CRF,
-    model_type,
+    strategy,
+    params,
     num_labels,
     user_total_gb: Optional[str] = None,  # e.g. "48" or "48,48,24"; None → 12 GB/GPU
     target_tokens_per_replica: int = 1_200_000,  # tune 0.8–1.5M per your GPUs
@@ -386,7 +400,11 @@ def model_predictions(
     token_cap_above: int = 0,
     should_process_chunk=None,
 ):
-    """Yield per-chunk (predictions, read_names, reads, lengths, qualities) from a Parquet file."""
+    """Yield per-chunk (predictions, read_names, reads, lengths, qualities) from a Parquet file.
+
+    The *model* is pre-built by the caller via :func:`load_model_for_inference`
+    and reused across bins.
+    """
     total_rows = calculate_total_rows(parquet_file)
     bin_name = os.path.basename(parquet_file).replace(".parquet", "")
 
@@ -398,13 +416,7 @@ def model_predictions(
     scan_df = pl.scan_parquet(parquet_file)
     num_chunks = (total_rows // dynamic_chunk_size) + (1 if total_rows % dynamic_chunk_size > 0 else 0)
 
-    # Build/load model once (CPU: no strategy; GPU: MirroredStrategy)
-    n_gpus = available_gpus.n_gpus()
-    min_batch = int(n_gpus) if n_gpus > 0 else min_batch
-    strategy = tf.distribute.MirroredStrategy() if n_gpus > 1 else None
-
-    conv_filters = 256  # default for REG models without a params file
-    params = load_model_params(model_path_w_CRF)
+    conv_filters = 256
     if params:
         cf = params.get("conv_filters", conv_filters)
         conv_filters = max(cf) if isinstance(cf, list) else int(cf)
@@ -431,10 +443,11 @@ def model_predictions(
         safety_margin=safety_margin,
         token_cap_above=token_cap_above,
     )
-    model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=strategy)
 
     def _rebuild_model():
-        return build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=strategy)
+        return build_model(model_path, conv_filters, num_labels, strategy=strategy)
+
+    using_strategy = strategy is not None
 
     for chunk_idx in range(chunk_start, num_chunks + 1):
         if callable(should_process_chunk) and not should_process_chunk(bin_name, chunk_idx):
@@ -452,20 +465,23 @@ def model_predictions(
         encoded_data = preprocess_sequences(reads, max_len)
         X_new_padded = pad_sequences(encoded_data, padding="post", dtype="int32", maxlen=max_len)
 
-        if global_bs >= 100 and len(reads) >= 100:
-            _log_batch_once(bin_name or "", int(global_bs))
+        _log_batch_once(bin_name or "", int(global_bs))
 
+        use_strategy = global_bs >= 100 and len(reads) >= 100
+        if use_strategy:
+            if not using_strategy and strategy is not None:
+                model = build_model(model_path, conv_filters, num_labels, strategy=strategy)
+                using_strategy = True
             chunk_predictions, model = annotate_new_data_parallel(
                 X_new_padded, model, global_bs, min_batch=min_batch,
                 rebuild_model_fn=_rebuild_model,
             )
         else:
-            model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None)
-            _log_batch_once(bin_name or "", int(global_bs))
-
-            chunk_predictions, model = annotate_new_data_parallel(
-                X_new_padded, model, global_bs, min_batch=min_batch,
-            )
+            if using_strategy:
+                model = build_model(model_path, conv_filters, num_labels, strategy=None)
+                using_strategy = False
+            small_bs = max(1, min(global_bs, len(reads)))
+            chunk_predictions = model.predict(X_new_padded, batch_size=small_bs, verbose=0)
 
         del df_chunk, X_new_padded
         gc.collect()

@@ -697,6 +697,12 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
     valid_df  = _scan_cols(valid_path,   load_cols)       if valid_path   else pl.DataFrame()
     inv_df    = _scan_cols(invalid_path, ["read_length"]) if invalid_path else pl.DataFrame()
 
+    # Ensure read_length is numeric (chunk parquets may store it as str)
+    if not valid_df.is_empty() and "read_length" in valid_df.columns:
+        valid_df = valid_df.with_columns(pl.col("read_length").cast(pl.Int64, strict=False))
+    if not inv_df.is_empty() and "read_length" in inv_df.columns:
+        inv_df = inv_df.with_columns(pl.col("read_length").cast(pl.Int64, strict=False))
+
     # Max read length (needed to compute bin widths)
     max_read_len = 0
     if not valid_df.is_empty() and "read_length" in valid_df.columns:
@@ -752,7 +758,7 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
     def _bin_counts_bw(df, bw):
         return dict(
             df.with_columns(
-                (pl.col("read_length") // bw * bw).cast(pl.Int64).alias("bin")
+                (pl.col("read_length") // bw * bw).alias("bin")
             )
             .group_by("bin").len().sort("bin").rows()
         )
@@ -954,7 +960,10 @@ def _plot_read_length_per_cell(valid_path, vcols):
     stats = (
         pl.scan_parquet(valid_path)
         .select([cell_col, "read_length"])
-        .with_columns(pl.col(cell_col).cast(pl.Utf8).alias("_cid"))
+        .with_columns(
+            pl.col(cell_col).cast(pl.Utf8).alias("_cid"),
+            pl.col("read_length").cast(pl.Int64, strict=False),
+        )
         .filter(pl.col("_cid") != "")
         .group_by("_cid")
         .agg([

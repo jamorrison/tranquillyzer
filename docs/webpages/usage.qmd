@@ -152,24 +152,11 @@ reads to their respective cells (i.e., demultiplexes) in a single step. It produ
   - `OUTPUT_DIR/plots/demux_plots.pdf`
   - `OUTPUT_DIR/plots/full_read_annots.pdf`
 
-**Note:** Before running the `annotate-reads` subcommand, ensure you select the appropriate model and model type for
-your dataset. Tranquillyzer supports multiple model types:
+**Note:** Before running the `annotate-reads` subcommand, ensure you select the appropriate model for
+your dataset. Tranquillyzer uses CNN-LSTM-CRF models for annotation.
 
-- REG (the base model, a standard CNN-LSTM model)
-- CRF (CNN-LSTM model with an added CRF layer for improved label consistency)
-- HYB (hybrid mode which runs REG first and reprocesses invalid reads with CRF)
-
-The conventions for naming models are as follows:
-
-- The REG model uses the base name (e.g., `10x3p_sc_ont_011.h5`)
-- The CRF model (and the HYB model when it runs the CRF model) is the base name followed by `_w_CRF` (e.g.
-  `10x3p_sc_ont_011_w_CRF.h5`)
-
-To select a model type (REG, CRF, or HYB), simply specify the base model name. Tranquillyzer will automatically detect
-the presence of the corresponding `_w_CRF` model file for the CRF or HYB types.
-
-If only one version (REG or CRF) is available for a model, the user must select the corresponding model type explicitly.
-We recommend verifying which model versions are present (via `availablemodels`) before running `annotate-reads`.
+Model files follow the naming convention: `<model_name>.h5`, `<model_name>_lbl_bin.pkl`,
+`<model_name>_params.yaml` (e.g., `10x3p_sc_ont_011.h5`).
 
 Currently available trained models can be downloaded from [this  Dropbox link](https://www.dropbox.com/scl/fo/3lms8n97bnufzqa4ausv9/AGkO3EVrL1ZgctwEwTK1mEA?rlkey=47m69a6smwsisdznbwu3jvjpu&st=253al7s3&dl=0)
 and should be placed in the `models/` directory within the cloned Tranquillyzer repository.
@@ -200,10 +187,7 @@ Required Arguments
 Optional Arguments
 
 - `--output-fmt TEXT`: Output format for demultiplexed reads: `fasta` or `fastq` (default: `fasta`)
-- `--model-name TEXT:` Base model name (the name of the model without any file suffixes). For `--model-type CRF`,
-  `_w_CRF` will be appended to the base model name. (default: `10x3p_sc_ont_011`)
-- `--model-type TEXT`: The type of model to run (see above for descriptions of each type): `REG`, `CRF`, or `HYB`
-  (default: `HYB`)
+- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_011`)
 - `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--chunk-size INTEGER`: Base chunk size for processing, dynamically adjusts based on read length (default: 100000)
@@ -335,10 +319,7 @@ Required Arguments
 Optional Arguments
 
 - `--output-file TEXT`: Prefix for output file name. `.pdf` will be added automatically (default: `full_read_annots`)
-- `--model-name TEXT:` Base model name (the name of the model without any file suffixes). For `--model-type CRF`,
-  `_w_CRF` will be appended to the base model name. (default: `10x3p_sc_ont_011`)
-- `--model-type TEXT`: The type of model to run (see `annotate-reads` usage for descriptions of each type): REG, CRF,
-  or HYB (default: CRF)
+- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_011`)
 - `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--gpu-mem TEXT`: Total memory of the GPU in gigabytes (GB). For a single GPU or multiple GPUs with the same memory,

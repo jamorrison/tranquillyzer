@@ -81,10 +81,7 @@ _HELP_TOKEN_CAP_ABOVE = (
     "up to 5000 bp based on actual GPU throughput."
 )
 
-_HELP_MODEL_NAME = (
-    "Base model name — omit any suffix.\n\n"
-    "For [bold]CRF[/bold] mode, [cyan]_w_CRF[/cyan] is appended automatically."
-)
+_HELP_MODEL_NAME = "Base model name."
 
 _HELP_SEQ_ORDER_FILE = (
     "Path to [cyan]seq_orders.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
@@ -92,25 +89,13 @@ _HELP_SEQ_ORDER_FILE = (
 
 _HELP_MODELS_DIR = (
     "Directory containing [cyan]<model>.h5[/cyan] and"
-    " [cyan]<model>[_w_CRF]_lbl_bin.pkl[/cyan] files.\n\n"
+    " [cyan]<model>_lbl_bin.pkl[/cyan] files.\n\n"
     "Defaults to the bundled [cyan]models/[/cyan] directory."
 )
 
 _HELP_PREPROCESS_DIR = (
     "Directory that holds an existing [cyan]full_length_pp_fa/[/cyan] tree.\n\n"
     "When set, reads are sourced from here instead of [cyan]output_dir[/cyan]."
-)
-
-_HELP_MODEL_TYPE_VIZ = (
-    "[red]REG[/red] [dim]→[/dim] [green]CNN-LSTM[/green]\n\n"
-    "[red]CRF[/red] [dim]→[/dim] [green]CNN-LSTM-CRF[/green]"
-)
-
-_HELP_MODEL_TYPE_ANNOT = (
-    "[red]REG[/red] [dim]→[/dim] [green]CNN-LSTM[/green]\n\n"
-    "[red]CRF[/red] [dim]→[/dim] [green]CNN-LSTM-CRF[/green]\n\n"
-    "[red]HYB[/red] [dim]→[/dim] [green]CNN-LSTM[/green] first pass;"
-    " [green]CNN-LSTM-CRF[/green] second pass on reads that fail the validity filter"
 )
 
 
@@ -273,7 +258,6 @@ def visualize(
         help="Output PDF base name (extension [cyan].pdf[/cyan] is added automatically).",
     ),
     model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
-    model_type: Annotated[str, typer.Option(help=_HELP_MODEL_TYPE_VIZ)] = "CRF",
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
@@ -295,8 +279,7 @@ def visualize(
     Args:
         output_dir: Pipeline base output directory (expects `full_length_pp_fa/`).
         output_file: Base name for the output PDF under `<output_dir>/plots`.
-        model_name: Base model name; `_w_CRF` suffix is inferred for CRF mode.
-        model_type: One of {"REG","CRF"}; model choice for inference.
+        model_name: Base model name.
         gpu_mem: Optional GPU memory budget string (e.g., "12" or "8,16").
         target_tokens: Token budget per replica to estimate batch sizing.
         vram_headroom: Fraction of VRAM to reserve to reduce OOM risk.
@@ -319,7 +302,6 @@ def visualize(
         output_dir,
         output_file,
         model_name,
-        model_type,
         seq_order_file,
         models_dir,
         gpu_mem,
@@ -347,7 +329,6 @@ def annotate_reads(
         None, "--whitelist-file", help="Barcode whitelist TSV. Required for barcode correction/demux."
     ),
     model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
-    model_type: Annotated[str, typer.Option(help=_HELP_MODEL_TYPE_ANNOT)] = "HYB",
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR),
     chunk_size: int = typer.Option(
@@ -437,21 +418,19 @@ def annotate_reads(
     ),
 ):
     """
-    Annotation-first pipeline with optional barcode correction and demultiplexing.
+    Annotation pipeline with optional barcode correction and demultiplexing.
 
     Pipeline:
       1) Iterate through binned Parquet files and run model predictions.
       2) Post-process predictions to call segment boundaries and write per-bin/per-chunk outputs.
       3) Optionally run barcode correction and demultiplexing inline in the same pass.
-      4) Optionally (HYB) re-run invalid reads with CRF model.
-      5) Finalize chunk outputs to combined Parquet or per-chunk Parquet outputs.
+      4) Finalize chunk outputs to combined Parquet or per-chunk Parquet outputs.
 
     Args:
         output_dir: Base directory with `full_length_pp_fa/` and target for outputs.
         whitelist_file: TSV with valid barcode columns; required only when barcode correction is enabled.
         output_fmt: "fasta" or "fastq" for demultiplexed outputs.
-        model_name: Base model label (without `_w_CRF`).
-        model_type: "REG", "CRF", or "HYB" (REG pass then CRF on invalid).
+        model_name: Base model name.
         chunk_size: Row group size for final Parquet conversions.
         gpu_mem: Optional GPU memory budget string (e.g., "12" or "8,16").
         target_tokens: Token budget per replica to guide batching.
@@ -493,7 +472,6 @@ def annotate_reads(
         whitelist_file,
         output_fmt,
         model_name,
-        model_type,
         seq_order_file,
         chunk_size,
         gpu_mem,

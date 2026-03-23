@@ -186,18 +186,14 @@ def _build_fragment_annotation(read, read_length, collapsed_array, indices_dict,
 # =================== process full-length reads =================== #
 
 
-def process_full_len_reads(data, barcodes, label_binarizer, model_path_w_CRF, split_concatenated=False):
+def process_full_len_reads(data, barcodes, label_binarizer, model_path, split_concatenated=False):
     """Process a batch of reads: collapse labels, validate structure, extract annotations."""
     read, prediction, read_length, seq_order, valid_structs = data
 
-    if model_path_w_CRF:
-        prediction = np.asarray(prediction)
-        if prediction.ndim == 1:
-            prediction = prediction[np.newaxis, :]
-            # decoded_prediction = label_binarizer.inverse_transform(prediction)[0]
-        decoded_prediction = label_binarizer.classes_[prediction[0] if prediction.ndim == 2 else prediction]
-    else:
-        decoded_prediction = label_binarizer.inverse_transform(prediction)
+    prediction = np.asarray(prediction)
+    if prediction.ndim == 1:
+        prediction = prediction[np.newaxis, :]
+    decoded_prediction = label_binarizer.classes_[prediction[0] if prediction.ndim == 2 else prediction]
 
     # read_length = read_length - 1
 
@@ -323,7 +319,7 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path_w_CRF, sp
 
 
 def extract_annotated_full_length_seqs(
-    new_data, predictions, model_path_w_CRF, read_lengths, label_binarizer, seq_order, barcodes, n_jobs,
+    new_data, predictions, model_path, read_lengths, label_binarizer, seq_order, barcodes, n_jobs,
     original_read_names=None, split_concatenated=False, valid_structures=None,
 ):
     """Extract annotated sequences from predictions using label binarizer and seq order."""
@@ -336,14 +332,14 @@ def extract_annotated_full_length_seqs(
     if n_jobs == 1:
         for i in range(len(data)):
             raw_results.append(
-                process_full_len_reads(data[i], barcodes, label_binarizer, model_path_w_CRF, split_concatenated)
+                process_full_len_reads(data[i], barcodes, label_binarizer, model_path, split_concatenated)
             )
 
     elif n_jobs > 1:
         with mp.Pool(processes=n_jobs) as pool:
             raw_results = pool.starmap(
                 process_full_len_reads,
-                [(d, barcodes, label_binarizer, model_path_w_CRF, split_concatenated) for d in data],
+                [(d, barcodes, label_binarizer, model_path, split_concatenated) for d in data],
             )
             pool.close()
 

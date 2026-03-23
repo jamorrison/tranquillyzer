@@ -109,7 +109,6 @@ def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
             whitelist_file=str(whitelist_file),
             output_fmt="fastq",
             model_name="missing_model",
-            model_type="CRF",
             seq_order_file=str(seq_orders_file),
             chunk_size=10,
             gpu_mem=None,
