@@ -49,11 +49,12 @@ def qc_metrics_wrap(
     os.makedirs(output_dir, exist_ok=True)
 
     # ── resolve file paths ───────────────────────────────────────────────────
+    metadata_dir = os.path.join(input_dir, "annotation_metadata")
     valid_path = _find_file(input_dir, [valid_file] if valid_file else []) or _find_file(
-        input_dir, ["annotations_valid_bc_corrected.parquet", "annotations_valid.parquet"]
+        metadata_dir, ["annotations_valid_bc_corrected.parquet", "annotations_valid.parquet"]
     )
     invalid_path = _find_file(input_dir, [invalid_file] if invalid_file else []) or _find_file(
-        input_dir, ["annotations_invalid.parquet"]
+        metadata_dir, ["annotations_invalid.parquet"]
     )
 
     if valid_path is None and invalid_path is None:

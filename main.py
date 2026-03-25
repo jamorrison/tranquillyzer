@@ -338,7 +338,7 @@ def annotate_reads(
         True,
         help=(
             "Merge all chunk parquet outputs into a single"
-            " [cyan]annotations_valid/invalid.parquet[/cyan].\n\n"
+            " [cyan]annotation_metadata/annotations_valid/invalid.parquet[/cyan].\n\n"
             "Disable to keep per-chunk parquet outputs."
         ),
     ),
@@ -380,16 +380,6 @@ def annotate_reads(
     include_polya: bool = typer.Option(
         False, help="Append detected polyA tails to output sequences (includes qualities in FASTQ)."
     ),
-    run_barcode_correction: bool = typer.Option(
-        False, help="Run barcode correction on valid annotated reads. Disabled by default."
-    ),
-    include_barcode_quals: bool = typer.Option(
-        False,
-        help=(
-            "Append base qualities for barcode segments\n\n"
-            "into the FASTQ header when writing FASTQ."
-        ),
-    ),
     split_concatenated: bool = typer.Option(
         False,
         help=(
@@ -397,6 +387,45 @@ def annotate_reads(
             "When enabled, reads containing multiple full structural patterns are split\n\n"
             "into separate valid entries (one per fragment) instead of being marked invalid.\n\n"
             "Each fragment is independently barcode-corrected and demultiplexed."
+        ),
+    ),
+    run_barcode_correction: bool = typer.Option(
+        False, help="Run barcode correction on valid annotated reads. Disabled by default."
+    ),
+    whitelist_free: bool = typer.Option(
+        False,
+        "--whitelist-free",
+        help=(
+            "Discover barcodes from data instead of using a whitelist.\n\n"
+            "Counts barcodes during annotation, detects the knee point,\n\n"
+            "and runs barcode correction with the discovered whitelist.\n\n"
+            "Implies [cyan]--run-barcode-correction[/cyan]. No [cyan]--whitelist-file[/cyan] required."
+        ),
+    ),
+    expected_cells: int = typer.Option(
+        None,
+        help=(
+            "Expected number of cells (optional hint for whitelist-free knee detection).\n\n"
+            "If not set, the knee point is detected automatically from the barcode rank plot."
+        ),
+    ),
+    min_cell_ratio: float = typer.Option(
+        0.50,
+        help=(
+            "Fraction of the cliff-top barcode count used as the knee threshold.\n\n"
+            "After detecting the cliff-top via kneedle, barcodes with count >= cliff_top_count * min_cell_ratio\n\n"
+            "are kept as true cells (default 0.50 = 50%%)."
+        ),
+    ),
+    min_reads_per_barcode: int = typer.Option(
+        3,
+        help="Minimum read count for a barcode to be considered in whitelist-free knee detection.",
+    ),
+    include_barcode_quals: bool = typer.Option(
+        False,
+        help=(
+            "Append base qualities for barcode segments\n\n"
+            "into the FASTQ header when writing FASTQ."
         ),
     ),
     run_demux: bool = typer.Option(
@@ -445,13 +474,13 @@ def annotate_reads(
         run_demux: If true, writes `demuxed_fasta/*` files in the same pass (demuxed with barcode correction, bulk otherwise).
         checkpoint_file: Path to checkpoint file storing pass/bin/chunk progress.
         resume: If true, restart from checkpoint and skip done chunks.
-        combine_chunk_outputs: If true, merge chunk parquets into annotations_valid/invalid.parquet.
+        combine_chunk_outputs: If true, merge chunk parquets into annotation_metadata/annotations_valid/invalid.parquet.
         keep_chunk_tsv_after_combine: If true with combine enabled, keep per-chunk parquet files after combining.
         keep_demux_chunk_outputs_after_combine: If true with demux enabled, keep chunk FASTA/FASTQ after combine.
 
     Outputs:
         - Chunk outputs under `<output_dir>/annotation_chunks/`
-        - Combined `<output_dir>/annotations_valid.parquet` and `_invalid.parquet` (default)
+        - Combined `<output_dir>/annotation_metadata/annotations_valid.parquet` and `_invalid.parquet` (default)
           OR per-chunk parquet files if `--no-combine-chunk-outputs`
         - Optional: `<output_dir>/demuxed_fasta/demuxed.(fa|fq)` and `ambiguous.(fa|fq)`
 
@@ -462,8 +491,10 @@ def annotate_reads(
     """
     from wrappers.annotate_reads_wrap import annotate_reads_wrap
 
-    if run_barcode_correction and not whitelist_file:
-        raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled")
+    if whitelist_free:
+        run_barcode_correction = True
+    if run_barcode_correction and not whitelist_free and not whitelist_file:
+        raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled (or use --whitelist-free)")
     if output_fmt not in {"fasta", "fastq"}:
         raise typer.BadParameter("demux output format must be either 'fasta' or 'fastq'")
 
@@ -495,6 +526,10 @@ def annotate_reads(
         models_dir=models_dir,
         preprocess_dir=preprocess_dir,
         split_concatenated=split_concatenated,
+        whitelist_free=whitelist_free,
+        expected_cells=expected_cells,
+        min_cell_ratio=min_cell_ratio,
+        min_reads_per_barcode=min_reads_per_barcode,
     )
 
 
@@ -507,8 +542,8 @@ def barcode_correct(
         None,
         help=(
             "Annotations file. Defaults to\n\n"
-            " [cyan]<input_dir>/annotations_valid.parquet[/cyan],\n\n"
-            " or falls back to [cyan]<input_dir>/annotations_valid_bc_corrected.parquet[/cyan]."
+            " [cyan]<input_dir>/annotation_metadata/annotations_valid.parquet[/cyan],\n\n"
+            " or falls back to [cyan]<input_dir>/annotation_metadata/annotations_valid_bc_corrected.parquet[/cyan]."
         ),
     ),
     output_fmt: str = typer.Option(
@@ -523,6 +558,7 @@ def barcode_correct(
     bc_lv_threshold: int = typer.Option(2, help="Levenshtein-distance threshold for barcode correction."),
     threads: int = typer.Option(12, help="Number of CPU threads for barcode correction."),
     chunk_size: int = typer.Option(100000, help="Number of rows to scan/process per chunk from annotations input."),
+    max_queue_size: int = typer.Option(3, help="Max number of chunks queued for correction workers."),
     include_barcode_quals: bool = typer.Option(
         False, help="Append barcode qualities to the FASTQ header when writing FASTQ demux output."
     ),
@@ -538,6 +574,10 @@ def barcode_correct(
             "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
             "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."
         ),
+    ),
+    resume: bool = typer.Option(
+        True,
+        help="Resume from checkpoint if a previous run was interrupted. Disable to start fresh.",
     ),
 ):
     """
@@ -556,10 +596,12 @@ def barcode_correct(
         bc_lv_threshold=bc_lv_threshold,
         threads=threads,
         chunk_size=chunk_size,
+        max_queue_size=max_queue_size,
         include_barcode_quals=include_barcode_quals,
         include_polya=include_polya,
         run_demux=run_demux,
         keep_demux_chunk_outputs_after_combine=keep_demux_chunk_outputs_after_combine,
+        resume=resume,
     )
 
 
@@ -571,8 +613,8 @@ def demux_reads(
         None,
         help=(
             "Annotation file to export reads from. Defaults to\n\n"
-            " [cyan]<input_dir>/annotations_valid_bc_corrected.parquet[/cyan],\n\n"
-            " or falls back to [cyan]<input_dir>/annotations_valid.parquet[/cyan] for bulk export."
+            " [cyan]<input_dir>/annotation_metadata/annotations_valid_bc_corrected.parquet[/cyan],\n\n"
+            " or falls back to [cyan]<input_dir>/annotation_metadata/annotations_valid.parquet[/cyan] for bulk export."
         ),
     ),
     output_fmt: str = typer.Option("fasta", help="Output format for demultiplexed reads: [cyan]fasta[/cyan] or [cyan]fastq[/cyan]."),
@@ -610,14 +652,14 @@ def qc_metrics(
         help=(
             "Path to valid-reads parquet.\n\n"
             "Defaults to [cyan]annotations_valid_bc_corrected.parquet[/cyan]"
-            " or [cyan]annotations_valid.parquet[/cyan] inside [cyan]input_dir[/cyan]."
+            " or [cyan]annotations_valid.parquet[/cyan] inside [cyan]input_dir/annotation_metadata[/cyan]."
         ),
     ),
     invalid_file: str = typer.Option(
         None,
         help=(
             "Path to invalid-reads parquet.\n\n"
-            "Defaults to [cyan]annotations_invalid.parquet[/cyan] inside [cyan]input_dir[/cyan]."
+            "Defaults to [cyan]annotations_invalid.parquet[/cyan] inside [cyan]input_dir/annotation_metadata[/cyan]."
         ),
     ),
     sample_name: str = typer.Option(

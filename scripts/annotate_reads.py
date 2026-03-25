@@ -135,6 +135,11 @@ def _cleanup_annotation_outputs_for_fresh_start(output_dir, checkpoint_file):
         os.path.join(output_dir, "annotations_valid.parquet"),
         os.path.join(output_dir, "annotations_valid_bc_corrected.parquet"),
         os.path.join(output_dir, "annotations_invalid.parquet"),
+        os.path.join(output_dir, "annotation_metadata"),
+        os.path.join(output_dir, "checkpoints"),
+        # Legacy checkpoint location
+        os.path.join(output_dir, "annotation_checkpoint.txt"),
+        os.path.join(output_dir, "annotation_checkpoint.txt.lock"),
         checkpoint_file,
         checkpoint_file + ".lock",
     ]
@@ -146,6 +151,55 @@ def _cleanup_annotation_outputs_for_fresh_start(output_dir, checkpoint_file):
                 os.remove(path)
         except FileNotFoundError:
             continue
+
+
+def _combine_invalid_chunks(chunk_output_dir, output_dir, pl, chunk_size):
+    """Combine only invalid chunk outputs into a single parquet file.
+
+    Used by the whitelist-free path where valid chunks are handled separately.
+    Handles TSV, parquet, and mixed inputs (for resume).
+    """
+    invalid_dir = os.path.join(chunk_output_dir, "invalid_chunks")
+    metadata_dir = os.path.join(output_dir, "annotation_metadata")
+    os.makedirs(metadata_dir, exist_ok=True)
+    out_path = os.path.join(metadata_dir, "annotations_invalid.parquet")
+
+    tsv_files = sorted(
+        os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".tsv")
+    ) if os.path.isdir(invalid_dir) else []
+    pq_files = sorted(
+        os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".parquet")
+    ) if os.path.isdir(invalid_dir) else []
+
+    if not tsv_files and not pq_files:
+        return
+
+    # Convert any TSVs to parquet first
+    if tsv_files:
+        os.makedirs(invalid_dir, exist_ok=True)
+        for tsv_path in tsv_files:
+            stem = os.path.splitext(os.path.basename(tsv_path))[0]
+            pq_path = os.path.join(invalid_dir, f"{stem}.parquet")
+            if not os.path.exists(pq_path):
+                pl.scan_csv(tsv_path, separator="\t", infer_schema_length=5000).sink_parquet(
+                    pq_path, compression="snappy", row_group_size=chunk_size
+                )
+            os.remove(tsv_path)
+        pq_files = sorted(
+            os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".parquet")
+        )
+
+    if pq_files:
+        try:
+            pl.scan_parquet(pq_files).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
+        except Exception:
+            logger.warning("Parallel parquet scan failed for invalid chunks, falling back to diagonal_relaxed concat.")
+            pl.concat(
+                [pl.scan_parquet(f) for f in pq_files], how="diagonal_relaxed"
+            ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
+        for pq_path in pq_files:
+            os.remove(pq_path)
+    logger.info(f"Combined invalid chunks into {out_path}.")
 
 
 def _convert_chunk_outputs(
@@ -183,6 +237,8 @@ def _convert_chunk_outputs(
     valid_out_dir = os.path.join(chunk_output_dir, "valid_chunks")
     invalid_out_dir = os.path.join(chunk_output_dir, "invalid_chunks")
     valid_output_name = "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
+    metadata_dir = os.path.join(output_dir, "annotation_metadata")
+    os.makedirs(metadata_dir, exist_ok=True)
 
     if combine_chunks:
         logger.info(
@@ -230,10 +286,10 @@ def _convert_chunk_outputs(
                     ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
 
         _combine_valid_invalid(
-            valid_files, valid_chunk_parquets, f"{output_dir}/{valid_output_name}", valid_out_dir
+            valid_files, valid_chunk_parquets, f"{metadata_dir}/{valid_output_name}", valid_out_dir
         )
         _combine_valid_invalid(
-            invalid_files, invalid_chunk_parquets, f"{output_dir}/annotations_invalid.parquet", invalid_out_dir
+            invalid_files, invalid_chunk_parquets, f"{metadata_dir}/annotations_invalid.parquet", invalid_out_dir
         )
         logger.info(f"Finished chunk combination into {valid_output_name} and annotations_invalid.parquet.")
 
@@ -352,29 +408,6 @@ def load_libs():
         convert_tsv_to_parquet,
         log_gpus_used,
     )
-
-
-def collect_prediction_stats(result_queue, workers, max_idle_time=60):
-    """Collect and drain worker results to avoid queue buildup."""
-    idle_start = None
-
-    while any(worker.is_alive() for worker in workers) or not result_queue.empty():
-        try:
-            result = result_queue.get(timeout=15)
-
-            # Reset idle start since a new result has been retrieved
-            idle_start = None
-
-            _ = result
-        except queue.Empty:
-            # Wait for the queue to get more entries
-            if idle_start is None:
-                idle_start = time.time()
-                logger.info("Result queue idle, waiting for worker results...")
-            elif time.time() - idle_start > max_idle_time:
-                raise TimeoutError(
-                    f"Result queue timed out after no data for {max_idle_time} seconds and no workers finished."
-                )
 
 
 def _empty_results_queue(result_queue, workers, max_idle_time=60):

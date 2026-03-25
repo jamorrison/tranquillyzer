@@ -27,21 +27,24 @@ def correct_barcode(row, column_name, whitelist, threshold):
     reverse_comp_barcode = reverse_complement(observed_barcode)
 
     # Get distance scores for observed barcode and reverse complement
-    candidates = process.extract(observed_barcode, whitelist, scorer=Levenshtein.distance, limit=5)
-    candidates_rev = process.extract(reverse_comp_barcode, whitelist, scorer=Levenshtein.distance, limit=5)
+    candidates = process.extract(
+        observed_barcode, whitelist, scorer=Levenshtein.distance,
+        score_cutoff=threshold, processor=None, limit=5,
+    )
+    candidates_rev = process.extract(
+        reverse_comp_barcode, whitelist, scorer=Levenshtein.distance,
+        score_cutoff=threshold, processor=None, limit=5,
+    )
 
     # Combine results and find minimum distance
     all_matches = candidates + candidates_rev
+    if not all_matches:
+        return observed_barcode, "NMF", threshold + 1, 0
+
     min_distance = min(match[1] for match in all_matches)
 
     # Find all closest barcodes with the same minimum distance
     closest_barcodes = [match[0] for match in all_matches if match[1] == min_distance]
-
-    # Handle threshold & multiple matches
-    if min_distance > threshold:
-        # if len(closest_barcodes) == 1:
-        #     return observed_barcode, closest_barcodes[0], min_distance, 1
-        return observed_barcode, "NMF", min_distance, len(closest_barcodes)
 
     return observed_barcode, ",".join(closest_barcodes), min_distance, len(closest_barcodes)
 
@@ -85,6 +88,7 @@ def process_row(
     output_fmt,
     include_barcode_quals_in_header,
     include_polya_in_output,
+    whitelist_sets=None,
 ):
     """Correct barcodes, assign cell ID, and build demux output for a single annotation row."""
     def _parse_optional_int(value):
@@ -133,10 +137,33 @@ def process_row(
     corrected_barcode_seqs = []
 
     for barcode_column in barcode_columns:
-        whitelist = whitelist_dict[barcode_column]
-        corrected_barcode, corrected_seq, min_dist, count = correct_barcode(
-            row, barcode_column + "_Sequences", whitelist, threshold
-        )
+        # Check for pre-corrected barcodes (injected by vectorized pre-filtering)
+        pre_corrected = row.get(f"corrected_{barcode_column}")
+        if pre_corrected is not None and str(pre_corrected) not in ("", "nan", "None", "NaN"):
+            corrected_seq = pre_corrected
+            min_dist = row.get(f"corrected_{barcode_column}_min_dist", 0)
+            count = row.get(f"corrected_{barcode_column}_counts_with_min_dist", 1)
+        else:
+            seq = row.get(barcode_column + "_Sequences", "")
+            wl_set = whitelist_sets.get(barcode_column) if whitelist_sets else None
+
+            # Exact-match short-circuit: skip expensive fuzzy matching
+            if wl_set and seq and str(seq) not in ("", "nan", "None", "NaN"):
+                if seq in wl_set:
+                    _, corrected_seq, min_dist, count = seq, seq, 0, 1
+                else:
+                    rc = reverse_complement(seq)
+                    if rc in wl_set:
+                        _, corrected_seq, min_dist, count = seq, rc, 0, 1
+                    else:
+                        _, corrected_seq, min_dist, count = correct_barcode(
+                            row, barcode_column + "_Sequences", whitelist_dict[barcode_column], threshold
+                        )
+            else:
+                whitelist = whitelist_dict[barcode_column]
+                _, corrected_seq, min_dist, count = correct_barcode(
+                    row, barcode_column + "_Sequences", whitelist, threshold
+                )
         result[f"corrected_{barcode_column}"] = corrected_seq
         result[f"corrected_{barcode_column}_min_dist"] = min_dist
         result[f"corrected_{barcode_column}_counts_with_min_dist"] = count
@@ -314,6 +341,7 @@ def bc_n_demultiplex(
     write_demuxed_reads=True,
 ):
     """Correct barcodes and demultiplex a chunk of annotated reads in parallel."""
+    whitelist_sets = {bc: set(whitelist_dict[bc]) for bc in barcode_columns}
     args = [
         (
             row,
@@ -326,6 +354,7 @@ def bc_n_demultiplex(
             output_fmt,
             include_barcode_quals_in_header,
             include_polya_in_output,
+            whitelist_sets,
         )
         for _, row in chunk.iterrows()
     ]

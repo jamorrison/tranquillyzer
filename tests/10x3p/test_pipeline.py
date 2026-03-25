@@ -141,7 +141,7 @@ def test_demux_reads():
             "demux-reads",
             OUT_DIR,
             "--input-file",
-            f"{OUT_DIR}/annotations_valid_bc_corrected.parquet",
+            f"{OUT_DIR}/annotation_metadata/annotations_valid_bc_corrected.parquet",
             "--output-fmt",
             "fasta",
         ]
