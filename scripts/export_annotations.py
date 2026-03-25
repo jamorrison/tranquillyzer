@@ -113,12 +113,8 @@ def process_full_length_reads_in_chunks_and_save(
     chunk_output_dir=None,
     split_concatenated=False,
     valid_structures=None,
-    whitelist_free=False,
 ):
-    """Post-process predictions into annotated reads and write chunk outputs.
-
-    Returns barcode tuple counts (Counter) when whitelist_free=True, else None.
-    """
+    """Post-process predictions into annotated reads and write chunk outputs."""
     reads_in_chunk = len(reads)
 
     logger.info(f"Post-processing {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
@@ -230,12 +226,6 @@ def process_full_length_reads_in_chunks_and_save(
 
         logger.info(f"Post-processed {bin_name} chunk - {chunk_idx}: number of reads = {reads_in_chunk}")
 
-    # Count barcodes from in-memory data for whitelist-free mode (avoids TSV re-read)
-    barcode_counts = None
-    if whitelist_free and barcodes and not valid_reads_df.empty:
-        from scripts.discover_barcodes import count_barcodes_in_chunk
-        barcode_counts = count_barcodes_in_chunk(valid_reads_df, barcodes)
-
     for local_df in ["chunk_df", "corrected_df", "invalid_reads_df", "valid_reads_df"]:
         if local_df:
             del local_df
@@ -250,7 +240,7 @@ def process_full_length_reads_in_chunks_and_save(
     tf.keras.backend.clear_session()
     gc.collect()
 
-    return barcode_counts
+    return None
 
 
 def post_process_reads(
@@ -280,13 +270,9 @@ def post_process_reads(
     chunk_output_dir=None,
     split_concatenated=False,
     valid_structures=None,
-    whitelist_free=False,
 ):
-    """Wrapper around process_full_length_reads_in_chunks_and_save with memory cleanup.
-
-    Returns (True, barcode_counts) when whitelist_free=True, else (True, None).
-    """
-    barcode_counts = process_full_length_reads_in_chunks_and_save(
+    """Wrapper around process_full_length_reads_in_chunks_and_save with memory cleanup."""
+    process_full_length_reads_in_chunks_and_save(
         reads,
         read_names,
         strand,
@@ -313,11 +299,10 @@ def post_process_reads(
         chunk_output_dir,
         split_concatenated,
         valid_structures,
-        whitelist_free=whitelist_free,
     )
 
     gc.collect()  # Clean up memory after processing each chunk
 
-    return True, barcode_counts
+    return True
 
 

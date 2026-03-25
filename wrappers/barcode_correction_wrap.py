@@ -8,6 +8,38 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Module-level globals for Pool workers (populated by _init_worker)
+_worker_shared = {}
+
+
+def _init_worker(barcode_columns, whitelist_dict, whitelist_sets,
+                 cell_id_lookup, whitelist_df, threshold, strand,
+                 output_fmt, include_barcode_quals, include_polya, run_demux):
+    """Pool initializer: store shared data in worker globals (once per process)."""
+    _worker_shared.update({
+        "barcode_columns": barcode_columns,
+        "whitelist_dict": whitelist_dict,
+        "whitelist_sets": whitelist_sets,
+        "cell_id_lookup": cell_id_lookup,
+        "whitelist_df": whitelist_df,
+        "threshold": threshold,
+        "strand": strand,
+        "output_fmt": output_fmt,
+        "include_barcode_quals": include_barcode_quals,
+        "include_polya": include_polya,
+        "run_demux": run_demux,
+    })
+
+
+def _worker_fn(row_data):
+    """Pool worker entry point: unpack shared args from globals."""
+    s = _worker_shared
+    return _correct_and_demux_row(
+        row_data, s["barcode_columns"], s["whitelist_dict"], s["whitelist_sets"],
+        s["cell_id_lookup"], s["whitelist_df"], s["threshold"], s["strand"],
+        s["output_fmt"], s["include_barcode_quals"], s["include_polya"], s["run_demux"],
+    )
+
 
 def _parse_first_int(value):
     """Extract the first integer from a comma-separated string, or return None."""
@@ -344,8 +376,13 @@ def barcode_correction_wrap(
     mode = "correction + demux" if run_demux else "correction only (fast path)"
     logger.info(f"Starting barcode correction: {mode}, {threads} threads, queue prefetch={max_queue_size}")
 
-    # Persistent Pool for fuzzy correction
-    pool = Pool(threads) if threads > 1 else None
+    # Persistent Pool for fuzzy correction — shared data sent once via initializer
+    shared_args = (
+        barcode_columns, whitelist_dict, whitelist_sets,
+        cell_id_lookup, whitelist_df, bc_lv_threshold, strand,
+        effective_output_fmt, include_barcode_quals, include_polya, run_demux,
+    )
+    pool = Pool(threads, initializer=_init_worker, initargs=shared_args) if threads > 1 else None
     chunk_paths = []
     total_chunks = 0
 
@@ -445,18 +482,14 @@ def barcode_correction_wrap(
                     base_q_list[i], pa_s_list[i], pa_e_list[i], bc_se,
                 ))
 
-            # --- Dispatch to Pool: combined correction + demux ---
-            shared_args = (
-                barcode_columns, whitelist_dict, whitelist_sets,
-                cell_id_lookup, whitelist_df, bc_lv_threshold, strand, effective_output_fmt,
-                include_barcode_quals, include_polya, run_demux,
-            )
-            task_args = [(rd,) + shared_args for rd in row_data_list]
-
+            # --- Dispatch to Pool: only row_data sent per row (shared data in worker globals) ---
             if pool is not None:
-                results = pool.starmap(_correct_and_demux_row, task_args)
+                results = pool.map(_worker_fn, row_data_list)
             else:
-                results = [_correct_and_demux_row(*a) for a in task_args]
+                results = [
+                    _correct_and_demux_row(rd, *shared_args)
+                    for rd in row_data_list
+                ]
 
             n_fuzzy = sum(1 for corr, _, _ in results if any(
                 corr.get(f"corrected_{bc}_min_dist", 0) not in (0, -1) for bc in barcode_columns
@@ -469,7 +502,8 @@ def barcode_correction_wrap(
 
             # Merge correction columns back onto original chunk columns needed for TSV
             # Keep original annotation columns + add correction + cell_id columns
-            keep_cols = [c for c in chunk.columns if not c.startswith("_")]
+            corr_cols = set(corr_df.columns)
+            keep_cols = [c for c in chunk.columns if not c.startswith("_") and c not in corr_cols]
             out_df = chunk.select(keep_cols).hstack(corr_df)
 
             chunk_path = os.path.join(chunk_tsv_dir, f"chunk{chunk_idx:06d}.tsv")

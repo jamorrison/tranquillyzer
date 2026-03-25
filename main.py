@@ -390,36 +390,11 @@ def annotate_reads(
         ),
     ),
     run_barcode_correction: bool = typer.Option(
-        False, help="Run barcode correction on valid annotated reads. Disabled by default."
-    ),
-    whitelist_free: bool = typer.Option(
         False,
-        "--whitelist-free",
         help=(
-            "Discover barcodes from data instead of using a whitelist.\n\n"
-            "Counts barcodes during annotation, detects the knee point,\n\n"
-            "and runs barcode correction with the discovered whitelist.\n\n"
-            "Implies [cyan]--run-barcode-correction[/cyan]. No [cyan]--whitelist-file[/cyan] required."
+            "Run barcode correction on valid annotated reads. Requires [cyan]--whitelist-file[/cyan].\n\n"
+            "For whitelist-free correction, use [cyan]generate-whitelist[/cyan] followed by [cyan]barcode-correct[/cyan] instead."
         ),
-    ),
-    expected_cells: int = typer.Option(
-        None,
-        help=(
-            "Expected number of cells (optional hint for whitelist-free knee detection).\n\n"
-            "If not set, the knee point is detected automatically from the barcode rank plot."
-        ),
-    ),
-    min_cell_ratio: float = typer.Option(
-        0.50,
-        help=(
-            "Fraction of the cliff-top barcode count used as the knee threshold.\n\n"
-            "After detecting the cliff-top via kneedle, barcodes with count >= cliff_top_count * min_cell_ratio\n\n"
-            "are kept as true cells (default 0.50 = 50%%)."
-        ),
-    ),
-    min_reads_per_barcode: int = typer.Option(
-        3,
-        help="Minimum read count for a barcode to be considered in whitelist-free knee detection.",
     ),
     include_barcode_quals: bool = typer.Option(
         False,
@@ -431,9 +406,10 @@ def annotate_reads(
     run_demux: bool = typer.Option(
         False,
         help=(
-            "Write FASTA/FASTQ during annotation.\n\n"
+            "Write FASTA/FASTQ during annotation. Requires [cyan]--whitelist-file[/cyan].\n\n"
             "With [cyan]--run-barcode-correction[/cyan], reads are demultiplexed by cell;\n\n"
-            "otherwise valid reads are exported in bulk."
+            "otherwise valid reads are exported in bulk.\n\n"
+            "For whitelist-free workflows, use [cyan]barcode-correct --run-demux[/cyan] or [cyan]demux-reads[/cyan] instead."
         ),
     ),
     output_fmt: str = typer.Option(
@@ -491,10 +467,8 @@ def annotate_reads(
     """
     from wrappers.annotate_reads_wrap import annotate_reads_wrap
 
-    if whitelist_free:
-        run_barcode_correction = True
-    if run_barcode_correction and not whitelist_free and not whitelist_file:
-        raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled (or use --whitelist-free)")
+    if run_barcode_correction and not whitelist_file:
+        raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled")
     if output_fmt not in {"fasta", "fastq"}:
         raise typer.BadParameter("demux output format must be either 'fasta' or 'fastq'")
 
@@ -526,10 +500,6 @@ def annotate_reads(
         models_dir=models_dir,
         preprocess_dir=preprocess_dir,
         split_concatenated=split_concatenated,
-        whitelist_free=whitelist_free,
-        expected_cells=expected_cells,
-        min_cell_ratio=min_cell_ratio,
-        min_reads_per_barcode=min_reads_per_barcode,
     )
 
 
@@ -602,6 +572,79 @@ def barcode_correct(
         run_demux=run_demux,
         keep_demux_chunk_outputs_after_combine=keep_demux_chunk_outputs_after_combine,
         resume=resume,
+    )
+
+
+@app.command(no_args_is_help=True)
+def generate_whitelist(
+    output_dir: str = typer.Argument(
+        ...,
+        help="Annotation output directory (containing annotation_chunks/ or annotation_metadata/).",
+    ),
+    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
+    seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    input_file: str = typer.Option(
+        None,
+        help=(
+            "Explicit path to an annotations parquet or TSV file.\n\n"
+            "Bypasses auto-discovery from [cyan]output_dir[/cyan]."
+        ),
+    ),
+    barcode_columns: str = typer.Option(
+        None,
+        help=(
+            "Comma-separated barcode column names (e.g. [cyan]CBC[/cyan] or [cyan]CBC1,CBC2[/cyan]).\n\n"
+            "Overrides model-based column resolution. Sequence columns are derived as [cyan]{col}_Sequences[/cyan]."
+        ),
+    ),
+    expected_cells: int = typer.Option(
+        None,
+        help=(
+            "Expected number of cells (optional hint for knee detection).\n\n"
+            "If not set, the knee point is detected automatically from the barcode rank plot."
+        ),
+    ),
+    min_cell_ratio: float = typer.Option(
+        0.50,
+        help=(
+            "Fraction of the cliff-top barcode count used as the knee threshold.\n\n"
+            "Barcodes with count >= cliff_top_count * min_cell_ratio are kept as true cells."
+        ),
+    ),
+    min_reads_per_barcode: int = typer.Option(
+        3,
+        help="Minimum read count for a barcode to be considered in knee detection.",
+    ),
+    chunk_size: int = typer.Option(
+        100000,
+        help="Number of rows to process per chunk when streaming annotation data.",
+    ),
+):
+    """
+    Generate a pseudo-whitelist from existing annotation data via knee-point barcode discovery.
+
+    Reads barcode sequences from annotation outputs (valid chunks or combined parquet),
+    counts their frequencies, detects the knee point, merges near-duplicates, and saves
+    a whitelist compatible with the barcode correction pipeline.
+
+    Outputs are written to [cyan]<output_dir>/annotation_metadata/[/cyan]:
+      - discovered_whitelist.tsv
+      - barcode_discovery_stats.json
+      - barcode_counts.tsv
+      - barcode_rank_plot.png
+    """
+    from wrappers.generate_whitelist_wrap import generate_whitelist_wrap
+
+    generate_whitelist_wrap(
+        output_dir=output_dir,
+        model_name=model_name,
+        seq_order_file=seq_order_file,
+        input_file=input_file,
+        barcode_columns_str=barcode_columns,
+        expected_cells=expected_cells,
+        min_cell_ratio=min_cell_ratio,
+        min_reads_per_barcode=min_reads_per_barcode,
+        chunk_size=chunk_size,
     )
 
 

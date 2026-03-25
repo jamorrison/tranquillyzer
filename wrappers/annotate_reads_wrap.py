@@ -35,10 +35,6 @@ def annotate_reads_wrap(
     models_dir=None,
     preprocess_dir=None,
     split_concatenated=False,
-    whitelist_free=False,
-    expected_cells=None,
-    min_cell_ratio=0.01,
-    min_reads_per_barcode=3,
 ):
     """Orchestrate the multi-pass annotation pipeline with optional barcode correction and demux."""
     from scripts.annotate_reads import (
@@ -52,7 +48,6 @@ def annotate_reads_wrap(
         _cleanup_annotation_outputs_for_fresh_start,
         _convert_chunk_outputs,
         _combine_demux_chunk_outputs,
-        _combine_invalid_chunks,
     )
     from scripts.annotate_new_data import load_model_for_inference, load_model_params
 
@@ -126,13 +121,9 @@ def annotate_reads_wrap(
         raise ValueError(f"Model '{model_name}' not found in seq_orders file: {seq_order_file}.{suffix}")
     valid_structs = get_valid_structures(seq_order_file, model_name)
     if run_barcode_correction:
-        if whitelist_free:
-            # Whitelist will be discovered after annotation; skip loading for now
-            whitelist_df = pd.DataFrame()
-        elif not whitelist_file:
-            raise ValueError("whitelist_file is required when run_barcode_correction=True and --whitelist-free is not set")
-        else:
-            whitelist_df = pd.read_csv(whitelist_file, sep="\t")
+        if not whitelist_file:
+            raise ValueError("whitelist_file is required when run_barcode_correction=True")
+        whitelist_df = pd.read_csv(whitelist_file, sep="\t")
     else:
         whitelist_df = pd.DataFrame()
     num_labels = len(seq_order)
@@ -219,7 +210,7 @@ def annotate_reads_wrap(
     #       used from the dictionary. Since its the same value though, we really don't
     #       need to double store these values
     column_mapping = {barcode: barcode for barcode in barcodes}
-    if run_barcode_correction and not whitelist_free:
+    if run_barcode_correction:
         whitelist_dict = {
             "cell_ids": {
                 idx + 1: "-".join(map(str, row.dropna().unique()))
@@ -246,7 +237,6 @@ def annotate_reads_wrap(
         pass_num_worker,
         checkpoint_file_worker,
         checkpoint_lock_path,
-        whitelist_free=False,
     ):
         """Worker function for processing reads and returning results."""
         while True:
@@ -260,7 +250,7 @@ def annotate_reads_wrap(
                 with FileLock(checkpoint_lock_path):
                     _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx, chunk_size)
 
-                success, local_counter = post_process_reads(
+                success = post_process_reads(
                     reads,
                     read_names,
                     strand,
@@ -287,14 +277,13 @@ def annotate_reads_wrap(
                     chunk_output_dir,
                     split_concatenated,
                     valid_structs,
-                    whitelist_free=whitelist_free,
                 )
 
                 if success:
                     with FileLock(checkpoint_lock_path):
                         _save_checkpoint(checkpoint_file_worker, pass_num_worker, bin_name, chunk_idx, chunk_size)
 
-                    result_queue.put((True, bin_name, chunk_idx, local_counter))
+                    result_queue.put((True, bin_name, chunk_idx))
                 else:
                     logger.warning(f"No result from post_process_reads in {bin_name}, chunk {chunk_idx}")
 
@@ -354,12 +343,11 @@ def annotate_reads_wrap(
                 result_queue,
                 include_barcode_quals,
                 include_polya,
-                run_barcode_correction and not whitelist_free,
-                run_demux and not whitelist_free,
+                run_barcode_correction,
+                run_demux,
                 pass_num,
                 checkpoint_file,
                 checkpoint_file + ".lock",
-                whitelist_free,
             ),
         )
         for _ in range(num_workers)
@@ -428,18 +416,12 @@ def annotate_reads_wrap(
 
     logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
 
-    # Drain result queue, merging barcode counters for whitelist-free mode
-    from collections import Counter as _Counter
-    global_counts = _Counter() if whitelist_free else None
+    # Drain result queue
     idle_start = None
     while any(w.is_alive() for w in workers) or not result_queue.empty():
         try:
             result = result_queue.get(timeout=15)
             idle_start = None
-            if whitelist_free and len(result) == 4:
-                _ok, _bin, _chunk, local_counter = result
-                if local_counter:
-                    global_counts += local_counter
         except queue.Empty:
             if idle_start is None:
                 idle_start = time.time()
@@ -456,19 +438,11 @@ def annotate_reads_wrap(
     for worker in workers:
         worker.join()
 
-    # Whitelist-free barcode correction: discover whitelist, then run correction
-    effective_run_bc = run_barcode_correction and not whitelist_free
     skip_chunk_output_conversion = False
     if resume and total_queued_chunks == 0:
         logger.info("All annotation chunks are already completed. Dataset has already been annotated.")
         if combine_chunk_outputs:
-            # For whitelist-free with bc correction, final output is bc_corrected parquet
-            if whitelist_free and run_barcode_correction:
-                valid_parquet_name = "annotations_valid_bc_corrected.parquet"
-            elif effective_run_bc:
-                valid_parquet_name = "annotations_valid_bc_corrected.parquet"
-            else:
-                valid_parquet_name = "annotations_valid.parquet"
+            valid_parquet_name = "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
             metadata_dir = os.path.join(output_dir, "annotation_metadata")
             valid_parquet = os.path.join(metadata_dir, valid_parquet_name)
             invalid_parquet = os.path.join(metadata_dir, "annotations_invalid.parquet")
@@ -479,116 +453,18 @@ def annotate_reads_wrap(
                 )
                 skip_chunk_output_conversion = True
 
-    if whitelist_free and run_barcode_correction:
-        # Whitelist-free fast path: skip intermediate combine of valid chunks.
-        # Collect chunk files and pass directly to barcode_correction_wrap.
-        valid_chunk_files = []
-        if not skip_chunk_output_conversion:
-            valid_dir = os.path.join(chunk_output_dir, "valid_chunks")
-            if os.path.isdir(valid_dir):
-                valid_chunk_files = sorted(
-                    os.path.join(valid_dir, f) for f in os.listdir(valid_dir)
-                    if f.endswith(".tsv") or f.endswith(".parquet")
-                )
-            logger.info(f"Collected {len(valid_chunk_files)} valid chunk files for direct correction.")
-            # Combine only invalid chunks
-            _combine_invalid_chunks(chunk_output_dir, output_dir, pl, chunk_size)
+    if not skip_chunk_output_conversion:
+        _convert_chunk_outputs(
+            chunk_output_dir,
+            output_dir,
+            combine_chunk_outputs,
+            keep_chunk_tsv_after_combine,
+            run_barcode_correction,
+            pl,
+            chunk_size,
+        )
 
-        # Whitelist-free discovery + post-hoc correction
-        from scripts.discover_barcodes import run_barcode_discovery, _parse_expected_barcode_lengths
-
-        metadata_dir = os.path.join(output_dir, "annotation_metadata")
-        os.makedirs(metadata_dir, exist_ok=True)
-        discovered_wl_path = os.path.join(metadata_dir, "discovered_whitelist.tsv")
-
-        # Resume: if global_counts is empty (all chunks already done) but a discovered
-        # whitelist exists from a prior run, skip re-discovery and go straight to correction.
-        if not global_counts and os.path.exists(discovered_wl_path):
-            logger.info("Resuming: using existing discovered whitelist from prior run.")
-            discovered_whitelist_df = pd.read_csv(discovered_wl_path, sep="\t")
-        elif not global_counts:
-            logger.warning("No barcode counts available and no discovered whitelist found. Skipping barcode correction.")
-            discovered_whitelist_df = pd.DataFrame()
-        else:
-            expected_bc_lengths = _parse_expected_barcode_lengths(seq_order, sequences, barcodes)
-            logger.info("Starting whitelist-free barcode discovery...")
-            discovered_whitelist_df, _ = run_barcode_discovery(
-                global_counts, barcodes, output_dir,
-                expected_cells=expected_cells,
-                min_reads=min_reads_per_barcode,
-                min_cell_ratio=min_cell_ratio,
-                expected_lengths=expected_bc_lengths,
-            )
-
-        if discovered_whitelist_df.empty:
-            logger.warning("No barcodes discovered. Skipping barcode correction.")
-            # No correction — combine valid chunks into annotations_valid.parquet as fallback
-            if valid_chunk_files:
-                combined_valid = os.path.join(metadata_dir, "annotations_valid.parquet")
-                has_parquet = any(f.endswith(".parquet") for f in valid_chunk_files)
-                if has_parquet:
-                    pq_files = [f for f in valid_chunk_files if f.endswith(".parquet")]
-                    tsv_files = [f for f in valid_chunk_files if f.endswith(".tsv")]
-                    if tsv_files:
-                        pl.scan_csv(tsv_files, separator="\t", infer_schema_length=5000).sink_parquet(
-                            combined_valid, compression="snappy", row_group_size=chunk_size
-                        )
-                    else:
-                        try:
-                            pl.scan_parquet(pq_files).sink_parquet(
-                                combined_valid, compression="snappy", row_group_size=chunk_size
-                            )
-                        except Exception:
-                            pl.concat(
-                                [pl.scan_parquet(f) for f in pq_files], how="diagonal_relaxed"
-                            ).sink_parquet(combined_valid, compression="snappy", row_group_size=chunk_size)
-                else:
-                    pl.scan_csv(valid_chunk_files, separator="\t", infer_schema_length=5000).sink_parquet(
-                        combined_valid, compression="snappy", row_group_size=chunk_size
-                    )
-                for f in valid_chunk_files:
-                    if os.path.exists(f):
-                        os.remove(f)
-                logger.info(f"Combined valid chunks into {combined_valid} (no barcode correction).")
-        else:
-            logger.info("Running barcode correction with discovered whitelist...")
-            from wrappers.barcode_correction_wrap import barcode_correction_wrap
-
-            # Pass chunk files directly — avoids redundant combine + re-read
-            correction_input = valid_chunk_files if valid_chunk_files else os.path.join(
-                metadata_dir, "annotations_valid.parquet"
-            )
-            barcode_correction_wrap(
-                input_dir=output_dir,
-                whitelist_file=discovered_wl_path,
-                output_dir=output_dir,
-                input_file=correction_input,
-                output_fmt=effective_output_fmt,
-                seq_order_file=seq_order_file,
-                model_name=model_name,
-                bc_lv_threshold=bc_lv_threshold,
-                threads=threads,
-                chunk_size=chunk_size,
-                max_queue_size=max_queue_size,
-                include_barcode_quals=include_barcode_quals,
-                include_polya=include_polya,
-                run_demux=run_demux,
-                keep_demux_chunk_outputs_after_combine=keep_demux_chunk_outputs_after_combine,
-                resume=resume,
-            )
-    else:
-        if not skip_chunk_output_conversion:
-            _convert_chunk_outputs(
-                chunk_output_dir,
-                output_dir,
-                combine_chunk_outputs,
-                keep_chunk_tsv_after_combine,
-                effective_run_bc,
-                pl,
-                chunk_size,
-            )
-
-    if run_demux and not whitelist_free:
+    if run_demux:
         _combine_demux_chunk_outputs(
             chunk_output_dir,
             output_dir,
@@ -596,14 +472,11 @@ def annotate_reads_wrap(
             keep_demux_chunk_outputs_after_combine,
         )
 
-    # Clean up empty chunk directories when not keeping chunks
+    # Clean up annotation_chunks directory when not keeping chunks
     if not keep_chunk_tsv_after_combine:
-        for subdir in ["valid_chunks", "invalid_chunks", "demuxed_chunks", "ambiguous_chunks", "done"]:
-            path = os.path.join(chunk_output_dir, subdir)
-            if os.path.isdir(path) and not os.listdir(path):
-                os.rmdir(path)
-        if os.path.isdir(chunk_output_dir) and not os.listdir(chunk_output_dir):
-            os.rmdir(chunk_output_dir)
+        import shutil
+        if os.path.isdir(chunk_output_dir):
+            shutil.rmtree(chunk_output_dir, ignore_errors=True)
 
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB
