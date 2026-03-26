@@ -103,6 +103,14 @@ def _expr_is_ambiguous(cell_col):
     return pl.col(cell_col).cast(pl.Utf8) == "ambiguous"
 
 
+def _add_cdna_length(df):
+    """Add ``cDNA_length`` column from scalar ``cDNA_Starts`` / ``cDNA_Ends``."""
+    return df.with_columns(
+        (pl.col("cDNA_Ends").cast(pl.Int64) - pl.col("cDNA_Starts").cast(pl.Int64))
+        .alias("cDNA_length")
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # report builder  (pure Plotly — no HTML/CSS)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,7 +119,7 @@ def _expr_is_ambiguous(cell_col):
 _TAG_RE = re.compile(r"<[^>]+>|&[a-z]+;")
 
 
-def _wrap_caption(text, col_span, n_cols, full_chars=105):
+def _wrap_caption(text, col_span, n_cols, full_chars=150):
     """
     Word-wrap ``text`` to fit within the fraction ``col_span / n_cols`` of the
     figure width.  Paragraphs are separated by ``\\n\\n`` in the source and
@@ -139,17 +147,20 @@ def _wrap_caption(text, col_span, n_cols, full_chars=105):
 
 
 def _row_item(item):
-    """Unpack a row item as (title, fig, caption, caption_y).
+    """Unpack a row item as (title, fig, caption, caption_y, caption_xalign).
 
-    Accepts 3-tuples ``(title, fig, caption)`` — caption_y defaults to -0.12 —
-    or 4-tuples ``(title, fig, caption, caption_y)`` with a per-plot override.
+    Accepts 3-tuples ``(title, fig, caption)`` — caption_y defaults to -0.12,
+    caption_xalign to ``"center"`` — 4-tuples ``(title, fig, caption, caption_y)``
+    or 5-tuples ``(title, fig, caption, caption_y, caption_xalign)``.
     """
-    if len(item) == 4:
+    if len(item) == 5:
         return item
-    return (*item, -0.12)
+    if len(item) == 4:
+        return (*item, "center")
+    return (*item, -0.12, "center")
 
 
-def _build_row_figure(row, n_cols):
+def _build_row_figure(row, n_cols, shared_yaxes=False):
     """
     Build a ``go.Figure`` for a single row of subplots using ``make_subplots``.
     Each row figure has its own Plotly modebar with independent zoom/pan/autoscale.
@@ -159,6 +170,8 @@ def _build_row_figure(row, n_cols):
     row : list of ``(title, go.Figure, caption[, caption_y])`` tuples
     n_cols : int
         Global column count so caption word-wrap matches across rows.
+    shared_yaxes : bool
+        If True, subplots in the row share the same y-axis scale.
 
     Returns
     -------
@@ -194,20 +207,63 @@ def _build_row_figure(row, n_cols):
         specs=[spec_row],
         subplot_titles=subplot_titles,
         horizontal_spacing=0.08,
+        shared_yaxes=shared_yaxes,
     )
 
+    # Style subplot titles — bold via <b> tag.
+    for ann in combined.layout.annotations:
+        if ann.y is not None and ann.y >= 1.0:
+            ann.text = f"<b>{ann.text}</b>"
+            ann.font = dict(size=17, color="#1a1a2e", family="Arial")
+
+    subplot_meta = []  # (col_i, trace_start, trace_count, fig)
+
     for col_i, item in enumerate(row):
-        _, fig, caption, caption_y = _row_item(item)
+        _, fig, caption, caption_y, caption_xalign = _row_item(item)
         c   = start_cols[col_i]
         sfx = "" if col_i == 0 else str(col_i + 1)
 
+        trace_start = len(combined.data)
         for trace in fig.data:
             combined.add_trace(trace, row=1, col=c)
+        trace_count = len(combined.data) - trace_start
+
+        subplot_meta.append((col_i, trace_start, trace_count, fig))
 
         combined.update_xaxes(fig.layout.xaxis.to_plotly_json(), row=1, col=c)
         combined.update_yaxes(fig.layout.yaxis.to_plotly_json(), row=1, col=c)
 
-        if caption:
+        if caption and caption_xalign == "side":
+            # Place caption to the right of the plot area.
+            ax_key = "xaxis" if sfx == "" else f"xaxis{sfx}"
+            ay_key = "yaxis" if sfx == "" else f"yaxis{sfx}"
+            xdom = list(combined.layout[ax_key].domain)
+            ydom = list(combined.layout[ay_key].domain)
+            # Shrink plot to ~65% of its width; caption fills the rest.
+            orig_width = xdom[1] - xdom[0]
+            orig_center = (xdom[0] + xdom[1]) / 2
+            plot_frac = 0.65
+            new_right = xdom[0] + orig_width * plot_frac
+            combined.layout[ax_key].domain = [xdom[0], new_right]
+            # Re-center the subplot title over the shrunk plot area.
+            new_center = (xdom[0] + new_right) / 2
+            for ann in combined.layout.annotations:
+                if abs(ann.x - orig_center) < 0.01 and ann.y >= 1.0:
+                    ann.x = new_center
+                    break
+            cap_x = new_right + 0.01
+            cap_y = (ydom[0] + ydom[1]) / 2
+            combined.add_annotation(
+                xref="paper", yref="paper",
+                x=cap_x, y=cap_y,
+                xanchor="left", yanchor="middle",
+                text=_wrap_caption(caption, colspans[col_i], n_cols,
+                                   full_chars=45),
+                showarrow=False,
+                align="left",
+                font=dict(size=11, color="#666"),
+            )
+        elif caption:
             combined.add_annotation(
                 xref=f"x{sfx} domain", yref=f"y{sfx} domain",
                 x=0.5, y=caption_y,
@@ -221,30 +277,85 @@ def _build_row_figure(row, n_cols):
     # Bar traces never need a legend entry; scatter/line traces do.
     combined.update_traces(showlegend=False, selector=dict(type="bar"))
 
+    # Use unified hover for line-chart rows (no bar traces present).
+    has_bars = any(t.type == "bar" for t in combined.data)
+    if not has_bars:
+        combined.update_layout(hovermode="x unified")
+
     # Propagate updatemenus and extra annotations from individual figures.
+    # Trace-index arrays are padded so each subplot's buttons only toggle its
+    # own traces, and menu/annotation x-positions are mapped into the
+    # subplot's x-domain so they don't overlap when two plots share a row.
+    total_traces = len(combined.data)
     extra_menus = []
     extra_annots = []
-    for item in row:
-        _, fig, _, _ = _row_item(item)
+
+    for col_i, trace_start, trace_count, fig in subplot_meta:
+        sfx = "" if col_i == 0 else str(col_i + 1)
+        ax_key = "xaxis" if sfx == "" else f"xaxis{sfx}"
+        xdom = list(combined.layout[ax_key].domain)
+        dom_width = xdom[1] - xdom[0]
+
         if fig.layout.updatemenus:
-            extra_menus.extend(um.to_plotly_json() for um in fig.layout.updatemenus)
+            for um in fig.layout.updatemenus:
+                um_dict = um.to_plotly_json()
+                # Reposition x into this subplot's domain.
+                local_x = um_dict.get("x", 0)
+                um_dict["x"] = xdom[0] + local_x * dom_width
+                # Pad visible/showlegend arrays to address correct traces.
+                for btn in um_dict.get("buttons", []):
+                    args_list = btn.get("args", [{}])
+                    if not args_list:
+                        continue
+                    for key in ("visible", "showlegend"):
+                        if key in args_list[0]:
+                            local = args_list[0][key]
+                            padded = (
+                                [None] * trace_start
+                                + local
+                                + [None] * (total_traces - trace_start - len(local))
+                            )
+                            args_list[0][key] = padded
+                extra_menus.append(um_dict)
+
         if fig.layout.annotations:
-            extra_annots.extend(an.to_plotly_json() for an in fig.layout.annotations)
+            for an in fig.layout.annotations:
+                an_dict = an.to_plotly_json()
+                if an_dict.get("xref") == "paper":
+                    local_x = an_dict.get("x", 0)
+                    an_dict["x"] = xdom[0] + local_x * dom_width
+                extra_annots.append(an_dict)
+
+    # Dynamic height/margin: taller when captions are below the plot.
+    has_below_caption = any(
+        _row_item(item)[2] and _row_item(item)[4] != "side"
+        for item in row
+    )
+    height   = 560 if has_below_caption else 480
+    b_margin = 160 if has_below_caption else 40
 
     combined.update_layout(
         font=dict(size=13),
-        height=480,
+        height=height,
         bargap=0.55,
         plot_bgcolor="white",
         paper_bgcolor="#f5f7fa",
         showlegend=True,
-        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
-        margin=dict(t=80 if extra_menus else 50, b=130, l=60, r=40),
+        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="#ddd", borderwidth=1),
+        margin=dict(t=80 if extra_menus else 60, b=b_margin, l=65, r=45),
         **({"updatemenus": extra_menus} if extra_menus else {}),
     )
     if extra_annots:
         for an in extra_annots:
             combined.add_annotation(**an)
+    # Consistent axis styling across all subplots.
+    combined.update_xaxes(gridcolor="#eaeaea",
+                          title_font=dict(size=14, color="#444", family="Arial Black"))
+    combined.update_yaxes(gridcolor="#eaeaea", zeroline=False,
+                          title_font=dict(size=14, color="#444", family="Arial Black"))
+    if shared_yaxes:
+        combined.update_yaxes(showticklabels=True)
     return combined
 
 
@@ -254,6 +365,11 @@ def _write_html_report(path, row_figs, sample_name):
     Plotly.js is loaded once via CDN; each figure renders with its own modebar.
     """
     import plotly.io as pio
+    try:
+        from importlib.metadata import version as _pkg_version
+        __version__ = _pkg_version("tranquillyzer")
+    except Exception:
+        __version__ = "unknown"
 
     html_figs = []
     for i, fig in enumerate(row_figs):
@@ -261,10 +377,11 @@ def _write_html_report(path, row_figs, sample_name):
             fig,
             full_html=False,
             include_plotlyjs="cdn" if i == 0 else False,
-            config={"displaylogo": False},
+            config={"displaylogo": False,
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
         ))
 
-    page_title = f"Tranquillyzer QC Report \u2014 {sample_name}"
+    page_title = f"Tranquillyzer v{__version__} QC Report \u2014 {sample_name}"
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(
             "<!DOCTYPE html><html>"
@@ -274,7 +391,14 @@ def _write_html_report(path, row_figs, sample_name):
             "</style></head>"
             f"<body><h1>{page_title}</h1>"
         )
-        fh.write("\n".join(html_figs))
+        for fig_html in html_figs:
+            fh.write(
+                '<div style="background:white;border-radius:8px;'
+                'box-shadow:0 1px 4px rgba(0,0,0,0.12);'
+                'margin-bottom:16px;padding:8px">'
+            )
+            fh.write(fig_html)
+            fh.write("</div>")
         fh.write("</body></html>")
 
 
@@ -395,13 +519,14 @@ def _plot_read_architecture(summary, sample_name):
         x=labels, y=counts, text=text,
         textposition="outside", cliponaxis=False,
         textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1.5)),
+        marker=dict(color=colors, line=dict(color="white", width=1)),
         hovertemplate="%{x}: %{y:,}<extra></extra>",
     ))
     fig.update_layout(
         xaxis=dict(tickfont_size=13),
         yaxis=dict(tickfont_size=13, title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
         plot_bgcolor="white", paper_bgcolor="white",
+        uniformtext_minsize=13, uniformtext_mode="show",
     )
 
     caption = (
@@ -456,13 +581,14 @@ def _plot_barcode_assignment(summary, sample_name):
         x=labels, y=counts, text=text,
         textposition="outside", cliponaxis=False,
         textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1.5)),
+        marker=dict(color=colors, line=dict(color="white", width=1)),
         hovertemplate="%{x}: %{y:,}<extra></extra>",
     ))
     fig.update_layout(
         xaxis=dict(tickfont_size=13),
         yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
         plot_bgcolor="white", paper_bgcolor="white",
+        uniformtext_minsize=13, uniformtext_mode="show",
     )
 
     denom_label = "effective valid reads (valid + recovered fragments)" if has_split else "valid reads"
@@ -584,7 +710,7 @@ def _plot_invalid_reasons(invalid_path):
         )],
         annotations=[dict(
             text="Show:", x=0.0, xanchor="left",
-            y=1.27, yanchor="top",
+            y=1.24, yanchor="top",
             xref="paper", yref="paper",
             showarrow=False,
             font=dict(size=12, color="#444"),
@@ -650,7 +776,7 @@ def _plot_edit_distances(valid_path, barcode_types, vcols):
             textposition="outside",
             cliponaxis=False,
             textfont=dict(size=13),
-            marker=dict(color=_BAR_COLOR, line=dict(color="white", width=1.5)),
+            marker=dict(color=_BAR_COLOR, line=dict(color="white", width=1)),
             hovertemplate="Edit dist %{x}: %{y:,}<extra></extra>",
         ))
         fig.update_layout(
@@ -837,10 +963,10 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
                  x=0.12, xanchor="left", buttons=cap_buttons),
         ],
         annotations=[
-            dict(text="Bins:", x=0.0,  xanchor="left", y=1.26, yanchor="top",
+            dict(text="Bins:", x=0.0,  xanchor="left", y=1.24, yanchor="top",
                  xref="paper", yref="paper", showarrow=False,
                  font=dict(size=12, color="#444")),
-            dict(text="Cap x-axis:", x=0.12, xanchor="left", y=1.26, yanchor="top",
+            dict(text="Cap x-axis:", x=0.12, xanchor="left", y=1.24, yanchor="top",
                  xref="paper", yref="paper", showarrow=False,
                  font=dict(size=12, color="#444")),
         ],
@@ -858,6 +984,172 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
         "<b>Valid — Ambiguous</b>: ambiguous cell assignment."
     )
     return "Read-Length Distribution", fig, caption, -0.19
+
+
+def _plot_cdna_length_dist(valid_path, vcols, bin_width):
+    """
+    Line chart of cDNA-length distribution for valid reads only.
+    Same interactive dropdowns as the read-length plot (bin width, x-cap).
+    Returns (title, go.Figure, caption) or None.
+    """
+    if "cDNA_Starts" not in vcols or "cDNA_Ends" not in vcols:
+        return None
+
+    _COLORS = {
+        "Valid":              "#54A24B",
+        "Valid — from split": "#8BC34A",
+        "Valid — Demuxed":    "#72B7B2",
+        "Valid — Ambiguous":  "#F58518",
+    }
+    _NBIN_PRESETS = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000,
+                     200_000, 300_000, 400_000, 500_000, 1_000_000]
+
+    cell_col  = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
+    load_cols = ["cDNA_Starts", "cDNA_Ends", "ReadName"] + ([cell_col] if cell_col else [])
+    valid_df  = _scan_cols(valid_path, load_cols) if valid_path else pl.DataFrame()
+
+    if valid_df.is_empty() or "cDNA_Starts" not in valid_df.columns or "cDNA_Ends" not in valid_df.columns:
+        return None
+
+    valid_df = _add_cdna_length(valid_df)
+    valid_df = valid_df.filter(pl.col("cDNA_length").is_not_null() & (pl.col("cDNA_length") > 0))
+
+    if valid_df.is_empty():
+        return None
+
+    max_len = int(valid_df["cDNA_length"].max())
+    if max_len == 0:
+        return None
+
+    # Build per-group source dataframes
+    group_dfs: dict[str, pl.DataFrame] = {}
+    group_dfs["Valid"] = valid_df.select("cDNA_length").rename({"cDNA_length": "read_length"})
+
+    if "ReadName" in valid_df.columns:
+        split_df = valid_df.filter(pl.col("ReadName").cast(pl.Utf8).str.contains(r"__frag\d+$"))
+        if not split_df.is_empty():
+            group_dfs["Valid — from split"] = split_df.select("cDNA_length").rename({"cDNA_length": "read_length"})
+
+    if cell_col and cell_col in valid_df.columns:
+        cell_utf8 = pl.col(cell_col).cast(pl.Utf8)
+        vd_df = valid_df.filter(
+            pl.col(cell_col).is_not_null() & (cell_utf8 != "") & (cell_utf8 != "ambiguous")
+        )
+        if not vd_df.is_empty():
+            group_dfs["Valid — Demuxed"] = vd_df.select("cDNA_length").rename({"cDNA_length": "read_length"})
+        va_df = valid_df.filter(cell_utf8 == "ambiguous")
+        if not va_df.is_empty():
+            group_dfs["Valid — Ambiguous"] = va_df.select("cDNA_length").rename({"cDNA_length": "read_length"})
+
+    if not group_dfs:
+        return None
+
+    group_names = list(group_dfs.keys())
+    n_groups    = len(group_names)
+
+    all_nbins = [nb for nb in _NBIN_PRESETS if max_len // nb >= 1] or [100]
+    n_bw      = len(all_nbins)
+    target    = max_len / bin_width if bin_width > 0 else 200
+    default_bw_idx = min(range(n_bw), key=lambda i: abs(all_nbins[i] - target))
+
+    def _bin_counts_bw(df, bw):
+        return dict(
+            df.with_columns(
+                (pl.col("read_length") // bw * bw).alias("bin")
+            )
+            .group_by("bin").len().sort("bin").rows()
+        )
+
+    fig = go.Figure()
+    for nb_idx, n_bins in enumerate(all_nbins):
+        bw         = max(1, max_len // n_bins)
+        all_counts = {nm: _bin_counts_bw(group_dfs[nm], bw) for nm in group_names}
+        all_bins   = sorted({b for c in all_counts.values() for b in c})
+        visible    = (nb_idx == default_bw_idx)
+        for name in group_names:
+            counts = all_counts[name]
+            fig.add_trace(go.Scatter(
+                x=[int(b) + bw / 2 for b in all_bins],
+                y=[counts.get(b, 0) for b in all_bins],
+                mode="lines",
+                name=name,
+                visible=visible,
+                showlegend=visible,
+                line=dict(color=_COLORS.get(name, "#333"), width=2),
+                hovertemplate=(
+                    f"<b>{name}</b><br>Length: %{{x:,.0f}} bp"
+                    f"<br>Count: %{{y:,}}<extra></extra>"
+                ),
+            ))
+
+    bw_buttons = []
+    for nb_idx, n_bins in enumerate(all_nbins):
+        vis  = [False] * (n_groups * n_bw)
+        sleg = [False] * (n_groups * n_bw)
+        for j in range(n_groups):
+            vis [nb_idx * n_groups + j] = True
+            sleg[nb_idx * n_groups + j] = True
+        bw_buttons.append(dict(
+            method="restyle",
+            label=f"{n_bins:,}",
+            args=[{"visible": vis, "showlegend": sleg}],
+        ))
+
+    _CAP_PRESETS = [500, 1_000, 2_000, 3_000, 5_000, 7_500, 10_000, 15_000,
+                    20_000, 30_000, 50_000, 75_000, 100_000, 200_000, 500_000]
+    caps = [p for p in _CAP_PRESETS if p < max_len]
+    cap_buttons = [
+        dict(
+            method="relayout",
+            label=f"≤ {cap:,} bp",
+            args=[{"xaxis.range": [0, cap], "xaxis.autorange": False}],
+        )
+        for cap in caps
+    ]
+    cap_buttons.append(dict(
+        method="relayout",
+        label="All",
+        args=[{"xaxis.autorange": True}],
+    ))
+
+    _MENU = dict(type="dropdown", direction="down", font=dict(size=12),
+                 showactive=True, bgcolor="white", bordercolor="#ccc",
+                 y=1.18, yanchor="top")
+
+    fig.update_layout(
+        xaxis=dict(title="cDNA Length (bp)", tickfont_size=13, gridcolor="#f0f0f0"),
+        yaxis=dict(title="Read Count",       tickfont_size=13, gridcolor="#f0f0f0",
+                   zerolinecolor="#ddd"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=True,
+        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
+        updatemenus=[
+            dict(**_MENU, active=default_bw_idx,
+                 x=0.0,  xanchor="left", buttons=bw_buttons),
+            dict(**_MENU, active=len(cap_buttons) - 1,
+                 x=0.12, xanchor="left", buttons=cap_buttons),
+        ],
+        annotations=[
+            dict(text="Bins:", x=0.0,  xanchor="left", y=1.24, yanchor="top",
+                 xref="paper", yref="paper", showarrow=False,
+                 font=dict(size=12, color="#444")),
+            dict(text="Cap x-axis:", x=0.12, xanchor="left", y=1.24, yanchor="top",
+                 xref="paper", yref="paper", showarrow=False,
+                 font=dict(size=12, color="#444")),
+        ],
+    )
+
+    caption = (
+        "cDNA-length distribution for valid reads. Total bins and x-axis cap are adjustable via the dropdowns above."
+        "\n\n"
+        "<b>Valid</b>: correct segment architecture.&nbsp;&nbsp;"
+        "<b>Valid — from split</b>: fragments recovered from concatenated reads "
+        "(subset of Valid; only shown when splitting was used).&nbsp;&nbsp;"
+        "<b>Valid — Demuxed</b>: unambiguously assigned to a cell.&nbsp;&nbsp;"
+        "<b>Valid — Ambiguous</b>: ambiguous cell assignment."
+    )
+    return "cDNA-Length Distribution", fig, caption, -0.19
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -902,7 +1194,7 @@ def _plot_knee(valid_path, vcols):
         x=ranks,
         y=ns,
         mode="lines",
-        line=dict(color="#4C78A8", width=2),
+        line=dict(color="#54A24B", width=2),
         name="Reads per barcode",
         hovertemplate="Rank %{x:,}<br>Reads: %{y:,}<extra></extra>",
     ))
@@ -910,16 +1202,18 @@ def _plot_knee(valid_path, vcols):
     fig.update_layout(
         xaxis=dict(
             title="Barcodes (rank)",
-            type="log",
+            type="log", dtick=1,
             tickfont_size=13,
             gridcolor="#f0f0f0",
+            minor=dict(showgrid=False, ticks="", nticks=0),
         ),
         yaxis=dict(
             title="Reads (transcripts proxy)",
-            type="log",
+            type="log", dtick=1,
             tickfont_size=13,
             gridcolor="#f0f0f0",
             zerolinecolor="#ddd",
+            minor=dict(showgrid=False, ticks="", nticks=0),
         ),
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -927,11 +1221,66 @@ def _plot_knee(valid_path, vcols):
     )
 
     caption = (
-        f"Barcode knee plot for {len(ranks):,} demuxed cell IDs (ambiguous reads excluded). "
-        "Cell IDs are ranked by read count (descending); both axes are log-scaled. "
+        f"Read count per cell after barcode correction against the discovered whitelist. "
+        f"{len(ranks):,} cells with unambiguous barcode assignments ranked by read count (descending); "
+        "ambiguous and unmatched reads excluded. Both axes are log-scaled. "
         "Note: UMI deduplication is applied at the BAM level and is not reflected here."
     )
-    return "Transcripts vs Barcodes", fig, caption, -0.18
+    return "Reads per Cell", fig, caption, -0.14
+
+
+def _plot_knee_whitelist_free(metadata_dir):
+    """Barcode rank plot from whitelist-free discovery artifacts.
+
+    Uses barcode_counts.tsv (produced by generate-whitelist) to plot all
+    observed barcodes ranked by read count, with a vertical knee threshold line.
+    Returns (title, go.Figure, caption, caption_y) or None.
+    """
+    counts_path = os.path.join(metadata_dir, "barcode_counts.tsv")
+    if not os.path.exists(counts_path):
+        return None
+
+    df = pl.read_csv(counts_path, separator="\t")
+    if df.is_empty() or "read_count" not in df.columns:
+        return None
+
+    sorted_counts = df.sort("read_count", descending=True)["read_count"].to_list()
+    ranks = list(range(1, len(sorted_counts) + 1))
+
+    # Knee position: count of canonical + merged barcodes (i.e. not "below_knee")
+    n_knee = df.filter(~pl.col("status").str.starts_with("below_knee")).height
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ranks, y=sorted_counts, mode="lines",
+        line=dict(color="#54A24B", width=2),
+        name="Reads per barcode",
+        hovertemplate="Rank %{x:,}<br>Reads: %{y:,}<extra></extra>",
+    ))
+    # Vertical knee threshold line (Scatter trace — add_vline doesn't render on log axes)
+    y_min, y_max = sorted_counts[-1], sorted_counts[0]
+    fig.add_trace(go.Scatter(
+        x=[n_knee, n_knee], y=[y_min, y_max], mode="lines",
+        line=dict(color="#E45756", width=1.5, dash="dash"),
+        name=f"Knee ({n_knee:,})", showlegend=True,
+        hovertemplate=f"Knee: {n_knee:,} barcodes<extra></extra>",
+    ))
+
+    fig.update_layout(
+        xaxis=dict(title="Barcode rank", type="log", dtick=1, tickfont_size=13, gridcolor="#f0f0f0",
+                   minor=dict(showgrid=False, ticks="", nticks=0)),
+        yaxis=dict(title="Read count", type="log", dtick=1, tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd",
+                   minor=dict(showgrid=False, ticks="", nticks=0)),
+        plot_bgcolor="white", paper_bgcolor="white",
+    )
+
+    caption = (
+        f"All {len(ranks):,} observed canonicalized barcodes from valid reads, ranked by read count (descending). "
+        f"Knee-point detection on the log-log rank curve identifies {n_knee:,} high-confidence cell barcodes "
+        "(vertical line). Near-duplicate barcodes within 1 edit distance are merged into canonical entries. "
+        "Barcodes to the right of the threshold are considered sequencing noise or artifacts. Both axes are log-scaled."
+    )
+    return "Barcode Discovery", fig, caption, -0.14
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -993,8 +1342,8 @@ def _plot_read_length_per_cell(valid_path, vcols):
     q1s      = [r["q1"]     for r in rows]
     q3s      = [r["q3"]     for r in rows]
 
-    _BAND_COLOR   = "rgba(114,183,178,0.25)"   # teal, semi-transparent
-    _MEDIAN_COLOR = "#1f77b4"
+    _BAND_COLOR   = "rgba(84,162,75,0.25)"   # green, semi-transparent
+    _MEDIAN_COLOR = "#54A24B"
 
     # IQR band: upper boundary then reversed lower boundary (Plotly fill trick)
     fig = go.Figure()
@@ -1047,3 +1396,106 @@ def _plot_read_length_per_cell(valid_path, vcols):
         "Cell IDs are sorted by median read length (descending); ambiguous reads are appended last."
     )
     return "Read Length per Cell", fig, caption, -0.14
+
+
+def _plot_cdna_length_per_cell(valid_path, vcols):
+    """
+    Line plot of cDNA-length statistics per cell-id.
+
+    Same structure as ``_plot_read_length_per_cell`` but uses cDNA length
+    (``cDNA_Ends - cDNA_Starts``) instead of read length, with a green colour
+    scheme for visual distinction.
+
+    Returns (title, go.Figure, caption) or None.
+    """
+    cell_col = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
+    if cell_col is None or "cDNA_Starts" not in vcols or "cDNA_Ends" not in vcols:
+        return None
+
+    stats = (
+        pl.scan_parquet(valid_path)
+        .select([cell_col, "cDNA_Starts", "cDNA_Ends"])
+        .with_columns(
+            pl.col(cell_col).cast(pl.Utf8).alias("_cid"),
+            (pl.col("cDNA_Ends").cast(pl.Int64) - pl.col("cDNA_Starts").cast(pl.Int64)).alias("cDNA_length"),
+        )
+        .filter((pl.col("_cid") != "") & pl.col("cDNA_length").is_not_null() & (pl.col("cDNA_length") > 0))
+        .group_by("_cid")
+        .agg([
+            pl.col("cDNA_length").quantile(0.25, interpolation="midpoint").alias("q1"),
+            pl.col("cDNA_length").median().alias("median"),
+            pl.col("cDNA_length").quantile(0.75, interpolation="midpoint").alias("q3"),
+            pl.col("cDNA_length").count().alias("n"),
+        ])
+        .collect()
+    )
+
+    if stats.is_empty():
+        return None
+
+    stats = (
+        stats
+        .with_columns((pl.col("_cid") == "ambiguous").alias("_is_ambig"))
+        .sort(["_is_ambig", "median"], descending=[False, True])
+        .drop("_is_ambig")
+    )
+    rows = stats.to_dicts()
+
+    x        = [r["_cid"]   for r in rows]
+    medians  = [r["median"]  for r in rows]
+    q1s      = [r["q1"]      for r in rows]
+    q3s      = [r["q3"]      for r in rows]
+
+    _BAND_COLOR   = "rgba(84,162,75,0.25)"   # green, semi-transparent
+    _MEDIAN_COLOR = "#54A24B"
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x + x[::-1],
+        y=q3s + q1s[::-1],
+        fill="toself",
+        fillcolor=_BAND_COLOR,
+        line=dict(color="rgba(0,0,0,0)"),
+        hoverinfo="skip",
+        showlegend=True,
+        name="IQR (Q1–Q3)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=medians,
+        mode="lines+markers",
+        line=dict(color=_MEDIAN_COLOR, width=2),
+        marker=dict(size=4, color=_MEDIAN_COLOR),
+        name="Median",
+        hovertemplate=(
+            "<b>Cell %{x}</b><br>"
+            "Median: %{y:,.0f} bp<extra></extra>"
+        ),
+    ))
+
+    n_cells = len([r for r in rows if r["_cid"] != "ambiguous"])
+    fig.update_layout(
+        xaxis=dict(
+            title=f"Cell ID — sorted by median cDNA length  ({n_cells:,} demuxed + ambiguous)",
+            tickfont_size=11,
+            showticklabels=len(x) <= 200,
+            gridcolor="#f0f0f0",
+        ),
+        yaxis=dict(
+            title="cDNA Length (bp)",
+            tickfont_size=13,
+            gridcolor="#f0f0f0",
+            zerolinecolor="#ddd",
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=True,
+        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
+    )
+
+    caption = (
+        "Per-cell cDNA-length summary for demuxed valid reads (ambiguous appended last). "
+        "The line shows the median cDNA length; the shaded band spans the interquartile range (Q1–Q3). "
+        "Cell IDs are sorted by median cDNA length (descending); ambiguous reads are appended last."
+    )
+    return "cDNA Length per Cell", fig, caption, -0.14
