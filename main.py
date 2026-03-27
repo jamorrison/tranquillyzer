@@ -716,6 +716,19 @@ def qc_metrics(
         100,
         help="Bin width (bp) for the read-length distribution plots.",
     ),
+    bam: str = typer.Option(
+        None,
+        help=(
+            "Path to a dup-marked BAM file (with CB/UB/DT tags).\n\n"
+            "Enables additional plots: sequencing saturation curve, unique UMIs per cell, "
+            "mapping rate per cell, and duplicate rate per cell. "
+            "When not provided these plots are silently skipped."
+        ),
+    ),
+    threads: int = typer.Option(
+        4,
+        help="Number of parallel threads for computing independent QC metrics.",
+    ),
 ):
     """
     Generate QC metrics from tranquillyzer annotation parquet files.
@@ -731,6 +744,14 @@ def qc_metrics(
       5) Cell-barcode knee plot: per-cell read count (log rank vs log count) and
          cumulative fraction of reads.
       6) Per-cell read count table.
+      7) PolyA/T tail-length distribution.
+      8) Per-segment length box plots.
+      9) Read orientation balance.
+     10) Edit distance vs reads-per-cell scatter.
+     11) Sequencing saturation curve (requires --bam).
+     12) Unique UMIs per cell (requires --bam).
+     13) Mapping rate per cell (requires --bam).
+     14) Duplicate rate per cell (requires --bam).
 
     MultiQC usage:
       Run ``multiqc <output_dir>`` (or the parent directory) after this command
@@ -748,6 +769,8 @@ def qc_metrics(
         invalid_file=invalid_file,
         sample_name=resolved_sample,
         read_len_bin_width=read_len_bin_width,
+        bam_file=bam,
+        threads=threads,
     )
 
 

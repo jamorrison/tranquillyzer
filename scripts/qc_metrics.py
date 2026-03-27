@@ -6,12 +6,16 @@ Plotly figure builders, and individual metric/plot functions.
 All functions are verbatim from qc_metrics_wrap.py — only moved here.
 """
 
+import logging
 import os
 import re
 
+import numpy as np
 import polars as pl
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,12 +41,15 @@ def _probe_schema(path):
     return set(pl.read_parquet_schema(path).keys())
 
 
-def _scan_cols(path, cols):
+def _scan_cols(path, cols, schema=None):
     """
     Lazy-load only the requested columns from a parquet file and collect.
     Columns absent from the file are silently skipped.
+
+    When *schema* is provided (a set of column names), it is used instead
+    of probing the parquet file — avoiding a redundant file open.
     """
-    available = _probe_schema(path)
+    available = schema if schema is not None else _probe_schema(path)
     wanted = [c for c in cols if c in available]
     if not wanted:
         return pl.DataFrame()
@@ -279,7 +286,8 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
 
     # Use unified hover for line-chart rows (no bar traces present).
     has_bars = any(t.type == "bar" for t in combined.data)
-    if not has_bars:
+    has_boxes = any(t.type == "box" for t in combined.data)
+    if not has_bars and not has_boxes:
         combined.update_layout(hovermode="x unified")
 
     # Propagate updatemenus and extra annotations from individual figures.
@@ -431,26 +439,46 @@ def _compute_summary(valid_path, invalid_path, vcols):
     appear in the valid parquet and remainder entries (``__remainder``) in
     the invalid parquet.  These are separated so the summary reflects
     physical reads as the base unit.
-    """
-    n_valid_rows   = _count_rows(valid_path)
-    n_invalid_rows = _count_rows(invalid_path)
 
-    # Detect split concatenated reads by ReadName suffix
-    n_fragments      = _count_matching_readnames(valid_path,   r"__frag\d+$")
-    n_concat_parents = _count_matching_readnames(invalid_path, r"__remainder$")
+    Uses at most 2 lazy scans (one per file) instead of 5 separate scans.
+    """
+    cell_col = _first_present(vcols, ["cell_id", "corrected_CBC"])
+    has_cell = cell_col is not None
+
+    # ── valid file: row count + fragment count + cell stats in one scan ─────
+    n_valid_rows = n_fragments = n_demuxed = n_ambiguous = 0
+    if valid_path is not None:
+        exprs = [pl.len().alias("n_rows")]
+        if "ReadName" in vcols:
+            exprs.append(
+                pl.col("ReadName").cast(pl.Utf8).str.contains(r"__frag\d+$").sum().alias("n_fragments")
+            )
+        if has_cell:
+            exprs.append(_expr_is_demuxed(cell_col).sum().alias("n_demuxed"))
+            exprs.append(_expr_is_ambiguous(cell_col).sum().alias("n_ambiguous"))
+        row = pl.scan_parquet(valid_path).select(exprs).collect().row(0, named=True)
+        n_valid_rows = row["n_rows"]
+        n_fragments = row.get("n_fragments", 0)
+        n_demuxed = row.get("n_demuxed", 0)
+        n_ambiguous = row.get("n_ambiguous", 0)
+
+    # ── invalid file: row count + remainder count in one scan ──────────────
+    n_invalid_rows = n_concat_parents = 0
+    if invalid_path is not None:
+        icols = _probe_schema(invalid_path)
+        i_exprs = [pl.len().alias("n_rows")]
+        if "ReadName" in icols:
+            i_exprs.append(
+                pl.col("ReadName").cast(pl.Utf8).str.contains(r"__remainder$").sum().alias("n_remainder")
+            )
+        irow = pl.scan_parquet(invalid_path).select(i_exprs).collect().row(0, named=True)
+        n_invalid_rows = irow["n_rows"]
+        n_concat_parents = irow.get("n_remainder", 0)
 
     has_split        = n_fragments > 0
     n_valid_natural  = n_valid_rows - n_fragments
     n_invalid_true   = n_invalid_rows - n_concat_parents
     n_total_physical = n_valid_natural + n_concat_parents + n_invalid_true
-
-    cell_col = _first_present(vcols, ["cell_id", "corrected_CBC"])
-    has_cell = cell_col is not None
-    n_demuxed = n_ambiguous = 0
-    if has_cell:
-        cell_df     = _scan_cols(valid_path, [cell_col])
-        n_demuxed   = cell_df.filter(_expr_is_demuxed(cell_col)).height
-        n_ambiguous = cell_df.filter(_expr_is_ambiguous(cell_col)).height
 
     return {
         "n_total":           n_total_physical,
@@ -615,7 +643,7 @@ def _plot_invalid_reasons(invalid_path):
         return None
 
     load_cols = ["reason"] + (["ReadName"] if "ReadName" in icols else [])
-    df = _scan_cols(invalid_path, load_cols).drop_nulls(subset=["reason"])
+    df = _scan_cols(invalid_path, load_cols, schema=icols).drop_nulls(subset=["reason"])
     if df.is_empty():
         return None
 
@@ -748,7 +776,7 @@ def _plot_edit_distances(valid_path, barcode_types, vcols):
         if dist_col not in vcols:
             continue
 
-        df = _scan_cols(valid_path, [dist_col]).drop_nulls()
+        df = _scan_cols(valid_path, [dist_col], schema=vcols).drop_nulls()
         if df.is_empty():
             continue
 
@@ -798,6 +826,40 @@ def _plot_edit_distances(valid_path, barcode_types, vcols):
     return results
 
 
+def _build_multires_histograms(group_dfs, max_len, all_nbins):
+    """Compute histograms at multiple resolutions efficiently.
+
+    Bins the data once at the finest granularity (largest n_bins), then
+    derives all coarser histograms by summing adjacent fine bins — avoiding
+    repeated ``group_by`` operations on the full dataset.
+
+    Returns ``{nb_idx: {group_name: {bin_edge: count}}}``.
+    """
+    finest_bw = max(1, max_len // all_nbins[-1])
+
+    def _bin_counts_fine(df):
+        return dict(
+            df.with_columns(
+                (pl.col("read_length") // finest_bw * finest_bw).alias("bin")
+            )
+            .group_by("bin").len().sort("bin").rows()
+        )
+
+    fine_counts = {nm: _bin_counts_fine(group_dfs[nm]) for nm in group_dfs}
+
+    result = {}
+    for nb_idx, n_bins in enumerate(all_nbins):
+        bw = max(1, max_len // n_bins)
+        result[nb_idx] = {}
+        for nm, fc in fine_counts.items():
+            coarse: dict[int, int] = {}
+            for fine_bin, cnt in fc.items():
+                cb = (fine_bin // bw) * bw
+                coarse[cb] = coarse.get(cb, 0) + cnt
+            result[nb_idx][nm] = coarse
+    return result
+
+
 def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
     """
     Line chart of read-length distribution for five read subsets.
@@ -820,8 +882,8 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
 
     cell_col  = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
     load_cols = ["read_length", "ReadName"] + ([cell_col] if cell_col else [])
-    valid_df  = _scan_cols(valid_path,   load_cols)       if valid_path   else pl.DataFrame()
-    inv_df    = _scan_cols(invalid_path, ["read_length"]) if invalid_path else pl.DataFrame()
+    valid_df  = _scan_cols(valid_path,   load_cols, schema=vcols) if valid_path   else pl.DataFrame()
+    inv_df    = _scan_cols(invalid_path, ["read_length"])        if invalid_path else pl.DataFrame()
 
     # Ensure read_length is numeric (chunk parquets may store it as str)
     if not valid_df.is_empty() and "read_length" in valid_df.columns:
@@ -881,19 +943,12 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width):
     target    = max_read_len / bin_width if bin_width > 0 else 200
     default_bw_idx = min(range(n_bw), key=lambda i: abs(all_nbins[i] - target))
 
-    def _bin_counts_bw(df, bw):
-        return dict(
-            df.with_columns(
-                (pl.col("read_length") // bw * bw).alias("bin")
-            )
-            .group_by("bin").len().sort("bin").rows()
-        )
-
     # ── add all traces (n_groups × n_bins options); only default visible ──────
+    multires = _build_multires_histograms(group_dfs, max_read_len, all_nbins)
     fig = go.Figure()
     for nb_idx, n_bins in enumerate(all_nbins):
         bw         = max(1, max_read_len // n_bins)
-        all_counts = {nm: _bin_counts_bw(group_dfs[nm], bw) for nm in group_names}
+        all_counts = multires[nb_idx]
         all_bins   = sorted({b for c in all_counts.values() for b in c})
         visible    = (nb_idx == default_bw_idx)
         for name in group_names:
@@ -1006,7 +1061,7 @@ def _plot_cdna_length_dist(valid_path, vcols, bin_width):
 
     cell_col  = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
     load_cols = ["cDNA_Starts", "cDNA_Ends", "ReadName"] + ([cell_col] if cell_col else [])
-    valid_df  = _scan_cols(valid_path, load_cols) if valid_path else pl.DataFrame()
+    valid_df  = _scan_cols(valid_path, load_cols, schema=vcols) if valid_path else pl.DataFrame()
 
     if valid_df.is_empty() or "cDNA_Starts" not in valid_df.columns or "cDNA_Ends" not in valid_df.columns:
         return None
@@ -1052,18 +1107,11 @@ def _plot_cdna_length_dist(valid_path, vcols, bin_width):
     target    = max_len / bin_width if bin_width > 0 else 200
     default_bw_idx = min(range(n_bw), key=lambda i: abs(all_nbins[i] - target))
 
-    def _bin_counts_bw(df, bw):
-        return dict(
-            df.with_columns(
-                (pl.col("read_length") // bw * bw).alias("bin")
-            )
-            .group_by("bin").len().sort("bin").rows()
-        )
-
+    multires = _build_multires_histograms(group_dfs, max_len, all_nbins)
     fig = go.Figure()
     for nb_idx, n_bins in enumerate(all_nbins):
         bw         = max(1, max_len // n_bins)
-        all_counts = {nm: _bin_counts_bw(group_dfs[nm], bw) for nm in group_names}
+        all_counts = multires[nb_idx]
         all_bins   = sorted({b for c in all_counts.values() for b in c})
         visible    = (nb_idx == default_bw_idx)
         for name in group_names:
@@ -1172,7 +1220,7 @@ def _plot_knee(valid_path, vcols):
     if bc_col is None:
         return None
 
-    df = _scan_cols(valid_path, [bc_col])
+    df = _scan_cols(valid_path, [bc_col], schema=vcols)
     if df.is_empty():
         return None
 
@@ -1499,3 +1547,675 @@ def _plot_cdna_length_per_cell(valid_path, vcols):
         "Cell IDs are sorted by median cDNA length (descending); ambiguous reads are appended last."
     )
     return "cDNA Length per Cell", fig, caption, -0.14
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Segment length box plots
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _detect_segments(vcols):
+    """
+    Return segment names that have both ``{name}_Starts`` and ``{name}_Ends``
+    columns in *vcols*.  Order follows the canonical pipeline layout.
+    """
+    _ORDERED = ["5p", "CBC", "UMI", "SLS", "polyT", "cDNA", "polyA", "3p", "random_s", "random_e"]
+    found = []
+    extra = set()
+    for col in vcols:
+        if col.endswith("_Starts"):
+            seg = col[:-len("_Starts")]
+            if f"{seg}_Ends" in vcols:
+                if seg in _ORDERED:
+                    found.append(seg)
+                else:
+                    extra.add(seg)
+    # Return in canonical order, then any extras alphabetically.
+    ordered = [s for s in _ORDERED if s in found]
+    ordered.extend(sorted(extra))
+    return ordered
+
+
+def _load_segment_lengths(path, segments, vcols):
+    """
+    Load segment start/end columns once and compute box-plot statistics.
+
+    Returns (all_stats, demuxed_stats) where each is a
+    ``dict[str, dict]`` mapping segment name → ``{n, min, q1, median, q3, max}``.
+    ``demuxed_stats`` is ``None`` when no cell column is available.
+    """
+    starts_cols = [f"{s}_Starts" for s in segments]
+    ends_cols = [f"{s}_Ends" for s in segments]
+    load_cols = starts_cols + ends_cols
+
+    # Also load _Sequences columns for barcode segments (CBC, CBC1, CBC2, …)
+    seq_segments = {s for s in segments if f"{s}_Sequences" in vcols}
+    for s in seq_segments:
+        load_cols.append(f"{s}_Sequences")
+
+    cell_col = _first_present(vcols, ["cell_id", "corrected_CBC"])
+    if cell_col:
+        load_cols.append(cell_col)
+
+    df = _scan_cols(path, load_cols, schema=vcols)
+    if df.is_empty():
+        return {}, None
+
+    def _compute(sub_df):
+        result = {}
+        for seg in segments:
+            seq_col = f"{seg}_Sequences"
+            # For segments with a _Sequences column, use string length
+            if seg in seq_segments and seq_col in sub_df.columns:
+                try:
+                    len_col = (
+                        sub_df.select(
+                            pl.col(seq_col).cast(pl.Utf8).str.len_chars().alias("_len")
+                        )
+                        .drop_nulls()
+                        .filter(pl.col("_len") > 0)
+                    )
+                except Exception:
+                    continue
+            else:
+                sc, ec = f"{seg}_Starts", f"{seg}_Ends"
+                if sc not in sub_df.columns or ec not in sub_df.columns:
+                    continue
+                try:
+                    len_col = (
+                        sub_df.select(
+                            (pl.col(ec).cast(pl.Int64) - pl.col(sc).cast(pl.Int64)).alias("_len")
+                        )
+                        .drop_nulls()
+                        .filter(pl.col("_len") >= 0)
+                    )
+                except Exception:
+                    try:
+                        len_col = (
+                            sub_df.select(pl.col(sc).cast(pl.Utf8).alias("_s"),
+                                          pl.col(ec).cast(pl.Utf8).alias("_e"))
+                            .with_columns(
+                                pl.col("_s").str.split(", ").list.eval(pl.element().cast(pl.Int64)).alias("_si"),
+                                pl.col("_e").str.split(", ").list.eval(pl.element().cast(pl.Int64)).alias("_ei"),
+                            )
+                            .select(
+                                (pl.col("_ei") - pl.col("_si")).list.sum().alias("_len")
+                            )
+                            .drop_nulls()
+                            .filter(pl.col("_len") >= 0)
+                        )
+                    except Exception:
+                        continue
+            if len_col.is_empty():
+                continue
+            s = len_col["_len"]
+            q1 = s.quantile(0.25, interpolation="midpoint")
+            q3 = s.quantile(0.75, interpolation="midpoint")
+            result[seg] = dict(
+                n=len(s), min=s.min(), q1=q1,
+                median=s.median(), q3=q3, max=s.max(),
+            )
+        return result
+
+    all_stats = _compute(df)
+
+    demuxed_stats = None
+    if cell_col and cell_col in df.columns:
+        demux_df = df.filter(_expr_is_demuxed(cell_col))
+        if not demux_df.is_empty():
+            demuxed_stats = _compute(demux_df)
+
+    return all_stats, demuxed_stats
+
+
+def _make_segment_boxplot(seg_stats, color, title, label):
+    """Build a horizontal box plot figure from precomputed segment stats."""
+    if not seg_stats:
+        return None
+
+    fig = go.Figure()
+    n_reads = 0
+    for seg in reversed(list(seg_stats.keys())):
+        st = seg_stats[seg]
+        n_reads = max(n_reads, st["n"])
+        iqr = st["q3"] - st["q1"]
+        lower = max(st["min"], st["q1"] - 1.5 * iqr)
+        upper = min(st["max"], st["q3"] + 1.5 * iqr)
+        fig.add_trace(go.Box(
+            y=[seg],
+            q1=[st["q1"]],
+            median=[st["median"]],
+            q3=[st["q3"]],
+            lowerfence=[lower],
+            upperfence=[upper],
+            orientation="h",
+            name=seg,
+            marker=dict(color=color, opacity=0.85),
+            line=dict(color=color),
+            fillcolor=color,
+            opacity=0.85,
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+        # Hover marker at median — only fires when pointer is on the box
+        fig.add_trace(go.Scatter(
+            x=[st["median"]],
+            y=[seg],
+            mode="markers",
+            marker=dict(size=12, opacity=0),
+            showlegend=False,
+            hovertemplate=(
+                f"<b>{seg}</b><br>"
+                f"Median: {st['median']:,.0f} bp<br>"
+                f"Q1: {st['q1']:,.0f} bp<br>"
+                f"Q3: {st['q3']:,.0f} bp<br>"
+                f"Lower fence: {lower:,.0f} bp<br>"
+                f"Upper fence: {upper:,.0f} bp<br>"
+                f"n = {st['n']:,}"
+                "<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        xaxis=dict(title="Length (bp)", tickfont_size=13, gridcolor="#f0f0f0"),
+        yaxis=dict(tickfont_size=13, gridcolor="#f0f0f0"),
+        plot_bgcolor="white", paper_bgcolor="white",
+    )
+
+    caption = (
+        f"Per-segment length distributions across {n_reads:,} {label} reads. "
+        "Each box shows the median, IQR, and whiskers (1.5x IQR)."
+    )
+    return title, fig, caption, -0.14
+
+
+def _plot_segment_lengths(valid_path, vcols):
+    """
+    Compute segment lengths once and return two plot tuples:
+    one for all valid reads and one for demuxed reads.
+
+    Returns (all_valid_plot, demuxed_plot) — each is
+    ``(title, fig, caption, caption_y)`` or ``None``.
+    """
+    segments = _detect_segments(vcols)
+    if not segments:
+        return None, None
+
+    all_lengths, demuxed_lengths = _load_segment_lengths(valid_path, segments, vcols)
+
+    all_plot = _make_segment_boxplot(
+        all_lengths, "#2D8E2D", "Segment Lengths (All Valid Reads)", "valid")
+    demux_plot = _make_segment_boxplot(
+        demuxed_lengths, "#72B7B2", "Segment Lengths (Demuxed Reads)", "demuxed"
+    ) if demuxed_lengths else None
+
+    return all_plot, demux_plot
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BAM-dependent metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _collect_bam_per_cell_stats(bam_path, threads=4):
+    """
+    Collect per-cell alignment statistics from a dup-marked BAM.
+
+    Uses **samtools** (C, multi-threaded BAM decompression) piped through
+    **awk** (C, tag extraction) into **polars** (Rust, classification and
+    aggregation).  No Python per-record overhead.
+
+    Returns
+    -------
+    per_cell_df : polars.DataFrame
+        Columns: ``[cb, total_reads, uniquely_mapped, has_secondary,
+        has_supplementary, unmapped, dup_reads, unique_umis]``.
+    umi_pairs_df : polars.DataFrame
+        ``(cb, umi)`` pairs for **non-duplicate** reads (for saturation curve).
+    has_dedup : bool
+        Whether the BAM contained DT tags (i.e. was dup-marked).
+    """
+    import shlex
+    import subprocess
+
+    logger.info(f"Scanning BAM for per-cell QC stats: {bam_path}")
+
+    # ── Step 1: Extract 5 fields per alignment via samtools + awk ─────────
+    awk_prog = (
+        'BEGIN{OFS="\\t"}'
+        "{"
+        '  cb=""; ub=""; dt="";'
+        "  for(i=12;i<=NF;i++){"
+        '    t=substr($i,1,5);'
+        '    if(t=="CB:Z:") cb=substr($i,6);'
+        '    else if(t=="UB:Z:") ub=substr($i,6);'
+        '    else if(t=="DT:Z:") dt=substr($i,6)'
+        "  };"
+        "  print $1,$2,cb,ub,dt"
+        "}"
+    )
+    sam_threads = max(1, threads - 1)
+    cmd = (
+        f"samtools view -@ {sam_threads} {shlex.quote(str(bam_path))}"
+        f" | awk -F'\\t' '{awk_prog}'"
+    )
+    proc = subprocess.Popen(
+        cmd, shell=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+    # ── Step 2: Load into polars from pipe ────────────────────────────────
+    df = pl.read_csv(
+        proc.stdout,
+        separator="\t",
+        has_header=False,
+        new_columns=["qname", "flag", "cb", "umi", "dt"],
+        schema_overrides={"flag": pl.UInt16},
+        null_values=[""],
+    )
+    stderr_out = proc.stderr.read()
+    if proc.wait() != 0:
+        raise RuntimeError(f"samtools/awk failed: {stderr_out.decode()}")
+
+    n_aln = df.height
+    logger.info(f"  Loaded {n_aln:,} alignments")
+
+    # ── Step 3: Build sec/supp qname sets, keep only primaries ────────────
+    FLAG_SEC = 0x100
+    FLAG_SUPP = 0x800
+    FLAG_UNMAP = 0x4
+    FLAG_DUP = 0x400
+
+    sec_qnames = (
+        df.filter((pl.col("flag") & FLAG_SEC) > 0)
+        .select("qname").unique()
+    )
+    supp_only_qnames = (
+        df.filter((pl.col("flag") & FLAG_SUPP) > 0)
+        .select("qname").unique()
+        .join(sec_qnames, on="qname", how="anti")
+    )
+
+    primary = df.filter(
+        ((pl.col("flag") & (FLAG_SEC | FLAG_SUPP)) == 0)
+        & pl.col("cb").is_not_null()
+    )
+    del df
+
+    # ── Step 4: Classify each primary alignment ──────────────────────────
+    has_dedup = primary.filter(pl.col("dt").is_not_null()).height > 0
+
+    primary = (
+        primary
+        .join(
+            sec_qnames.with_columns(pl.lit(True).alias("_sec")),
+            on="qname", how="left",
+        )
+        .join(
+            supp_only_qnames.with_columns(pl.lit(True).alias("_supp")),
+            on="qname", how="left",
+        )
+        .with_columns(
+            pl.col("_sec").fill_null(False),
+            pl.col("_supp").fill_null(False),
+            ((pl.col("flag") & FLAG_UNMAP) > 0).alias("is_unmapped"),
+            (
+                (pl.col("dt") == "Yes")
+                | ((pl.col("flag") & FLAG_DUP) > 0)
+            ).alias("is_dup"),
+        )
+        .with_columns(
+            pl.when(pl.col("is_unmapped")).then(pl.lit("unmapped"))
+              .when(pl.col("_sec")).then(pl.lit("has_secondary"))
+              .when(pl.col("_supp")).then(pl.lit("has_supplementary"))
+              .otherwise(pl.lit("uniquely_mapped"))
+              .alias("aln_class"),
+        )
+    )
+    del sec_qnames, supp_only_qnames
+
+    # ── Step 5: Per-cell aggregation ──────────────────────────────────────
+    per_cell_df = primary.group_by("cb").agg(
+        pl.len().alias("total_reads"),
+        (pl.col("aln_class") == "uniquely_mapped").sum().alias("uniquely_mapped"),
+        (pl.col("aln_class") == "has_secondary").sum().alias("has_secondary"),
+        (pl.col("aln_class") == "has_supplementary").sum().alias("has_supplementary"),
+        (pl.col("aln_class") == "unmapped").sum().alias("unmapped"),
+        pl.col("is_dup").sum().alias("dup_reads"),
+        pl.col("umi")
+          .filter(~pl.col("is_dup") & pl.col("umi").is_not_null())
+          .n_unique()
+          .alias("unique_umis"),
+    )
+
+    # ── Step 6: umi_pairs DataFrame for saturation curve ─────────────────
+    umi_pairs_df = primary.filter(
+        ~pl.col("is_dup") & pl.col("umi").is_not_null()
+    ).select("cb", "umi")
+
+    logger.info(
+        f"  {per_cell_df.height:,} cells, "
+        f"{per_cell_df['total_reads'].sum():,} primary reads, "
+        f"{umi_pairs_df.height:,} non-dup UMI pairs "
+        f"(dedup tags: {has_dedup})"
+    )
+
+    return per_cell_df, umi_pairs_df, has_dedup
+
+
+def _plot_saturation_curve(umi_pairs_df, n_subsamples=10, seed=42):
+    """
+    Sequencing saturation curve from dup-marked BAM data.
+
+    Shuffles once (numpy permutation), then takes cumulative slices to
+    count median unique UMIs per cell at each read fraction.
+
+    Returns (title, fig, caption, caption_y) or None.
+    """
+    if umi_pairs_df is None or umi_pairs_df.is_empty():
+        return None
+
+    n_total = umi_pairs_df.height
+    fractions = [i / n_subsamples for i in range(1, n_subsamples + 1)]
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+
+    medians = []
+    for frac in fractions:
+        k = min(max(1, int(n_total * frac)), n_total)
+        subset = umi_pairs_df[indices[:k]]
+        per_cell = subset.group_by("cb").agg(
+            pl.col("umi").n_unique().alias("n_umis")
+        )
+        medians.append(per_cell["n_umis"].median() or 0)
+        logger.info(f"  Saturation curve: {frac*100:.0f}% ({k:,} reads)")
+
+    fig = go.Figure(go.Scatter(
+        x=[f * 100 for f in fractions],
+        y=medians,
+        mode="lines+markers",
+        line=dict(color="#4C78A8", width=2),
+        marker=dict(size=6, color="#4C78A8"),
+        hovertemplate="Reads: %{x:.0f}%<br>Median UMIs/cell: %{y:,.0f}<extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis=dict(title="Fraction of Reads (%)", tickfont_size=13, gridcolor="#f0f0f0"),
+        yaxis=dict(title="Median Unique UMIs per Cell", tickfont_size=13,
+                   gridcolor="#f0f0f0", zerolinecolor="#ddd"),
+        plot_bgcolor="white", paper_bgcolor="white",
+        showlegend=False,
+    )
+
+    caption = (
+        f"Sequencing saturation: median unique UMIs per cell at increasing "
+        f"read fractions (from {n_total:,} non-duplicate reads). "
+        "A plateau indicates the library is saturated; a rising curve suggests "
+        "additional sequencing would discover new molecules."
+    )
+    return "Sequencing Saturation", fig, caption, -0.14
+
+
+def _plot_alignment_stats(per_cell_df):
+    """
+    Bar chart of global alignment statistics.
+
+    Shows total reads, aligned, uniquely aligned, with secondary
+    alignments, with supplementary alignments, and unmapped.
+
+    Returns (title, fig, caption, caption_y) or None.
+    """
+    if per_cell_df is None or per_cell_df.is_empty():
+        return None
+
+    for col in ("total_reads", "uniquely_mapped", "has_secondary", "has_supplementary", "unmapped"):
+        if col not in per_cell_df.columns:
+            return None
+
+    g_total = per_cell_df["total_reads"].sum()
+    g_unique = per_cell_df["uniquely_mapped"].sum()
+    g_sec = per_cell_df["has_secondary"].sum()
+    g_supp = per_cell_df["has_supplementary"].sum()
+    g_unmap = per_cell_df["unmapped"].sum()
+    g_aligned = g_total - g_unmap
+
+    def _pct(n):
+        return f"{100 * n / g_total:.1f}%" if g_total > 0 else "0%"
+
+    labels = ["Total", "Aligned", "Uniquely\naligned", "W/ secondary", "W/ supplementary", "Unmapped"]
+    counts = [g_total, g_aligned, g_unique, g_sec, g_supp, g_unmap]
+    colors = ["#4C78A8", "#54A24B", "#72B7B2", "#F58518", "#EECA3B", "#E45756"]
+    text = [
+        f"{g_total:,}",
+        f"{g_aligned:,}<br>({_pct(g_aligned)})",
+        f"{g_unique:,}<br>({_pct(g_unique)})",
+        f"{g_sec:,}<br>({_pct(g_sec)})",
+        f"{g_supp:,}<br>({_pct(g_supp)})",
+        f"{g_unmap:,}<br>({_pct(g_unmap)})",
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=labels, y=counts, text=text,
+        textposition="outside", cliponaxis=False,
+        textfont=dict(size=13),
+        marker=dict(color=colors, line=dict(color="white", width=1)),
+        hovertemplate="%{x}: %{y:,}<extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis=dict(tickfont_size=13),
+        yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
+        plot_bgcolor="white", paper_bgcolor="white",
+        uniformtext_minsize=13, uniformtext_mode="show",
+    )
+
+    caption = (
+        f"{g_total:,} total reads. "
+        f"{_pct(g_aligned)} aligned ({g_aligned:,}), "
+        f"{_pct(g_unique)} uniquely ({g_unique:,}), "
+        f"{_pct(g_sec)} with secondary ({g_sec:,}), "
+        f"{_pct(g_supp)} with supplementary ({g_supp:,}), "
+        f"{_pct(g_unmap)} unmapped ({g_unmap:,}). "
+        "Reads with secondary alignments may also have supplementary alignments."
+    )
+    return "Alignment Statistics", fig, caption, -0.14
+
+
+def _plot_global_dup_stats(bam_path):
+    """
+    Bar chart of global duplication statistics from the dedup stats TSV.
+
+    Reads ``<bam_path>.replace('.bam', '_stats.tsv')`` which contains
+    Unique Reads and Duplicate Reads counts written by the dedup command.
+
+    Returns (title, fig, caption, caption_y) or None.
+    """
+    stats_tsv = bam_path.replace(".bam", "_stats.tsv")
+    if not os.path.isfile(stats_tsv):
+        return None
+
+    metrics = {}
+    with open(stats_tsv) as fh:
+        next(fh)  # skip header
+        for line in fh:
+            parts = line.strip().split("\t")
+            if len(parts) == 2:
+                metrics[parts[0]] = int(parts[1])
+
+    uniq = metrics.get("Unique Reads", 0)
+    dups = metrics.get("Duplicate Reads", 0)
+    total = uniq + dups
+    if total == 0:
+        return None
+
+    def _pct(n):
+        return f"{100 * n / total:.1f}%" if total > 0 else "0%"
+
+    labels = ["Total", "Unique", "Duplicate"]
+    counts = [total, uniq, dups]
+    colors = ["#4C78A8", "#54A24B", "#E45756"]
+    text = [
+        f"{total:,}",
+        f"{uniq:,}<br>({_pct(uniq)})",
+        f"{dups:,}<br>({_pct(dups)})",
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=labels, y=counts, text=text,
+        textposition="outside", cliponaxis=False,
+        textfont=dict(size=13),
+        marker=dict(color=colors, line=dict(color="white", width=1)),
+        hovertemplate="%{x}: %{y:,}<extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis=dict(tickfont_size=13),
+        yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
+        plot_bgcolor="white", paper_bgcolor="white",
+        uniformtext_minsize=13, uniformtext_mode="show",
+    )
+
+    caption = (
+        f"{total:,} total reads. "
+        f"{_pct(uniq)} unique ({uniq:,}), "
+        f"{_pct(dups)} duplicates ({dups:,})."
+    )
+    return "Duplication Statistics", fig, caption, -0.14
+
+
+def _plot_mapping_rate_per_cell(per_cell_df):
+    """
+    Stacked area chart of alignment categories per cell.
+
+    Shows the fraction of reads per cell that are uniquely mapped,
+    have secondary alignments, have supplementary alignments, or are
+    unmapped.  Categories are mutually exclusive: secondary takes
+    precedence over supplementary (a read with both is counted under
+    secondary).  Cells are sorted by total read count (descending).
+
+    Returns (title, fig, caption, caption_y) or None.
+    """
+    if per_cell_df is None or per_cell_df.is_empty():
+        return None
+
+    for col in ("uniquely_mapped", "has_secondary", "has_supplementary", "unmapped", "total_reads"):
+        if col not in per_cell_df.columns:
+            return None
+
+    df = per_cell_df.sort("total_reads", descending=True)
+    n_cells = len(df)
+    x = list(range(1, n_cells + 1))
+
+    totals = df["total_reads"].to_list()
+    unique = df["uniquely_mapped"].to_list()
+    sec = df["has_secondary"].to_list()
+    supp = df["has_supplementary"].to_list()
+    unmap = df["unmapped"].to_list()
+
+    def _frac(nums, denoms):
+        return [n / d if d > 0 else 0 for n, d in zip(nums, denoms)]
+
+    _COLORS = {
+        "Uniquely mapped": "#54A24B",
+        "W/ secondary": "#F58518",
+        "W/ supplementary": "#EECA3B",
+        "Unmapped": "#E45756",
+    }
+
+    fig = go.Figure()
+    for name, vals in [
+        ("Uniquely mapped", _frac(unique, totals)),
+        ("W/ secondary", _frac(sec, totals)),
+        ("W/ supplementary", _frac(supp, totals)),
+        ("Unmapped", _frac(unmap, totals)),
+    ]:
+        fig.add_trace(go.Scatter(
+            x=x, y=vals,
+            mode="lines",
+            name=name,
+            stackgroup="one",
+            line=dict(width=0.5, color=_COLORS[name]),
+            fillcolor=_COLORS[name],
+            hovertemplate=f"<b>{name}</b><br>Cell rank: %{{x:,}}<br>Fraction: %{{y:.2%}}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        xaxis=dict(title=f"Cells (ranked by total reads, n={n_cells:,})",
+                   tickfont_size=13, gridcolor="#f0f0f0"),
+        yaxis=dict(title="Fraction of Reads", tickfont_size=13, gridcolor="#f0f0f0",
+                   zerolinecolor="#ddd", range=[0, 1]),
+        plot_bgcolor="white", paper_bgcolor="white",
+        showlegend=True,
+        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
+    )
+
+    # Global stats for caption
+    g_total = sum(totals)
+    g_unique = sum(unique)
+    g_sec = sum(sec)
+    g_supp = sum(supp)
+    g_unmap = sum(unmap)
+
+    def _gpct(n):
+        return f"{100 * n / g_total:.1f}%" if g_total > 0 else "0%"
+
+    caption = (
+        f"Per-cell read alignment breakdown ({n_cells:,} cells, {g_total:,} total reads). "
+        f"Global: {_gpct(g_unique)} uniquely mapped, "
+        f"{_gpct(g_sec)} with secondary, "
+        f"{_gpct(g_supp)} with supplementary, "
+        f"{_gpct(g_unmap)} unmapped. "
+        "Cells are sorted by total read count (descending)."
+    )
+    return "Mapping Rate per Cell", fig, caption, -0.14
+
+
+def _plot_dup_rate_per_cell(per_cell_df, has_dedup):
+    """
+    Scatter plot: total reads per cell (x) vs duplicate fraction (y).
+
+    Only rendered when the BAM contains dedup tags (DT).
+
+    Returns (title, fig, caption, caption_y) or None.
+    """
+    if not has_dedup:
+        return None
+    if per_cell_df is None or per_cell_df.is_empty():
+        return None
+    for col in ("total_reads", "dup_reads"):
+        if col not in per_cell_df.columns:
+            return None
+
+    df = per_cell_df.filter(pl.col("total_reads") > 0)
+    if df.is_empty():
+        return None
+
+    x = df["total_reads"].to_list()
+    y = [(d / t) if t > 0 else 0 for d, t in zip(df["dup_reads"].to_list(), x)]
+    cbs = df["cb"].to_list()
+
+    fig = go.Figure(go.Scatter(
+        x=x, y=y,
+        mode="markers",
+        marker=dict(size=5, color="#E45756", opacity=0.6),
+        text=cbs,
+        hovertemplate="<b>Cell %{text}</b><br>Reads: %{x:,}<br>Dup rate: %{y:.1%}<extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis=dict(title="Total Reads per Cell", type="log", tickfont_size=13, gridcolor="#f0f0f0"),
+        yaxis=dict(title="Duplicate Fraction", tickfont_size=13, gridcolor="#f0f0f0",
+                   zerolinecolor="#ddd", range=[0, 1]),
+        plot_bgcolor="white", paper_bgcolor="white",
+        showlegend=False,
+    )
+
+    g_total = sum(x)
+    g_dups = per_cell_df["dup_reads"].sum()
+
+    def _gpct(n):
+        return f"{100 * n / g_total:.1f}%" if g_total > 0 else "0%"
+
+    caption = (
+        f"Per-cell duplicate rate ({len(x):,} cells). "
+        f"Global duplicate rate: {_gpct(g_dups)} ({g_dups:,} / {g_total:,}). "
+        "X-axis is log-scaled."
+    )
+    return "Duplicate Rate per Cell", fig, caption, -0.14
