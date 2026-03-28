@@ -1757,31 +1757,9 @@ def _plot_segment_lengths(valid_path, vcols):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _collect_bam_per_cell_stats(bam_path, threads=4):
-    """
-    Collect per-cell alignment statistics from a dup-marked BAM.
-
-    Uses **samtools** (C, multi-threaded BAM decompression) piped through
-    **awk** (C, tag extraction) into **polars** (Rust, classification and
-    aggregation).  No Python per-record overhead.
-
-    Returns
-    -------
-    per_cell_df : polars.DataFrame
-        Columns: ``[cb, total_reads, uniquely_mapped, has_secondary,
-        has_supplementary, unmapped, dup_reads, unique_umis]``.
-    umi_pairs_df : polars.DataFrame
-        ``(cb, umi)`` pairs for **non-duplicate** reads (for saturation curve).
-    has_dedup : bool
-        Whether the BAM contained DT tags (i.e. was dup-marked).
-    """
-    import shlex
-    import subprocess
-
-    logger.info(f"Scanning BAM for per-cell QC stats: {bam_path}")
-
-    # ── Step 1: Extract 5 fields per alignment via samtools + awk ─────────
-    awk_prog = (
+def _bam_awk_prog():
+    """Return the awk program used to extract fields from SAM records."""
+    return (
         'BEGIN{OFS="\\t"}'
         "{"
         '  cb=""; ub=""; dt="";'
@@ -1794,28 +1772,189 @@ def _collect_bam_per_cell_stats(bam_path, threads=4):
         "  print $1,$2,cb,ub,dt"
         "}"
     )
-    sam_threads = max(1, threads - 1)
-    cmd = (
-        f"samtools view -@ {sam_threads} {shlex.quote(str(bam_path))}"
-        f" | awk -F'\\t' '{awk_prog}'"
-    )
+
+
+def _scan_bam_regions(bam_path, regions, sam_threads=1):
+    """
+    Run ``samtools view | awk`` on a subset of regions and return a polars DF.
+
+    Parameters
+    ----------
+    bam_path : str
+        Path to the indexed BAM file.
+    regions : list[str]
+        Reference names to scan (e.g. ``["chr1", "chr2"]``).
+        An empty list means scan unmapped reads (``-f 4``).
+    sam_threads : int
+        Threads for samtools decompression (``-@``).
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns: ``[qname, flag, cb, umi, dt]``.
+    """
+    import shlex
+    import subprocess
+
+    awk_prog = _bam_awk_prog()
+    bam_quoted = shlex.quote(str(bam_path))
+
+    if regions:
+        region_str = " ".join(shlex.quote(r) for r in regions)
+        cmd = (
+            f"samtools view -@ {sam_threads} {bam_quoted} {region_str}"
+            f" | awk -F'\\t' '{awk_prog}'"
+        )
+    else:
+        # unmapped reads only
+        cmd = (
+            f"samtools view -@ {sam_threads} -f 4 {bam_quoted}"
+            f" | awk -F'\\t' '{awk_prog}'"
+        )
+
     proc = subprocess.Popen(
         cmd, shell=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-
-    # ── Step 2: Load into polars from pipe ────────────────────────────────
-    df = pl.read_csv(
-        proc.stdout,
-        separator="\t",
-        has_header=False,
-        new_columns=["qname", "flag", "cb", "umi", "dt"],
-        schema_overrides={"flag": pl.UInt16},
-        null_values=[""],
-    )
+    try:
+        df = pl.read_csv(
+            proc.stdout,
+            separator="\t",
+            has_header=False,
+            new_columns=["qname", "flag", "cb", "umi", "dt"],
+            schema_overrides={"flag": pl.UInt16},
+            null_values=[""],
+        )
+    except pl.exceptions.NoDataError:
+        df = pl.DataFrame(
+            schema={"qname": pl.Utf8, "flag": pl.UInt16, "cb": pl.Utf8, "umi": pl.Utf8, "dt": pl.Utf8}
+        )
     stderr_out = proc.stderr.read()
     if proc.wait() != 0:
-        raise RuntimeError(f"samtools/awk failed: {stderr_out.decode()}")
+        raise RuntimeError(f"samtools/awk failed on regions {regions}: {stderr_out.decode()}")
+    return df
+
+
+def _partition_references(bam_path, n_buckets):
+    """
+    Use ``samtools idxstats`` to partition reference sequences into balanced
+    buckets by read count (greedy largest-first bin packing).
+
+    Returns
+    -------
+    list[list[str]]
+        Each inner list is a group of reference names for one worker.
+        A final empty list ``[]`` is appended for unmapped reads.
+    """
+    import subprocess, shlex
+
+    result = subprocess.run(
+        f"samtools idxstats {shlex.quote(str(bam_path))}",
+        shell=True, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"samtools idxstats failed: {result.stderr}")
+
+    refs = []  # (name, mapped + unmapped count)
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if parts[0] == "*":
+            continue
+        count = int(parts[2]) + int(parts[3])
+        if count > 0:
+            refs.append((parts[0], count))
+
+    # sort descending by count for greedy packing
+    refs.sort(key=lambda x: x[1], reverse=True)
+
+    buckets = [[] for _ in range(n_buckets)]
+    bucket_sizes = [0] * n_buckets
+    for name, count in refs:
+        # put into lightest bucket
+        idx = bucket_sizes.index(min(bucket_sizes))
+        buckets[idx].append(name)
+        bucket_sizes[idx] += count
+
+    # remove empty buckets, add unmapped bucket
+    partitions = [b for b in buckets if b]
+    partitions.append([])  # empty list signals unmapped reads
+    return partitions
+
+
+def _collect_bam_per_cell_stats(bam_path, threads=4):
+    """
+    Collect per-cell alignment statistics from a dup-marked BAM.
+
+    Uses **samtools** (C, multi-threaded BAM decompression) piped through
+    **awk** (C, tag extraction) into **polars** (Rust, classification and
+    aggregation).  No Python per-record overhead.
+
+    When multiple threads are available and the BAM is indexed, the scan is
+    parallelised by splitting reference sequences across workers.
+
+    Returns
+    -------
+    per_cell_df : polars.DataFrame
+        Columns: ``[cb, total_reads, uniquely_mapped, has_secondary,
+        has_supplementary, unmapped, dup_reads, unique_umis]``.
+    umi_pairs_df : polars.DataFrame
+        ``(cb, umi)`` pairs for **non-duplicate** reads (for saturation curve).
+    has_dedup : bool
+        Whether the BAM contained DT tags (i.e. was dup-marked).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    import shlex
+    import subprocess
+
+    logger.info(f"Scanning BAM for per-cell QC stats: {bam_path}")
+
+    # ── Step 1: Extract 5 fields per alignment ───────────────────────────
+    bam_p = Path(bam_path)
+    has_index = (bam_p.with_suffix(".bam.bai").exists()
+                 or bam_p.with_name(bam_p.stem + ".bai").exists())
+
+    if threads > 1 and has_index:
+        # --- parallel region-based scan ---
+        # Cap workers: too many concurrent samtools processes thrash disk I/O
+        n_workers = min(threads, 8)
+        partitions = _partition_references(bam_path, n_workers)
+        logger.info(
+            f"  Parallel BAM scan: {len(partitions)} region groups "
+            f"across {n_workers} workers"
+        )
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = [
+                pool.submit(_scan_bam_regions, str(bam_path), regions, 1)
+                for regions in partitions
+            ]
+            dfs = [f.result() for f in futures]
+        df = pl.concat([d for d in dfs if d.height > 0], how="vertical")
+    else:
+        # --- single-pipe fallback (no index or 1 thread) ---
+        if not has_index:
+            logger.info("  BAM index not found; falling back to single-pipe scan")
+        awk_prog = _bam_awk_prog()
+        sam_threads = max(1, threads - 1)
+        cmd = (
+            f"samtools view -@ {sam_threads} {shlex.quote(str(bam_path))}"
+            f" | awk -F'\\t' '{awk_prog}'"
+        )
+        proc = subprocess.Popen(
+            cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        df = pl.read_csv(
+            proc.stdout,
+            separator="\t",
+            has_header=False,
+            new_columns=["qname", "flag", "cb", "umi", "dt"],
+            schema_overrides={"flag": pl.UInt16},
+            null_values=[""],
+        )
+        stderr_out = proc.stderr.read()
+        if proc.wait() != 0:
+            raise RuntimeError(f"samtools/awk failed: {stderr_out.decode()}")
 
     n_aln = df.height
     logger.info(f"  Loaded {n_aln:,} alignments")
