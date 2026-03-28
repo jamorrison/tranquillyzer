@@ -43,6 +43,7 @@ except ImportError:
 
 
 def get_version() -> str:
+    """Retrieve the package version from importlib.metadata."""
     try:
         return version("tranquillyzer")
     except PackageNotFoundError:
@@ -51,8 +52,55 @@ def get_version() -> str:
 
 app = typer.Typer(rich_markup_mode="rich")
 
+# =========================
+# shared option help text
+# =========================
+
+_HELP_GPU_MEM = (
+    "Total GPU memory available, in GB.\n\n"
+    "• Single GPU or same-memory GPUs: pass an integer (e.g. [cyan]12[/cyan])\n\n"
+    "• Multiple GPUs with different memory: pass a comma-separated list (e.g. [cyan]8,16,32[/cyan])\n\n"
+    "• If unset and GPUs are detected, [cyan]12 GB[/cyan] is assumed."
+)
+
+_HELP_TARGET_TOKENS = (
+    "Approximate token budget [italic]per GPU replica[/italic] used to estimate a safe batch size.\n\n"
+    "• One token ≈ one input position after padding (~1 base for DNA).\n\n"
+    "• Effective load per replica ≈ batch_size × padded_seq_len.\n\n"
+    "• Increase to try larger batches; decrease if you hit OOM.\n\n"
+    "• Also guides batch-size heuristics when running on CPU."
+)
+
+_HELP_TOKEN_CAP_ABOVE = (
+    "Enable auto-calibrated batch sizing for bins shorter than this threshold.\n\n"
+    "• The first (shortest) bin probes GPU capacity via backoff; the proven "
+    "token budget is then used for all subsequent bins below this threshold.\n\n"
+    "• Bins above this threshold use the conservative [cyan]--target-tokens[/cyan] budget.\n\n"
+    "• Set to 0 (default) to always use the fixed [cyan]--target-tokens[/cyan] budget.\n\n"
+    "• Example: [cyan]--token-cap-above 5000[/cyan] auto-calibrates batch sizes for bins "
+    "up to 5000 bp based on actual GPU throughput."
+)
+
+_HELP_MODEL_NAME = "Base model name."
+
+_HELP_SEQ_ORDER_FILE = (
+    "Path to [cyan]seq_orders.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
+)
+
+_HELP_MODELS_DIR = (
+    "Directory containing [cyan]<model>.h5[/cyan] and"
+    " [cyan]<model>_lbl_bin.pkl[/cyan] files.\n\n"
+    "Defaults to the bundled [cyan]models/[/cyan] directory."
+)
+
+_HELP_PREPROCESS_DIR = (
+    "Directory that holds an existing [cyan]full_length_pp_fa/[/cyan] tree.\n\n"
+    "When set, reads are sourced from here instead of [cyan]output_dir[/cyan]."
+)
+
 
 def version_callback(value: bool) -> None:
+    """Print the version banner and exit when --version is passed."""
     if value:
         typer.echo(f"tranquillyzer {get_version()}")
         raise typer.Exit()
@@ -130,9 +178,12 @@ def available_gpus():
 def preprocess(
     fasta_dir: str,
     output_dir: str,
-    output_base_qual: bool = typer.Option(False, help=("Whether to output base quality scores")),
-    chunk_size: int = typer.Option(100000, help=("Base chunk size, dynamically adjusts based on read length")),
-    threads: int = typer.Option(12, help=("Number of CPU threads")),
+    output_base_qual: bool = typer.Option(False, help="Output base quality scores when available."),
+    chunk_size: int = typer.Option(
+        100000, help="Base chunk size; effective size scales with the read-length distribution."
+    ),
+    bin_size: int = typer.Option(500, help="Bin width (bp) for length-binning reads with length < 10 000 bp."),
+    threads: int = typer.Option(12, help="Number of CPU threads."),
 ):
     """
     Preprocess raw FASTA/FASTQ files into length-binned Parquet files.
@@ -163,7 +214,7 @@ def preprocess(
     """
     from wrappers.preprocess_wrap import preprocess_wrap
 
-    preprocess_wrap(fasta_dir, output_dir, output_base_qual, chunk_size, threads)
+    preprocess_wrap(fasta_dir, output_dir, output_base_qual, chunk_size, bin_size, threads)
 
 
 # ==============================
@@ -201,60 +252,22 @@ def readlengthDist(output_dir: str):
 @app.command(no_args_is_help=True)
 def visualize(
     output_dir: str,
+    preprocess_dir: str = typer.Option(None, "--preprocess-dir", help=_HELP_PREPROCESS_DIR),
     output_file: str = typer.Option(
         "full_read_annots",
-        help=(
-            """Output annotation file name.\n
-        Extension .pdf will be added automatically"""
-        ),
+        help="Output PDF base name (extension [cyan].pdf[/cyan] is added automatically).",
     ),
-    model_name: str = typer.Option(
-        "10x3p_sc_ont_011",
-        help="""Base model name. Use the name of the model without any suffix.\n
-            For model-type CRF, _w_CRF will be added to the base model name""",
-    ),
-    model_type: Annotated[
-        str,
-        typer.Option(
-            help="""
-            [red]REG[/red] = [green]CNN-LSTM[/green]\n
-            [red]CRF[/red] = [green]CNN-LSTM-CRF[/green]
-            """
-        ),
-    ] = "CRF",
-    seq_order_file: str = typer.Option(
-        None, help="Path to the seq_orders.tsv file. If not provided, uses the default from utils."
-    ),
-    gpu_mem: Annotated[
-        str,
-        typer.Option(
-            help="""
-                Total memory of the GPU in GB.\n
-                => If there's only one GPU or multiple-GPUs with same memory,
-                specify an integer\n
-                => If there are mutliple GPUs with different memories,
-                specify a comma-separated list (e.g., 8,16,32)\n
-                => If nothing is specified and one or more GPUs are available,
-                12 GB will be used by default.\n
-                """
-        ),
-    ] = None,
-    target_tokens: Annotated[
-        int,
-        typer.Option(
-            help="""Approximate token budget *per GPU replica* used to pick a safe batch size.\n
-                => A 'token' is one input position after padding (for DNA here: ~1 base = 1 token).\n
-                => Effective tokens per replica ≈ batch_size × padded_seq_len.\n
-                => Increase to try larger batches (more memory), decrease if you hit OOM.\n
-                => If running on CPU, this still guides batch size heuristics."""
-        ),
-    ] = 1_200_000,
-    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom"),
-    min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference"),
-    max_batch_size: int = typer.Option(2000, help="Maximum batch size for model inference"),
-    num_reads: int = typer.Option(None, help="Number of reads to randomly visualize from each Parquet file."),
-    read_names: str = typer.Option(None, help="Comma-separated list of read names to visualize"),
-    threads: int = typer.Option(2, help=("Number of CPU threads")),
+    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
+    seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR),
+    gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
+    target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS)] = 1_200_000,
+    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom."),
+    min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference."),
+    max_batch_size: int = typer.Option(2000, help="Maximum batch size for model inference."),
+    num_reads: int = typer.Option(None, help="Randomly sample this many reads to visualize."),
+    read_names: str = typer.Option(None, help="Comma-separated read names to visualize."),
+    threads: int = typer.Option(2, help="Number of CPU threads."),
 ):
     """
     Run model inference on selected reads and export per-read annotation plots.
@@ -266,8 +279,7 @@ def visualize(
     Args:
         output_dir: Pipeline base output directory (expects `full_length_pp_fa/`).
         output_file: Base name for the output PDF under `<output_dir>/plots`.
-        model_name: Base model name; `_w_CRF` suffix is inferred for CRF mode.
-        model_type: One of {"REG","CRF"}; model choice for inference.
+        model_name: Base model name.
         gpu_mem: Optional GPU memory budget string (e.g., "12" or "8,16").
         target_tokens: Token budget per replica to estimate batch sizing.
         vram_headroom: Fraction of VRAM to reserve to reduce OOM risk.
@@ -290,8 +302,8 @@ def visualize(
         output_dir,
         output_file,
         model_name,
-        model_type,
         seq_order_file,
+        models_dir,
         gpu_mem,
         target_tokens,
         vram_headroom,
@@ -300,6 +312,7 @@ def visualize(
         num_reads,
         read_names,
         threads,
+        preprocess_dir=preprocess_dir,
     )
 
 
@@ -311,98 +324,141 @@ def visualize(
 @app.command(no_args_is_help=True)
 def annotate_reads(
     output_dir: str,
-    whitelist_file: str,
-    output_fmt: str = typer.Option("fasta", help=("output format for demultiplexed reads: fasta or fastq")),
-    model_name: str = typer.Option(
-        "10x3p_sc_ont_011",
-        help="""Base model name. Use the name of the model without any suffix.\n
-        For model-type CRF, _w_CRF will be added to the base model name""",
+    preprocess_dir: str = typer.Option(None, "--preprocess-dir", help=_HELP_PREPROCESS_DIR),
+    whitelist_file: str = typer.Option(
+        None, "--whitelist-file", help="Barcode whitelist TSV. Required for barcode correction/demux."
     ),
-    model_type: Annotated[
-        str,
-        typer.Option(
-            help="""
-            [red]REG[/red] = [green]CNN-LSTM[/green]\n
-            [red]CRF[/red] = [green]CNN-LSTM-CRF[/green]\n
-            [red]HYB[/red] = [green]First pass with CNN-LSTM and second \n
-            (of reads not qualifying validity filter) with CNN-LSTM-CRF[/green]
-            """
-        ),
-    ] = "HYB",
-    seq_order_file: str = typer.Option(
-        None, help="Path to the seq_orders.tsv file. If not provided, uses the default from utils."
+    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
+    seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR),
+    chunk_size: int = typer.Option(
+        100000, help="Base chunk size; effective size scales with the read-length distribution."
     ),
-    chunk_size: int = typer.Option(100000, help=("Base chunk size, dynamically adjusts based on read length")),
-    gpu_mem: Annotated[
-        str,
-        typer.Option(
-            help="""
-            Total memory of the GPU in GB.\n
-            => If there's only one GPU or multiple-GPUs with same memory, specify an integer\n
-            => If there are mutliple GPUs with different memories, specify a comma-separated list (e.g., 8,16,32)\n
-            => If nothing is specified and one or more GPUs are available, 12 GB will be used by default.\n
-            """
+    combine_chunk_outputs: bool = typer.Option(
+        True,
+        help=(
+            "Merge all chunk parquet outputs into a single"
+            " [cyan]annotation_metadata/annotations_valid/invalid.parquet[/cyan].\n\n"
+            "Disable to keep per-chunk parquet outputs."
         ),
-    ] = None,
-    target_tokens: Annotated[
-        int,
-        typer.Option(
-            help="""Approximate token budget *per GPU replica* used to pick a safe batch size.\n
-        => A 'token' is one input position after padding (for DNA here: ~1 base = 1 token).\n
-        => Effective tokens per replica ≈ batch_size × padded_seq_len.\n
-        => Increase to try larger batches (more memory), decrease if you hit OOM.\n
-        => If running on CPU, this still guides batch size heuristics."""
+    ),
+    keep_chunk_tsv_after_combine: bool = typer.Option(
+        False,
+        help=(
+            "Keep per-chunk parquet files after successful combine.\n\n"
+            "By default they are deleted when [cyan]--combine-chunk-outputs[/cyan] is enabled."
         ),
-    ] = 1_200_000,
-    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom"),
-    min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference"),
-    max_batch_size: int = typer.Option(8192, help="Maximum batch size for model inference"),
-    bc_lv_threshold: int = typer.Option(2, help="lv-distance threshold for barcode correction"),
-    threads: int = typer.Option(12, help="Number of CPU threads for barcode correction and demultiplexing"),
-    max_queue_size: int = typer.Option(3, help="Max number of Parquet files to queue for post-processing"),
+    ),
+    keep_demux_chunk_outputs_after_combine: bool = typer.Option(
+        False,
+        "--keep-demux-chunk-after-combine",
+        help=(
+            "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
+            "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."
+        ),
+    ),
+    checkpoint_file: str = typer.Option(
+        None,
+        help="Checkpoint file path. Defaults to [cyan]<output_dir>/annotation_checkpoint.txt[/cyan].",
+    ),
+    resume: bool = typer.Option(
+        True,
+        help=(
+            "Resume from checkpoint and chunk markers when available.\n\n"
+            "Disable to clear prior annotate-reads outputs and re-run from the start."
+        ),
+    ),
+    gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
+    target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS)] = 1_200_000,
+    token_cap_above: Annotated[int, typer.Option(help=_HELP_TOKEN_CAP_ABOVE)] = 0,
+    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom."),
+    min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference."),
+    max_batch_size: int = typer.Option(8192, help="Maximum batch size for model inference."),
+    bc_lv_threshold: int = typer.Option(2, help="Levenshtein-distance threshold for barcode correction."),
+    threads: int = typer.Option(12, help="Number of CPU threads for barcode correction and demultiplexing."),
+    max_queue_size: int = typer.Option(3, help="Max number of Parquet files queued for post-processing."),
+    include_polya: bool = typer.Option(
+        False, help="Append detected polyA tails to output sequences (includes qualities in FASTQ)."
+    ),
+    split_concatenated: bool = typer.Option(
+        False,
+        help=(
+            "Split concatenated reads into individual fragments.\n\n"
+            "When enabled, reads containing multiple full structural patterns are split\n\n"
+            "into separate valid entries (one per fragment) instead of being marked invalid.\n\n"
+            "Each fragment is independently barcode-corrected and demultiplexed."
+        ),
+    ),
+    run_barcode_correction: bool = typer.Option(
+        False,
+        help=(
+            "Run barcode correction on valid annotated reads. Requires [cyan]--whitelist-file[/cyan].\n\n"
+            "For whitelist-free correction, use [cyan]generate-whitelist[/cyan] followed by [cyan]barcode-correct[/cyan] instead."
+        ),
+    ),
     include_barcode_quals: bool = typer.Option(
         False,
         help=(
-            "When writing FASTQ, append base qualities for barcode segments (from seq_orders.tsv) into the FASTQ header"
+            "Append base qualities for barcode segments\n\n"
+            "into the FASTQ header when writing FASTQ."
         ),
     ),
-    include_polya: bool = typer.Option(
+    run_demux: bool = typer.Option(
         False,
-        help="Append detected polyA tails to output sequences (includes qualities in FASTQ)",
+        help=(
+            "Write FASTA/FASTQ during annotation. Requires [cyan]--whitelist-file[/cyan].\n\n"
+            "With [cyan]--run-barcode-correction[/cyan], reads are demultiplexed by cell;\n\n"
+            "otherwise valid reads are exported in bulk.\n\n"
+            "For whitelist-free workflows, use [cyan]barcode-correct --run-demux[/cyan] or [cyan]demux-reads[/cyan] instead."
+        ),
+    ),
+    output_fmt: str = typer.Option(
+        "fasta",
+        "--demux-output-fmt",
+        "--output-fmt",
+        help=(
+            "Output format for demultiplexed reads\n\n"
+            "when [cyan]--run-demux[/cyan] is enabled: [cyan]fasta[/cyan] or [cyan]fastq[/cyan]."
+        ),
     ),
 ):
     """
-    End-to-end annotation, barcode correction, demultiplexing, and QC plots.
+    Annotation pipeline with optional barcode correction and demultiplexing.
 
     Pipeline:
       1) Iterate through binned Parquet files and run model predictions.
-      2) Post-process predictions to call segments, correct barcodes (Levenshtein),
-         and write demultiplexed reads to FASTA/FASTQ.
-      3) Optionally (HYB) re-run invalid reads with CRF model.
-      4) Emit summary TSV/Parquet files and PDF plots for barcode & demux stats.
+      2) Post-process predictions to call segment boundaries and write per-bin/per-chunk outputs.
+      3) Optionally run barcode correction and demultiplexing inline in the same pass.
+      4) Finalize chunk outputs to combined Parquet or per-chunk Parquet outputs.
 
     Args:
         output_dir: Base directory with `full_length_pp_fa/` and target for outputs.
-        whitelist_file: TSV with valid barcode columns; used for demultiplexing.
+        whitelist_file: TSV with valid barcode columns; required only when barcode correction is enabled.
         output_fmt: "fasta" or "fastq" for demultiplexed outputs.
-        model_name: Base model label (without `_w_CRF`).
-        model_type: "REG", "CRF", or "HYB" (REG pass then CRF on invalid).
+        model_name: Base model name.
         chunk_size: Row group size for final Parquet conversions.
         gpu_mem: Optional GPU memory budget string (e.g., "12" or "8,16").
         target_tokens: Token budget per replica to guide batching.
+        token_cap_above: Seq length (bp) above which the token budget cap is applied. 0 = always apply.
         vram_headroom: Fraction of VRAM to keep free as safety margin.
         min_batch_size: Min batch size for inference.
         max_batch_size: Max batch size for inference.
         bc_lv_threshold: Levenshtein threshold for barcode correction.
-        threads: CPU workers for barcode/demux post-processing.
+        threads: CPU workers for annotation post-processing.
         max_queue_size: Max in-flight Parquet chunks for worker queueing.
+        run_barcode_correction: If true, computes corrected barcode columns and demux stats.
+        run_demux: If true, writes `demuxed_fasta/*` files in the same pass (demuxed with barcode correction, bulk otherwise).
+        checkpoint_file: Path to checkpoint file storing pass/bin/chunk progress.
+        resume: If true, restart from checkpoint and skip done chunks.
+        combine_chunk_outputs: If true, merge chunk parquets into annotation_metadata/annotations_valid/invalid.parquet.
+        keep_chunk_tsv_after_combine: If true with combine enabled, keep per-chunk parquet files after combining.
+        keep_demux_chunk_outputs_after_combine: If true with demux enabled, keep chunk FASTA/FASTQ after combine.
 
     Outputs:
-        - `<output_dir>/annotations_valid.parquet` and `_invalid.parquet`
-        - `<output_dir>/demuxed_fasta/demuxed.(fa|fq)` and `ambiguous.(fa|fq)`
-        - `<output_dir>/plots/barcode_plots.pdf`, `demux_plots.pdf`
-        - Read length & cDNA length plots for valid reads
-        - Match/cell counts TSVs
+        - Chunk outputs under `<output_dir>/annotation_chunks/`
+        - Combined `<output_dir>/annotation_metadata/annotations_valid.parquet` and `_invalid.parquet` (default)
+          OR per-chunk parquet files if `--no-combine-chunk-outputs`
+        - Optional: `<output_dir>/demuxed_fasta/demuxed.(fa|fq)` and `ambiguous.(fa|fq)`
 
     Raises:
         FileNotFoundError: If expected input files or whitelist are missing.
@@ -411,16 +467,21 @@ def annotate_reads(
     """
     from wrappers.annotate_reads_wrap import annotate_reads_wrap
 
+    if run_barcode_correction and not whitelist_file:
+        raise typer.BadParameter("whitelist_file is required when --run-barcode-correction is enabled")
+    if output_fmt not in {"fasta", "fastq"}:
+        raise typer.BadParameter("demux output format must be either 'fasta' or 'fastq'")
+
     annotate_reads_wrap(
         output_dir,
         whitelist_file,
         output_fmt,
         model_name,
-        model_type,
         seq_order_file,
         chunk_size,
         gpu_mem,
         target_tokens,
+        token_cap_above,
         vram_headroom,
         min_batch_size,
         max_batch_size,
@@ -429,6 +490,287 @@ def annotate_reads(
         max_queue_size,
         include_barcode_quals,
         include_polya,
+        run_barcode_correction,
+        run_demux,
+        checkpoint_file,
+        resume,
+        combine_chunk_outputs,
+        keep_chunk_tsv_after_combine,
+        keep_demux_chunk_outputs_after_combine,
+        models_dir=models_dir,
+        preprocess_dir=preprocess_dir,
+        split_concatenated=split_concatenated,
+    )
+
+
+@app.command(no_args_is_help=True)
+def barcode_correct(
+    input_dir: str,
+    whitelist_file: str,
+    output_dir: str = typer.Option(None, help="Output directory. Defaults to [cyan]input_dir[/cyan]."),
+    input_file: str = typer.Option(
+        None,
+        help=(
+            "Annotations file. Defaults to\n\n"
+            " [cyan]<input_dir>/annotation_metadata/annotations_valid.parquet[/cyan],\n\n"
+            " or falls back to [cyan]<input_dir>/annotation_metadata/annotations_valid_bc_corrected.parquet[/cyan]."
+        ),
+    ),
+    output_fmt: str = typer.Option(
+        "fasta",
+        help=(
+            "Output format for demultiplexed reads\n\n"
+            "when [cyan]--run-demux[/cyan] is enabled: [cyan]fasta[/cyan] or [cyan]fastq[/cyan]."
+        ),
+    ),
+    seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    model_name: str = typer.Option("10x3p_sc_ont_011", help="Model name for seq-order lookup when seq_order_file is set."),
+    bc_lv_threshold: int = typer.Option(2, help="Levenshtein-distance threshold for barcode correction."),
+    threads: int = typer.Option(12, help="Number of CPU threads for barcode correction."),
+    chunk_size: int = typer.Option(100000, help="Number of rows to scan/process per chunk from annotations input."),
+    max_queue_size: int = typer.Option(3, help="Max number of chunks queued for correction workers."),
+    include_barcode_quals: bool = typer.Option(
+        False, help="Append barcode qualities to the FASTQ header when writing FASTQ demux output."
+    ),
+    include_polya: bool = typer.Option(False, help="Append detected polyA tails to demuxed sequences."),
+    run_demux: bool = typer.Option(
+        False,
+        help="Run demuxing concurrently while correcting barcodes (single pass through annotations).",
+    ),
+    keep_demux_chunk_outputs_after_combine: bool = typer.Option(
+        False,
+        "--keep-demux-chunk-after-combine",
+        help=(
+            "Keep demux chunk FASTA/FASTQ files after successful combine.\n\n"
+            "By default they are deleted when [cyan]--run-demux[/cyan] is enabled."
+        ),
+    ),
+    resume: bool = typer.Option(
+        True,
+        help="Resume from checkpoint if a previous run was interrupted. Disable to start fresh.",
+    ),
+):
+    """
+    Correct barcode segments on annotated valid reads, with optional concurrent demultiplexing.
+    """
+    from wrappers.barcode_correction_wrap import barcode_correction_wrap
+
+    barcode_correction_wrap(
+        input_dir=input_dir,
+        whitelist_file=whitelist_file,
+        output_dir=output_dir or input_dir,
+        input_file=input_file,
+        output_fmt=output_fmt,
+        seq_order_file=seq_order_file,
+        model_name=model_name,
+        bc_lv_threshold=bc_lv_threshold,
+        threads=threads,
+        chunk_size=chunk_size,
+        max_queue_size=max_queue_size,
+        include_barcode_quals=include_barcode_quals,
+        include_polya=include_polya,
+        run_demux=run_demux,
+        keep_demux_chunk_outputs_after_combine=keep_demux_chunk_outputs_after_combine,
+        resume=resume,
+    )
+
+
+@app.command(no_args_is_help=True)
+def generate_whitelist(
+    output_dir: str = typer.Argument(
+        ...,
+        help="Annotation output directory (containing annotation_chunks/ or annotation_metadata/).",
+    ),
+    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
+    seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    input_file: str = typer.Option(
+        None,
+        help=(
+            "Explicit path to an annotations parquet or TSV file.\n\n"
+            "Bypasses auto-discovery from [cyan]output_dir[/cyan]."
+        ),
+    ),
+    barcode_columns: str = typer.Option(
+        None,
+        help=(
+            "Comma-separated barcode column names (e.g. [cyan]CBC[/cyan] or [cyan]CBC1,CBC2[/cyan]).\n\n"
+            "Overrides model-based column resolution. Sequence columns are derived as [cyan]{col}_Sequences[/cyan]."
+        ),
+    ),
+    expected_cells: int = typer.Option(
+        None,
+        help=(
+            "Expected number of cells (optional hint for knee detection).\n\n"
+            "If not set, the knee point is detected automatically from the barcode rank plot."
+        ),
+    ),
+    min_cell_ratio: float = typer.Option(
+        0.50,
+        help=(
+            "Fraction of the cliff-top barcode count used as the knee threshold.\n\n"
+            "Barcodes with count >= cliff_top_count * min_cell_ratio are kept as true cells."
+        ),
+    ),
+    min_reads_per_barcode: int = typer.Option(
+        3,
+        help="Minimum read count for a barcode to be considered in knee detection.",
+    ),
+    chunk_size: int = typer.Option(
+        100000,
+        help="Number of rows to process per chunk when streaming annotation data.",
+    ),
+):
+    """
+    Generate a pseudo-whitelist from existing annotation data via knee-point barcode discovery.
+
+    Reads barcode sequences from annotation outputs (valid chunks or combined parquet),
+    counts their frequencies, detects the knee point, merges near-duplicates, and saves
+    a whitelist compatible with the barcode correction pipeline.
+
+    Outputs are written to [cyan]<output_dir>/annotation_metadata/[/cyan]:
+      - discovered_whitelist.tsv
+      - barcode_discovery_stats.json
+      - barcode_counts.tsv
+      - barcode_rank_plot.png
+    """
+    from wrappers.generate_whitelist_wrap import generate_whitelist_wrap
+
+    generate_whitelist_wrap(
+        output_dir=output_dir,
+        model_name=model_name,
+        seq_order_file=seq_order_file,
+        input_file=input_file,
+        barcode_columns_str=barcode_columns,
+        expected_cells=expected_cells,
+        min_cell_ratio=min_cell_ratio,
+        min_reads_per_barcode=min_reads_per_barcode,
+        chunk_size=chunk_size,
+    )
+
+
+@app.command(no_args_is_help=True)
+def demux_reads(
+    input_dir: str,
+    output_dir: str = typer.Option(None, help="Output directory. Defaults to [cyan]input_dir[/cyan]."),
+    input_file: str = typer.Option(
+        None,
+        help=(
+            "Annotation file to export reads from. Defaults to\n\n"
+            " [cyan]<input_dir>/annotation_metadata/annotations_valid_bc_corrected.parquet[/cyan],\n\n"
+            " or falls back to [cyan]<input_dir>/annotation_metadata/annotations_valid.parquet[/cyan] for bulk export."
+        ),
+    ),
+    output_fmt: str = typer.Option("fasta", help="Output format for demultiplexed reads: [cyan]fasta[/cyan] or [cyan]fastq[/cyan]."),
+):
+    """
+    Write FASTA/FASTQ from annotations.
+
+    If demux columns exist (barcode-corrected file), writes demuxed and ambiguous outputs.
+    Otherwise, exports bulk reads from cDNA coordinates in annotations_valid.
+    """
+    from wrappers.demux_wrap import demux_wrap
+
+    demux_wrap(
+        input_dir=input_dir,
+        output_dir=output_dir or input_dir,
+        input_file=input_file,
+        output_fmt=output_fmt,
+    )
+
+
+# ======================================
+# QC metrics
+# ======================================
+
+
+@app.command(no_args_is_help=True)
+def qc_metrics(
+    input_dir: str,
+    output_dir: str = typer.Option(
+        None,
+        help="Output directory for QC files. Defaults to [cyan]<input_dir>/qc_metrics/[/cyan].",
+    ),
+    valid_file: str = typer.Option(
+        None,
+        help=(
+            "Path to valid-reads parquet.\n\n"
+            "Defaults to [cyan]annotations_valid_bc_corrected.parquet[/cyan]"
+            " or [cyan]annotations_valid.parquet[/cyan] inside [cyan]input_dir/annotation_metadata[/cyan]."
+        ),
+    ),
+    invalid_file: str = typer.Option(
+        None,
+        help=(
+            "Path to invalid-reads parquet.\n\n"
+            "Defaults to [cyan]annotations_invalid.parquet[/cyan] inside [cyan]input_dir/annotation_metadata[/cyan]."
+        ),
+    ),
+    sample_name: str = typer.Option(
+        None,
+        help=(
+            "Sample label used as a prefix in all output file names and as the MultiQC sample name.\n\n"
+            "Defaults to the base name of [cyan]input_dir[/cyan]."
+        ),
+    ),
+    read_len_bin_width: int = typer.Option(
+        100,
+        help="Bin width (bp) for the read-length distribution plots.",
+    ),
+    bam: str = typer.Option(
+        None,
+        help=(
+            "Path to a dup-marked BAM file (with CB/UB/DT tags).\n\n"
+            "Enables additional plots: sequencing saturation curve, unique UMIs per cell, "
+            "mapping rate per cell, and duplicate rate per cell. "
+            "When not provided these plots are silently skipped."
+        ),
+    ),
+    threads: int = typer.Option(
+        4,
+        help="Number of parallel threads for computing independent QC metrics.",
+    ),
+):
+    """
+    Generate QC metrics from tranquillyzer annotation parquet files.
+
+    Produces MultiQC-compatible ``*_mqc.tsv`` files plus a plain summary TSV.
+
+    Metrics computed:
+      1) Total / valid / invalid read counts and rates.
+      2) Demuxed and ambiguous read counts (when barcode-corrected parquet is used).
+      3) Minimum edit-distance frequency tables for every barcode type present.
+      4) Read-length distributions as line plots — all, valid, invalid, demuxed,
+         ambiguous.
+      5) Cell-barcode knee plot: per-cell read count (log rank vs log count) and
+         cumulative fraction of reads.
+      6) Per-cell read count table.
+      7) PolyA/T tail-length distribution.
+      8) Per-segment length box plots.
+      9) Read orientation balance.
+     10) Edit distance vs reads-per-cell scatter.
+     11) Sequencing saturation curve (requires --bam).
+     12) Unique UMIs per cell (requires --bam).
+     13) Mapping rate per cell (requires --bam).
+     14) Duplicate rate per cell (requires --bam).
+
+    MultiQC usage:
+      Run ``multiqc <output_dir>`` (or the parent directory) after this command
+      to pick up all ``*_mqc.tsv`` files automatically.
+    """
+    from wrappers.qc_metrics_wrap import qc_metrics_wrap
+
+    resolved_output = output_dir or os.path.join(input_dir, "qc_metrics")
+    resolved_sample = sample_name or os.path.basename(os.path.abspath(input_dir))
+
+    qc_metrics_wrap(
+        input_dir=input_dir,
+        output_dir=resolved_output,
+        valid_file=valid_file,
+        invalid_file=invalid_file,
+        sample_name=resolved_sample,
+        read_len_bin_width=read_len_bin_width,
+        bam_file=bam,
+        threads=threads,
     )
 
 
@@ -442,18 +784,17 @@ def align(
     input_dir: str,
     ref: str,
     output_dir: str,
-    preset: str = typer.Option("splice", help="minimap2 preset"),
+    preset: str = typer.Option("splice", help="minimap2 preset."),
     filt_flag: str = typer.Option(
         "260",
         help=(
-            "Flag for filtering out (-F in samtools) the reads. "
-            "Default is 260, to filter out secondary alignments "
-            "and unmapped reads."
+            "Samtools [cyan]-F[/cyan] flag to filter reads by bitwise flag.\n\n"
+            " Default [cyan]260[/cyan] drops secondary alignments and unmapped reads."
         ),
     ),
-    mapq: int = typer.Option(0, help=("minimap mapq for the alignments to be included for the downstream analysis")),
-    threads: int = typer.Option(12, help="number of CPU threads"),
-    add_minimap_args: str = typer.Option("", help=("additional minimap2 arguments")),
+    mapq: int = typer.Option(0, help="Minimum MAPQ for alignments to be included downstream."),
+    threads: int = typer.Option(12, help="Number of CPU threads."),
+    add_minimap_args: str = typer.Option("", help="Additional minimap2 arguments, appended verbatim."),
 ):
     """
     Align demultiplexed reads to a reference with minimap2 and index the BAM.
@@ -492,10 +833,10 @@ def align(
 @app.command(no_args_is_help=True)
 def dedup(
     input_dir: str,
-    lv_threshold: int = typer.Option(2, help=("levenshtein distance threshold for UMI similarity")),
-    stranded: bool = typer.Option(True, help=("if directional or non-directional library")),
-    per_cell: bool = typer.Option(True, help=("whether to correct umi's per cell basis")),
-    threads: int = typer.Option(12, help="number of CPU threads"),
+    lv_threshold: int = typer.Option(2, help="Levenshtein-distance threshold for UMI similarity."),
+    stranded: bool = typer.Option(True, help="Whether the library is directional (stranded)."),
+    per_cell: bool = typer.Option(True, help="Perform UMI correction on a per-cell basis."),
+    threads: int = typer.Option(12, help="Number of CPU threads."),
 ):
     """
     Mark/remove PCR duplicates using UMI-aware clustering on aligned reads.
@@ -533,61 +874,39 @@ def split_bam(
     input_bam: str,
     out_dir: Optional[str] = typer.Option(
         None,
-        help=("Output directory for per-cell BAMs. If not provided, defaults to <input_bam_dir>/split_bams."),
+        help="Output directory for per-cell BAMs. Defaults to [cyan]<input_bam_dir>/split_bams[/cyan].",
     ),
     bucket_threads: Optional[int] = typer.Option(
         1,
-        help="Number of worker processes for Stage 1 (per-contig bucketing). Default: all CPUs (capped by #contigs).",
+        help="Worker processes for Stage 1 (per-contig bucketing). Default: all CPUs, capped by contig count.",
     ),
     merge_threads: Optional[int] = typer.Option(
         1,
-        help="Number of worker processes for Stage 2 (per-bucket merge/split). Default: <=8 (I/O heavy).",
+        help="Worker processes for Stage 2 (per-bucket merge/split). Default: ≤8 (I/O-heavy stage).",
     ),
     nbuckets: int = typer.Option(
         256,
-        help="Number of hash buckets to partition CBs. Higher = fewer CBs per "
-        "bucket but more temp files. Typical: 128/256/512.",
+        help="Hash buckets used to partition cell barcodes. \n\n"
+        "Higher → fewer CBs per bucket but more temp files. Typical: 128/256/512.",
     ),
     tag: str = typer.Option(
         "CB",
-        help="BAM tag holding the cell barcode (e.g., CB). Reads missing this tag are skipped.",
+        help="BAM tag that holds the cell barcode. Reads missing this tag are skipped.",
     ),
     max_open_cb_writers: int = typer.Option(
         128,
-        help="Max number of per-CB output BAM writers kept open per process "
-        "(LRU cache). Helps avoid 'too many open files'.",
+        help="Max per-CB output BAM writers kept open per process (LRU cache).\n\n"
+        "Prevents 'too many open files'.",
     ),
-    filter_secondary: bool = typer.Option(
-        False,
-        help="Drop secondary alignments (is_secondary).",
-    ),
-    filter_supplementary: bool = typer.Option(
-        False,
-        help="Drop supplementary alignments (is_supplementary).",
-    ),
-    filter_unmapped: bool = typer.Option(
-        True,
-        help="Drop unmapped reads (is_unmapped).",
-    ),
-    filter_duplicates: bool = typer.Option(
-        True,
-        help="Drop PCR/optical duplicates (is_duplicate).",
-    ),
-    min_mapq: Optional[int] = typer.Option(
-        0,
-        help="Minimum MAPQ to keep an alignment. If not set, no MAPQ filter is applied.",
-    ),
-    keep_tmp: bool = typer.Option(
-        False,
-        help="Keep temporary bucket BAM parts (for debugging).",
-    ),
-    index_outputs: bool = typer.Option(
-        False,
-        help="Create BAM index (.bai) for each per-CB BAM output.",
-    ),
+    filter_secondary: bool = typer.Option(False, help="Drop secondary alignments."),
+    filter_supplementary: bool = typer.Option(False, help="Drop supplementary alignments."),
+    filter_unmapped: bool = typer.Option(True, help="Drop unmapped reads."),
+    filter_duplicates: bool = typer.Option(True, help="Drop PCR/optical duplicates."),
+    min_mapq: Optional[int] = typer.Option(0, help="Minimum MAPQ to retain an alignment."),
+    keep_tmp: bool = typer.Option(False, help="Keep temporary bucket BAM parts (useful for debugging)."),
+    index_outputs: bool = typer.Option(False, help="Create a [cyan].bai[/cyan] index for each per-CB BAM."),
     prefer_csi_index: bool = typer.Option(
-        False,
-        help="Prefer creating CSI index for the (possibly sorted) input BAM if indexing is needed.",
+        False, help="Prefer a CSI index over BAI for the (possibly sorted) input BAM when indexing is needed."
     ),
 ):
     """
@@ -638,35 +957,37 @@ def split_bam(
 def simulate_data(
     model_name: str,
     output_dir: str,
-    training_seq_orders_file: str = typer.Option(
-        None, help=("Path to the seq_orders.tsv file. If not provided, uses the default from utils.")
-    ),
-    num_reads: int = typer.Option(50000, help="number of reads to simulate"),
-    mismatch_rate: float = typer.Option(0.05, help="mismatch rate"),
-    insertion_rate: float = typer.Option(0.05, help="insertion rate"),
-    deletion_rate: float = typer.Option(0.06, help="deletion rate"),
-    min_cDNA: int = typer.Option(100, help="minimum cDNA length"),
-    max_cDNA: int = typer.Option(500, help="maximum cDNA length"),
-    polyT_error_rate: float = typer.Option(0.02, help=("error rate within polyT or polyA segments")),
-    max_insertions: float = typer.Option(1, help=("maximum number of allowed insertions after a base")),
-    threads: int = typer.Option(2, help="number of CPU threads"),
+    training_seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    num_reads: int = typer.Option(50000, help="Number of reads to simulate."),
+    mismatch_rate: float = typer.Option(0.05, help="Base substitution probability."),
+    insertion_rate: float = typer.Option(0.05, help="Base insertion probability."),
+    deletion_rate: float = typer.Option(0.06, help="Base deletion probability."),
+    min_cDNA: int = typer.Option(100, help="Minimum cDNA segment length."),
+    max_cDNA: int = typer.Option(500, help="Maximum cDNA segment length."),
+    polyT_error_rate: float = typer.Option(0.02, help="Error rate within polyT/polyA segments."),
+    max_insertions: float = typer.Option(1, help="Maximum insertions allowed after a single base."),
+    threads: int = typer.Option(2, help="Number of CPU threads."),
     rc: bool = typer.Option(
         True,
         help=(
-            "whether to include reverse complements of the reads in "
-            "the training data.\nFinal dataset "
-            "will contain twice the number of user-specified reads"
+            "Include reverse complements in the training data."
+            " The final dataset will contain twice the requested number of reads."
         ),
     ),
-    transcriptome: str = typer.Option(None, help="transcriptome fasta file"),
-    invalid_fraction: float = typer.Option(0.3, help="fraction of invalid reads to generate"),
+    transcriptome: str = typer.Option(None, help="Transcriptome FASTA. If omitted, random transcripts are generated."),
+    max_trunc_5p: int = typer.Option(0, help="Max bases to truncate from 5' end when no random flank present. 0 disables."),
+    max_trunc_3p: int = typer.Option(0, help="Max bases to truncate from 3' end when no random flank present. 0 disables."),
+    min_spacer: int = typer.Option(0, help="Minimum length of random cDNA spacer between concatenated read fragments."),
+    max_spacer: int = typer.Option(50, help="Maximum length of random cDNA spacer between concatenated read fragments."),
 ):
     """
     Generate synthetic labeled reads for training, and serialize to PKL.
 
     The generator uses a model-specific segment order/pattern and either
     provided transcripts or synthetic random transcripts to create realistic
-    reads with configurable error profiles.
+    reads with configurable error profiles. Training structure proportions
+    (valid reads, corrupted reads, concatenated reads, etc.) are defined in
+    the seq_orders.yaml config file under `training_structures`.
 
     Args:
         model_name: Model key for segment order specification.
@@ -682,7 +1003,6 @@ def simulate_data(
         threads: CPU threads used within the generator.
         rc: If True, include reverse complements (doubling dataset size).
         transcriptome: Optional FASTA of transcripts; otherwise random.
-        invalid_fraction: Fraction of reads to synthesize as invalid.
 
     Outputs:
         `<output_dir>/simulated_data/reads.pkl`
@@ -705,7 +1025,10 @@ def simulate_data(
         threads,
         rc,
         transcriptome,
-        invalid_fraction,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
     )
 
 
@@ -719,62 +1042,36 @@ def train_model(
     model_name: str,
     output_dir: str,
     param_file: str = typer.Option(
-        None, help=("Path to the training_params.tsv file. If not provided, uses the default from utils.")
+        None, help="Path to [cyan]training_params.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
     ),
-    training_seq_orders_file: str = typer.Option(
-        None, help=("Path to the seq_orders.tsv file. If not provided, uses the default from utils.")
-    ),
-    num_val_reads: int = typer.Option(20, help="number of reads to simulate"),
-    mismatch_rate: float = typer.Option(0.05, help="mismatch rate"),
-    insertion_rate: float = typer.Option(0.05, help="insertion rate"),
-    deletion_rate: float = typer.Option(0.06, help="deletion rate"),
-    min_cDNA: int = typer.Option(100, help="minimum cDNA length"),
-    max_cDNA: int = typer.Option(500, help="maximum cDNA length"),
-    polyT_error_rate: float = typer.Option(0.02, help="error rate within polyT or polyA segments"),
-    max_insertions: float = typer.Option(2, help="maximum number of allowed insertions after a base"),
-    threads: int = typer.Option(2, help="number of CPU threads"),
+    training_seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
+    num_val_reads: int = typer.Option(20, help="Number of validation reads to synthesize."),
+    mismatch_rate: float = typer.Option(0.05, help="Base substitution probability."),
+    insertion_rate: float = typer.Option(0.05, help="Base insertion probability."),
+    deletion_rate: float = typer.Option(0.06, help="Base deletion probability."),
+    min_cDNA: int = typer.Option(100, help="Minimum cDNA segment length."),
+    max_cDNA: int = typer.Option(500, help="Maximum cDNA segment length."),
+    polyT_error_rate: float = typer.Option(0.02, help="Error rate within polyT/polyA segments."),
+    max_insertions: float = typer.Option(2, help="Maximum insertions allowed after a single base."),
+    threads: int = typer.Option(2, help="Number of CPU threads."),
     rc: bool = typer.Option(
         True,
         help=(
-            "whether to include reverse complements of "
-            "the reads in the training data.\nFinal dataset will "
-            "contain twice the number of user-specified reads"
+            "Include reverse complements in the validation data."
+            " The final dataset will contain twice the requested number of reads."
         ),
     ),
-    transcriptome: str = typer.Option(None, help="transcriptome fasta file"),
-    invalid_fraction: float = typer.Option(0.3, help="fraction of invalid reads to generate"),
-    gpu_mem: Annotated[
-        str,
-        typer.Option(
-            help="""
-                    Total memory of the GPU in GB.\n
-                    => If there's only one GPU or multiple-GPUs with same memory,
-                    specify an integer\n
-                    => If there are mutliple GPUs with different memories,
-                    specify a comma-separated list (e.g., 8,16,32)\n
-                    => If nothing is specified and one or more GPUs are available,
-                    12 GB will be used by default.\n
-                    """
-        ),
-    ] = None,
-    target_tokens: Annotated[
-        int,
-        typer.Option(
-            help="""Approximate token budget *per GPU replica* used to pick a safe batch size.\n
-                    => A 'token' is one input position after padding (for DNA here: ~1 base = 1 token).\n
-                    => Effective tokens per replica ≈ batch_size × padded_seq_len.\n
-                    => Increase to try larger batches (more memory), decrease if you hit OOM.\n
-                    => If running on CPU, this still guides batch size heuristics."""
-        ),
-    ] = 1_200_000,
-    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom"),
-    min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference"),
-    max_batch_size: int = typer.Option(2000, help="Maximum batch size for model inference"),
+    transcriptome: str = typer.Option(None, help="Transcriptome FASTA. If omitted, random transcripts are generated."),
+    gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
+    target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS)] = 1_200_000,
+    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory to reserve as headroom."),
+    min_batch_size: int = typer.Option(1, help="Minimum batch size for model inference."),
+    max_batch_size: int = typer.Option(2000, help="Maximum batch size for model inference."),
 ):
     """
     Grid-train model variants from parameter table and export artifacts.
 
-    For a given `model_name`, this reads `utils/training_params.tsv`,
+    For a given `model_name`, this reads `utils/training_params.yaml`,
     enumerates parameter combinations, trains each variant using a distributed
     strategy when available, and saves:
       - model weights / SavedModel
@@ -782,8 +1079,12 @@ def train_model(
       - training history
       - validation visualization PDF on a small synthetic set
 
+    Training structure proportions (valid reads, corrupted reads, concatenated
+    reads, etc.) are defined in the seq_orders.yaml config file under
+    `training_structures`.
+
     Args:
-        model_name: Column in `training_params.tsv` whose parameter grid to use.
+        model_name: Key in `training_params.yaml` whose parameter grid to use.
         output_dir: Base directory to write per-variant subfolders and artifacts.
         num_val_reads: Number of validation reads to synthesize.
         mismatch_rate / insertion_rate / deletion_rate: Error model for validation set.
@@ -793,7 +1094,6 @@ def train_model(
         threads: CPU threads for validation read synthesis.
         rc: Include reverse complements for validation set.
         transcriptome: Optional validation FASTA; else random transcripts.
-        invalid_fraction: Fraction of invalid reads to generate for validation set.
         gpu_mem / target_tokens / vram_headroom / min_batch_size / max_batch_size:
             Parameters to guide validation inference batch sizing (plot stage).
 
@@ -804,7 +1104,7 @@ def train_model(
         - `<model_name>_<idx>_val_viz.pdf`
 
     Raises:
-        FileNotFoundError: If `training_params.tsv` missing or `model_name` not present.
+        FileNotFoundError: If `training_params.yaml` missing or `model_name` not present.
         RuntimeError: If training fails.
     """
     from wrappers.train_model_wrap import train_model_wrap
@@ -825,31 +1125,6 @@ def train_model(
         threads,
         rc,
         transcriptome,
-        invalid_fraction,
-        gpu_mem,
-        target_tokens,
-        vram_headroom,
-        min_batch_size,
-        max_batch_size,
-    )
-
-    train_model_wrap(
-        model_name,
-        output_dir,
-        param_file,
-        training_seq_orders_file,
-        num_val_reads,
-        mismatch_rate,
-        insertion_rate,
-        deletion_rate,
-        min_cDNA,
-        max_cDNA,
-        polyT_error_rate,
-        max_insertions,
-        threads,
-        rc,
-        transcriptome,
-        invalid_fraction,
         gpu_mem,
         target_tokens,
         vram_headroom,

@@ -4,6 +4,7 @@ logger = logging.getLogger(__name__)
 
 
 def align_wrap(input_dir, ref, output_dir, preset, filt_flag, mapq, threads, add_minimap_args):
+    """Align reads with minimap2 and sort/index the output BAM."""
     import os
     import time
     import subprocess
@@ -11,11 +12,15 @@ def align_wrap(input_dir, ref, output_dir, preset, filt_flag, mapq, threads, add
 
     start = time.time()
 
-    if os.path.exists(os.path.join(input_dir, "demuxed_fasta/demuxed.fastq")):
-        fasta_file = os.path.join(input_dir, "demuxed_fasta/demuxed.fastq")
-    elif os.path.exists(os.path.join(input_dir, "demuxed_fasta/demuxed.fasta")):
-        fasta_file = os.path.join(input_dir, "demuxed_fasta/demuxed.fasta")
-    else:
+    demux_candidates = [
+        os.path.join(input_dir, "demuxed_fasta/demuxed.fastq.gz"),
+        os.path.join(input_dir, "demuxed_fasta/demuxed.fasta.gz"),
+        os.path.join(input_dir, "demuxed_fasta/demuxed.fastq"),
+        os.path.join(input_dir, "demuxed_fasta/demuxed.fasta"),
+    ]
+    fasta_file = next((p for p in demux_candidates if os.path.exists(p)), None)
+    logger.info(f"Using {fasta_file} for alignment")
+    if fasta_file is None:
         raise FileNotFoundError("No demuxed FASTA or FASTQ file found in the input directory.")
 
     os.makedirs(f"{output_dir}/aligned_files", exist_ok=True)

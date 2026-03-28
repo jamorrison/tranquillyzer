@@ -15,8 +15,8 @@ PDF (`*_val_viz.pdf`) as an initial sanity check. These options do not affect th
 |:-----------|:----:|:-----------------|:-------:|
 | `model_name`                 | TEXT  | Library model key defining segment order and motifs                                                       | required                        |
 | `output_dir`                 | TEXT  | Directory where simulated training data lives                                                             | required                        |
-| `--param-file`               | TEXT  | Path to `training_params.tsv` used to define the hyperparameter grid for `model_name`                     | `utils/training_params.tsv`     |
-| `--training-seq-orders-file` | TEXT  | Path to `training_seq_orders.tsv` defining segment order/motifs for the model                             | `utils/training_seq_orders.tsv` |
+| `--param-file`               | TEXT  | Path to `training_params.yaml` used to define the hyperparameter grid for `model_name`                     | `utils/training_params.yaml`     |
+| `--training-seq-orders-file` | TEXT  | Path to `seq_orders.yaml` defining segment order/motifs for the model                             | `utils/seq_orders.yaml` |
 | `--num-val-reads`            | INT   | Number of **post-training validation** reads to synthesize and visualize                                  | 20                              |
 | `--mismatch-rate`            | FLOAT | **Validation synthesis** mismatch rate                                                                    | 0.05                            |
 | `--insertion-rate`           | FLOAT | **Validation synthesis** insertion rate                                                                   | 0.05                            |
@@ -35,7 +35,7 @@ PDF (`*_val_viz.pdf`) as an initial sanity check. These options do not affect th
 | `--min-batch-size`           | INT   | Minimum inference batch size for **validation** annotation                                                | 1                               |
 | `--max-batch-size`           | INT   | Maximum inference batch size for **validation** annotation                                                | 2000                            |
 
-# Example `training_params.tsv` Template
+# Example `training_params.yaml` Template
 
 ::: callout-note
 If you copy and paste the following template, make sure the pasted text retains the tab (`\t`) characters that serve as
@@ -62,7 +62,7 @@ learning_rate	0.001
 epochs	5
 ```
 
-Additional models can be added to the `training_params.tsv` file by adding additional columns to the existing file. The
+Additional models can be added to the `training_params.yaml` file by adding additional columns to the existing file. The
 name in the first column is the `model_name` to be used in other `tranquillyzer` functions for that model. A realistic
 example that includes parameters for both 10x Genomics 5' and 3' protocols is:
 

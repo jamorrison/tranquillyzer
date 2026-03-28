@@ -18,6 +18,7 @@ def split_bam_wrap(
     index_outputs: bool = True,
     prefer_csi_index: bool = False,
 ):
+    """Split a BAM file into per-cell-barcode BAM files."""
     from scripts.split_bam_file import split_bam_file
 
     split_bam_file(

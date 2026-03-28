@@ -4,9 +4,14 @@
 
 # Singularity image
 tranquillyzer.sif
+.coverage*
+__pycache__/
+*.pyc
 
 # Unwanted hidden files
 ._*
+
+CLAUDE.md
 
 # Samba-related files
 .smbdelete*

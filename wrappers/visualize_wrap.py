@@ -1,12 +1,12 @@
 import logging
-
+import os
 import polars as pl
 
 logger = logging.getLogger(__name__)
 
 
 def load_libs():
-    import os
+    """Lazily import and return libraries needed by the visualization pipeline."""
     import sys
     import time
     import resource
@@ -21,8 +21,8 @@ def load_libs():
     from scripts.extract_annotated_seqs import (
         extract_annotated_full_length_seqs,
     )
-    from scripts.annotate_new_data import build_model, preprocess_sequences
-    from scripts.trained_models import trained_models, seq_orders
+    from scripts.annotate_new_data import build_model, load_model_params, preprocess_sequences
+    from scripts.trained_models import trained_models, seq_orders, get_valid_structures
     from scripts.annotate_new_data import annotate_new_data_parallel
     from scripts.visualize_annot import save_plots_to_pdf
     from scripts.available_gpus import log_gpus_used
@@ -37,12 +37,14 @@ def load_libs():
         LabelBinarizer,
         extract_annotated_full_length_seqs,
         build_model,
+        load_model_params,
         preprocess_sequences,
         trained_models,
         seq_orders,
         annotate_new_data_parallel,
         save_plots_to_pdf,
         log_gpus_used,
+        get_valid_structures,
     )
 
 
@@ -50,8 +52,8 @@ def visualize_wrap(
     output_dir,
     output_file,
     model_name,
-    model_type,
     seq_order_file,
+    models_dir,
     gpu_mem,
     target_tokens,
     vram_headroom,
@@ -60,7 +62,9 @@ def visualize_wrap(
     num_reads,
     read_names,
     threads,
+    preprocess_dir=None,
 ):
+    """Run model inference on selected reads and generate annotation PDF plots."""
     (
         os,
         sys,
@@ -71,12 +75,14 @@ def visualize_wrap(
         LabelBinarizer,
         extract_annotated_full_length_seqs,
         build_model,
+        load_model_params,
         preprocess_sequences,
         trained_models,
         seq_orders,
         annotate_new_data_parallel,
         save_plots_to_pdf,
         log_gpus_used,
+        get_valid_structures,
     ) = load_libs()
 
     # Exit early if bad inputs given
@@ -91,34 +97,35 @@ def visualize_wrap(
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    models_dir = os.path.join(base_dir, "models")
+    if models_dir is None:
+        models_dir = os.path.join(base_dir, "models")
     models_dir = os.path.abspath(models_dir)
+    if not os.path.isdir(models_dir):
+        raise FileNotFoundError(f"Model directory not found: {models_dir}")
 
     utils_dir = os.path.join(base_dir, "utils")
     utils_dir = os.path.abspath(utils_dir)
 
     if seq_order_file is None:
-        seq_order_file = os.path.join(utils_dir, "seq_orders.tsv")
+        seq_order_file = os.path.join(utils_dir, "seq_orders.yaml")
 
     seq_order, sequences, barcodes, UMIs, strand = seq_orders(seq_order_file, model_name)
+    valid_structs = get_valid_structures(seq_order_file, model_name)
 
     num_labels = len(seq_order)
-    model_path_w_CRF = None
-    model_path = None
+
+    model_path = os.path.join(models_dir, model_name + ".h5")
+    with open(os.path.join(models_dir, model_name + "_lbl_bin.pkl"), "rb") as f:
+        label_binarizer = pickle.load(f)
 
     conv_filters = 256
-
-    if model_type == "REG":
-        model_path = os.path.join(models_dir, model_name + ".h5")
-        with open(os.path.join(models_dir, model_name + "_lbl_bin.pkl"), "rb") as f:
-            label_binarizer = pickle.load(f)
-    else:
-        model_path_w_CRF = os.path.join(models_dir, model_name + "_w_CRF.h5")
-        with open(os.path.join(models_dir, model_name + "_w_CRF_lbl_bin.pkl"), "rb") as f:
-            label_binarizer = pickle.load(f)
+    params = load_model_params(model_path)
+    if params:
+        cf = params.get("conv_filters", conv_filters)
+        conv_filters = max(cf) if isinstance(cf, list) else int(cf)
 
     try:
-        model = build_model(model_path_w_CRF, model_path, conv_filters, num_labels, strategy=None)
+        model = build_model(model_path, conv_filters, num_labels, strategy=None)
     except Exception as e:
         logger.error(f"Error encountered while building model: {e}")
         sys.exit(1)
@@ -132,7 +139,8 @@ def visualize_wrap(
             i += 1
 
     # Path to the read_index.parquet
-    index_file_path = os.path.join(output_dir, "full_length_pp_fa/read_index.parquet")
+    pp_base = preprocess_dir if preprocess_dir is not None else output_dir
+    index_file_path = os.path.join(pp_base, "full_length_pp_fa/read_index.parquet")
 
     os.makedirs(f"{output_dir}/plots", exist_ok=True)
     pdf_filename = f"{output_dir}/plots/{output_file}.pdf"
@@ -203,22 +211,29 @@ def visualize_wrap(
     # Perform annotation and plotting
     encoded_data = preprocess_sequences(selected_reads, max_read_len + 10)
     try:
-        predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        logger.info("Annotating selected reads with the CRF model")
+        predictions, model = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        logger.info("Annotation completed successfully")
     except Exception as e:
         logger.error(f"Encountered an error during annotation: {e}")
         sys.exit(1)
 
-    annotated_reads = extract_annotated_full_length_seqs(
+    logger.info("Extracting annotated sequences for visualization")
+    annotated_reads, _, _ = extract_annotated_full_length_seqs(
         selected_reads,
         predictions,
-        model_path_w_CRF,
+        model_path,
         selected_read_lengths,
         label_binarizer,
         seq_order,
         barcodes,
         n_jobs=threads,
+        valid_structures=valid_structs,
     )
+    logger.info("Finished extracting annotated sequences")
+    logger.info("Generating visualization plots")
     save_plots_to_pdf(selected_reads, annotated_reads, selected_read_names, pdf_filename, colors, chars_per_line=150)
+    logger.info(f"Visualization saved to {pdf_filename}\n")
 
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     max_rss_mb = usage.ru_maxrss / 1024 if os.uname().sysname == "Linux" else usage.ru_maxrss  # Linux gives KB
@@ -227,8 +242,10 @@ def visualize_wrap(
 
 
 def load_read_index(index_file_path, read_name):
+    """Load read names from preprocessed Parquet files for sampling."""
     df = pl.read_parquet(index_file_path).filter(pl.col("ReadName") == read_name)
     if df.is_empty():
         logger.warning(f"Read {read_name} not found in the index.")
         return None
-    return df["ParquetFile"][0]
+    parquet_filename = df["ParquetFile"][0]
+    return os.path.join(os.path.dirname(index_file_path), parquet_filename)

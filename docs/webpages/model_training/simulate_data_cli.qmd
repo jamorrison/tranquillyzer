@@ -12,7 +12,7 @@ sequencing platforms or chemistries.
 |:-----------|:----:|:-----------------|:-------:|
 | `model_name`                 | TEXT  | Library model key defining segment order and motifs                      | required                        |
 | `output_dir`                 | TEXT  | Output directory for simulated data (simulated_data/)                    | required                        |
-| `--training-seq-orders-file` | TEXT  | Path to training_seq_orders.tsv defining segment order and sequences     | `utils/training_seq_orders.tsv` |
+| `--training-seq-orders-file` | TEXT  | Path to seq_orders.yaml defining segment order and sequences     | `utils/seq_orders.yaml` |
 | `--num-reads`                | INT   | Number of primary reads to simulate (before reverse-complement doubling) | 50000                           |
 | `--mismatch-rate`            | FLOAT | Base substitution probability during training read simulation            | 0.05                            |
 | `--insertion-rate`           | FLOAT | Base insertion probability during training read simulation               | 0.05                            |

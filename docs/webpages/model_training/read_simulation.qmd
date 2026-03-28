@@ -7,7 +7,7 @@ page-navigation: true
 
 Synthetic reads are generated as ordered concatenations of library-specific segments (e.g., random bases, ONT adapters,
 protocol adapters, barcodes, UMIs, cDNA, polyA/polyT). The segment order and any fixed sequence motifs are specified for
-each `model_name` input in the library definition file: `seq_orders.tsv`. During concatenation, the simulator emits both
+each `model_name` input in the library definition file: `seq_orders.yaml`. During concatenation, the simulator emits both
 the nucleotide sequence and a per-base label vector identifying the originating segment.
 
 # cDNA Generation and Transcriptome Conditioning

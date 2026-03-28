@@ -1,14 +1,14 @@
 import logging
 import gc
+import gzip
+import os
 import tensorflow as tf
 import pandas as pd
 from tqdm import tqdm
 from rapidfuzz import process
-import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from collections import defaultdict
 from rapidfuzz.distance import Levenshtein
-from matplotlib.backends.backend_pdf import PdfPages
 
 from scripts.demultiplex import assign_cell_id
 
@@ -16,30 +16,35 @@ logger = logging.getLogger(__name__)
 
 
 def reverse_complement(seq):
+    """Return the reverse complement of a DNA sequence."""
     complement = {"A": "T", "T": "A", "C": "G", "G": "C"}
     return "".join(complement.get(base, base) for base in reversed(seq))
 
 
 def correct_barcode(row, column_name, whitelist, threshold):
+    """Find the closest whitelist barcode(s) using Levenshtein distance."""
     observed_barcode = row[column_name]
     reverse_comp_barcode = reverse_complement(observed_barcode)
 
     # Get distance scores for observed barcode and reverse complement
-    candidates = process.extract(observed_barcode, whitelist, scorer=Levenshtein.distance, limit=5)
-    candidates_rev = process.extract(reverse_comp_barcode, whitelist, scorer=Levenshtein.distance, limit=5)
+    candidates = process.extract(
+        observed_barcode, whitelist, scorer=Levenshtein.distance,
+        score_cutoff=threshold, processor=None, limit=5,
+    )
+    candidates_rev = process.extract(
+        reverse_comp_barcode, whitelist, scorer=Levenshtein.distance,
+        score_cutoff=threshold, processor=None, limit=5,
+    )
 
     # Combine results and find minimum distance
     all_matches = candidates + candidates_rev
+    if not all_matches:
+        return observed_barcode, "NMF", threshold + 1, 0
+
     min_distance = min(match[1] for match in all_matches)
 
     # Find all closest barcodes with the same minimum distance
     closest_barcodes = [match[0] for match in all_matches if match[1] == min_distance]
-
-    # Handle threshold & multiple matches
-    if min_distance > threshold:
-        # if len(closest_barcodes) == 1:
-        #     return observed_barcode, closest_barcodes[0], min_distance, 1
-        return observed_barcode, "NMF", min_distance, len(closest_barcodes)
 
     return observed_barcode, ",".join(closest_barcodes), min_distance, len(closest_barcodes)
 
@@ -47,13 +52,20 @@ def correct_barcode(row, column_name, whitelist, threshold):
 def write_reads_to_fasta(
     batch_reads, output_fmt, demuxed_fasta, demuxed_fasta_lock, ambiguous_fasta, ambiguous_fasta_lock
 ):
+    """Write batched reads to gzipped demuxed/ambiguous FASTA or FASTQ files."""
     for cell_id, reads in batch_reads.items():
         if cell_id == "ambiguous":
-            with ambiguous_fasta_lock:
-                fasta_file = open(ambiguous_fasta, "a")
+            if ambiguous_fasta_lock:
+                with ambiguous_fasta_lock:
+                    fasta_file = gzip.open(ambiguous_fasta, "at")
+            else:
+                fasta_file = gzip.open(ambiguous_fasta, "at")
         else:
-            with demuxed_fasta_lock:
-                fasta_file = open(demuxed_fasta, "a")
+            if demuxed_fasta_lock:
+                with demuxed_fasta_lock:
+                    fasta_file = gzip.open(demuxed_fasta, "at")
+            else:
+                fasta_file = gzip.open(demuxed_fasta, "at")
 
         if output_fmt == "fastq":
             for header, sequence, quality in reads:
@@ -76,29 +88,46 @@ def process_row(
     output_fmt,
     include_barcode_quals_in_header,
     include_polya_in_output,
+    whitelist_sets=None,
 ):
-    result = {
-        "ReadName": row["ReadName"],
-        "read_length": row["read_length"],
-        "cDNA_Starts": row["cDNA_Starts"],
-        "cDNA_Ends": row["cDNA_Ends"],
-        "cDNA_length": int(row["cDNA_Ends"]) - int(row["cDNA_Starts"]),
-        "UMI_Starts": row["UMI_Starts"],
-        "UMI_Ends": row["UMI_Ends"],
-        "random_s_Starts": row["random_s_Starts"],
-        "random_s_Ends": row["random_s_Ends"],
-        "random_e_Starts": row["random_e_Starts"],
-        "random_e_Ends": row["random_e_Ends"],
-    }
+    """Correct barcodes, assign cell ID, and build demux output for a single annotation row."""
+    def _parse_optional_int(value):
+        if value is None or pd.isna(value):
+            return None
+        token = str(value).split(",")[0].strip()
+        if token in {"", "None", "nan", "NaN"}:
+            return None
+        try:
+            return int(float(token))
+        except (TypeError, ValueError):
+            return None
 
-    if "polyA_Starts" in row and row["polyA_Starts"] != "":
-        result["polyA_Starts"] = row["polyA_Starts"]
-        result["polyA_Ends"] = row["polyA_Ends"]
-        result["polyA_lengths"] = int(row["polyA_Ends"]) - int(row["polyA_Starts"])
-    elif "polyT_Starts" in row and row["polyT_Starts"] != "":
-        result["polyA_Starts"] = row["polyT_Starts"]
-        result["polyA_Ends"] = row["polyT_Ends"]
-        result["polyA_lengths"] = int(row["polyT_Ends"]) - int(row["polyT_Starts"])
+    cDNA_start = _parse_optional_int(row.get("cDNA_Starts"))
+    cDNA_end = _parse_optional_int(row.get("cDNA_Ends"))
+    if cDNA_start is None or cDNA_end is None or cDNA_end <= cDNA_start:
+        raise ValueError(
+            f"Invalid cDNA coordinates for read {row.get('ReadName', 'unknown')}: "
+            f"cDNA_Starts={row.get('cDNA_Starts')}, cDNA_Ends={row.get('cDNA_Ends')}"
+        )
+
+    # Start from the original row so corrected outputs retain all annotation columns
+    # (including barcode *_Sequences) and then append correction/demux fields.
+    result = row.to_dict()
+    result["cDNA_length"] = cDNA_end - cDNA_start
+
+    polyA_start = _parse_optional_int(row.get("polyA_Starts"))
+    polyA_end = _parse_optional_int(row.get("polyA_Ends"))
+    polyT_start = _parse_optional_int(row.get("polyT_Starts"))
+    polyT_end = _parse_optional_int(row.get("polyT_Ends"))
+
+    if polyA_start is not None and polyA_end is not None:
+        result["polyA_Starts"] = row.get("polyA_Starts")
+        result["polyA_Ends"] = row.get("polyA_Ends")
+        result["polyA_lengths"] = polyA_end - polyA_start
+    elif polyT_start is not None and polyT_end is not None:
+        result["polyA_Starts"] = row.get("polyT_Starts")
+        result["polyA_Ends"] = row.get("polyT_Ends")
+        result["polyA_lengths"] = polyT_end - polyT_start
     else:
         result["polyA_Starts"] = None
         result["polyA_Ends"] = None
@@ -108,13 +137,37 @@ def process_row(
     corrected_barcode_seqs = []
 
     for barcode_column in barcode_columns:
-        whitelist = whitelist_dict[barcode_column]
-        corrected_barcode, corrected_seq, min_dist, count = correct_barcode(
-            row, barcode_column + "_Sequences", whitelist, threshold
-        )
+        # Check for pre-corrected barcodes (injected by vectorized pre-filtering)
+        pre_corrected = row.get(f"corrected_{barcode_column}")
+        if pre_corrected is not None and str(pre_corrected) not in ("", "nan", "None", "NaN"):
+            corrected_seq = pre_corrected
+            min_dist = row.get(f"corrected_{barcode_column}_min_dist", 0)
+            count = row.get(f"corrected_{barcode_column}_counts_with_min_dist", 1)
+        else:
+            seq = row.get(barcode_column + "_Sequences", "")
+            wl_set = whitelist_sets.get(barcode_column) if whitelist_sets else None
+
+            # Exact-match short-circuit: skip expensive fuzzy matching
+            if wl_set and seq and str(seq) not in ("", "nan", "None", "NaN"):
+                if seq in wl_set:
+                    _, corrected_seq, min_dist, count = seq, seq, 0, 1
+                else:
+                    rc = reverse_complement(seq)
+                    if rc in wl_set:
+                        _, corrected_seq, min_dist, count = seq, rc, 0, 1
+                    else:
+                        _, corrected_seq, min_dist, count = correct_barcode(
+                            row, barcode_column + "_Sequences", whitelist_dict[barcode_column], threshold
+                        )
+            else:
+                whitelist = whitelist_dict[barcode_column]
+                _, corrected_seq, min_dist, count = correct_barcode(
+                    row, barcode_column + "_Sequences", whitelist, threshold
+                )
         result[f"corrected_{barcode_column}"] = corrected_seq
         result[f"corrected_{barcode_column}_min_dist"] = min_dist
         result[f"corrected_{barcode_column}_counts_with_min_dist"] = count
+        result[f"{barcode_column}_Sequences"] = row.get(f"{barcode_column}_Sequences")
         result[f"{barcode_column}_Starts"] = row[f"{barcode_column}_Starts"]
         result[f"{barcode_column}_Ends"] = row[f"{barcode_column}_Ends"]
         corrected_barcodes.append(f"{barcode_column}:{corrected_seq}")
@@ -128,16 +181,22 @@ def process_row(
     result["reason"] = row["reason"]
     result["orientation"] = orientation
 
-    cell_id, local_match_counts, local_cell_counts = assign_cell_id(result, whitelist_df, barcode_columns)
+    cell_id = assign_cell_id(result, whitelist_df, barcode_columns)
     result["cell_id"] = cell_id
+    result["match_type"] = "Exact match" if cell_id != "ambiguous" else "Ambiguous"
 
     corrected_barcode_seqs_str = whitelist_dict["cell_ids"][cell_id] if cell_id != "ambiguous" else "ambiguous"
 
-    cDNA_start = int(row["cDNA_Starts"])
-    cDNA_end = int(row["cDNA_Ends"])
     cDNA_sequence = row["read"][cDNA_start:cDNA_end]
-    umi_sequence = row["read"][int(row["UMI_Starts"]) : int(row["UMI_Ends"])]
-    cDNA_quality = row["base_qualities"][cDNA_start:cDNA_end] if output_fmt == "fastq" else None
+    _umi_start = _parse_optional_int(row.get("UMI_Starts"))
+    _umi_end = _parse_optional_int(row.get("UMI_Ends"))
+    umi_sequence = (
+        row["read"][_umi_start:_umi_end]
+        if (_umi_start is not None and _umi_end is not None and _umi_end > _umi_start)
+        else ""
+    )
+    _base_q = row.get("base_qualities")
+    cDNA_quality = _base_q[cDNA_start:cDNA_end] if (output_fmt == "fastq" and _base_q is not None) else None
 
     polya_seq = None
     polya_qual = None
@@ -225,28 +284,42 @@ def process_row(
             if output_fmt == "fastq" and polya_qual is not None:
                 quality_out = (quality_out or "") + polya_qual
 
+    _umi_name_token = f"_{umi_sequence}" if umi_sequence else ""
+    _umi_field = f"|UMI:{umi_sequence}" if umi_sequence else ""
+
     if output_fmt == "fasta":
+        demux_header = (
+            f">{row['ReadName']}_{corrected_barcode_seqs_str}{_umi_name_token} "
+            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}{_umi_field}|orientation:{orientation}"
+        )
         batch_reads[corrected_barcode_seqs_str].append(
             (
-                f">{row['ReadName']}_{corrected_barcode_seqs_str}_{umi_sequence} "
-                f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}|UMI:{umi_sequence}|orientation:{orientation}",
+                demux_header,
                 sequence_out,
             )
         )
+        result["demux_header"] = demux_header
+        result["demux_sequence"] = sequence_out
+        result["demux_quality"] = None
     elif output_fmt == "fastq":
         header = (
-            f"@{row['ReadName']}_{corrected_barcode_seqs_str}_{umi_sequence} "
-            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}|UMI:{umi_sequence}|orientation:{orientation}"
+            f"@{row['ReadName']}_{corrected_barcode_seqs_str}{_umi_name_token} "
+            f"cell_id:{cell_id}|Barcodes:{corrected_barcodes_str}{_umi_field}|orientation:{orientation}"
             f"{barcode_qual_suffix}"
         )
+        _fallback_q = _base_q[cDNA_start:cDNA_end] if _base_q is not None else ""
         batch_reads[corrected_barcode_seqs_str].append(
             (
                 header,
                 sequence_out,
-                quality_out if quality_out is not None else row["base_qualities"][cDNA_start:cDNA_end],
+                quality_out if quality_out is not None else _fallback_q,
             )
         )
-    return result, local_match_counts, local_cell_counts, batch_reads
+        result["demux_header"] = header
+        result["demux_sequence"] = sequence_out
+        result["demux_quality"] = quality_out if quality_out is not None else _fallback_q
+    result["demux_bucket"] = corrected_barcode_seqs_str
+    return result, batch_reads
 
 
 def bc_n_demultiplex(
@@ -265,7 +338,10 @@ def bc_n_demultiplex(
     num_cores,
     include_barcode_quals_in_header=False,
     include_polya_in_output=False,
+    write_demuxed_reads=True,
 ):
+    """Correct barcodes and demultiplex a chunk of annotated reads in parallel."""
+    whitelist_sets = {bc: set(whitelist_dict[bc]) for bc in barcode_columns}
     args = [
         (
             row,
@@ -278,6 +354,7 @@ def bc_n_demultiplex(
             output_fmt,
             include_barcode_quals_in_header,
             include_polya_in_output,
+            whitelist_sets,
         )
         for _, row in chunk.iterrows()
     ]
@@ -301,51 +378,14 @@ def bc_n_demultiplex(
     gc.collect()
 
     processed_results = [res[0] for res in results]
-    all_match_type_counts = [res[1] for res in results]
-    all_cell_id_counts = [res[2] for res in results]
 
     for res in results:
-        for cell_id, reads in res[3].items():
+        for cell_id, reads in res[1].items():
             batch_reads[cell_id].extend(reads)
 
-    write_reads_to_fasta(
-        batch_reads, output_fmt, demuxed_fasta, demuxed_fasta_lock, ambiguous_fasta, ambiguous_fasta_lock
-    )
+    if write_demuxed_reads:
+        write_reads_to_fasta(
+            batch_reads, output_fmt, demuxed_fasta, demuxed_fasta_lock, ambiguous_fasta, ambiguous_fasta_lock
+        )
 
-    match_type_counts = defaultdict(int)
-    cell_id_counts = defaultdict(int)
-
-    for match_counts in all_match_type_counts:
-        for key, value in match_counts.items():
-            match_type_counts[key] += value
-
-    for cell_counts in all_cell_id_counts:
-        for key, value in cell_counts.items():
-            cell_id_counts[key] += value
-
-    corrected_df = pd.DataFrame(processed_results)
-
-    return corrected_df, match_type_counts, cell_id_counts
-
-
-def generate_barcodes_stats_pdf(cumulative_barcodes_stats, barcode_columns, pdf_filename="barcode_plots.pdf"):
-    with PdfPages(pdf_filename) as pdf:
-        for barcode_column in barcode_columns:
-            count_data = pd.Series(cumulative_barcodes_stats[barcode_column]["count_data"]).sort_index()
-            min_dist_data = pd.Series(cumulative_barcodes_stats[barcode_column]["min_dist_data"]).sort_index()
-
-            fig, axs = plt.subplots(1, 2, figsize=(14, 6))
-
-            axs[0].bar(count_data.index, count_data.values, color="skyblue")
-            axs[0].set_xlabel("Number of Matches")
-            axs[0].set_ylabel("Frequency")
-            axs[0].set_title(f"{barcode_column} - Number of Matches")
-
-            axs[1].bar(min_dist_data.index, min_dist_data.values, color="lightgreen")
-            axs[1].set_xlabel("Minimum Distance")
-            axs[1].set_ylabel("Frequency")
-            axs[1].set_title(f"{barcode_column} - Minimum Distance")
-
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close()
+    return pd.DataFrame(processed_results)

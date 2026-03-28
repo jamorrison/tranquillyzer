@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def determine_bin(length, bin_size=500):
+    """Assign a read to a length bin based on configurable bin width."""
     if length < 10000:
         bin_size = bin_size
     elif length < 50000:
@@ -27,14 +28,15 @@ def determine_bin(length, bin_size=500):
     return f"{bin_start}_{bin_end}bp"
 
 
-def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual):
+def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual, bin_size=500):
+    """Read sequences from a FASTA/FASTQ file and bin them by length."""
     reads_by_bin = {}
     file_format = "fasta" if file_path.endswith((".fa", ".fasta", ".fa.gz", ".fasta.gz")) else "fastq"
 
     with gzip.open(file_path, "rt") if file_path.endswith(".gz") else open(file_path, "r") as handle:
         for record in SeqIO.parse(handle, file_format):
             read_length = len(record.seq)
-            bin_name = determine_bin(read_length)
+            bin_name = determine_bin(read_length, bin_size)
 
             # Ensure that the bin is initialized with all required keys
             if output_base_qual:
@@ -65,6 +67,7 @@ def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual):
 
 
 def dump_bin_data(output_dir, output_base_qual, bin_name, data):
+    """Write binned read data to TSV files in the output directory."""
     os.makedirs(output_dir, exist_ok=True)
     tsv_filename = os.path.join(output_dir, f"{bin_name}.tsv")
     lock_filename = tsv_filename + ".lock"  # Create a lock file for the TSV
@@ -100,7 +103,8 @@ def dump_bin_data(output_dir, output_base_qual, bin_name, data):
         logger.error(f"Error writing {tsv_filename}: {e}")
 
 
-def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual, num_workers=4):
+def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual, bin_size=500, num_workers=4):
+    """Preprocess reads from a sequence file in parallel using multiple threads."""
     total_files = len(file_list)
 
     if total_files < num_workers:
@@ -111,7 +115,7 @@ def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         for file_path in file_list:
-            executor.submit(extract_and_bin_reads, file_path, batch_size, output_dir, output_base_qual)
+            executor.submit(extract_and_bin_reads, file_path, batch_size, output_dir, output_base_qual, bin_size)
 
     end_time = time.time()
     logger.info(f"Processed {total_files} files in {end_time - start_time:.2f} seconds.")
@@ -121,6 +125,7 @@ def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual
 
 
 def convert_tsv_to_parquet(tsv_dir, row_group_size=1000000):
+    """Convert all TSV files in a directory to Parquet format."""
     logger.info("Converting TSV files to Parquet files...")
     os.makedirs(tsv_dir, exist_ok=True)
 
@@ -176,7 +181,7 @@ def convert_tsv_to_parquet(tsv_dir, row_group_size=1000000):
                 .to_list()
             )
             for rn in names:
-                read_index[rn] = parquet_file
+                read_index[rn] = os.path.basename(parquet_file)
 
             os.remove(tsv_file)
             logger.info(f"Removed original TSV file: {tsv_file}")
@@ -193,6 +198,7 @@ def convert_tsv_to_parquet(tsv_dir, row_group_size=1000000):
 
 
 def find_sequence_files(directory):
+    """Recursively find all FASTA/FASTQ files in a directory."""
     extensions = ["*.fa", "*.fasta", "*.fa.gz", "*.fasta.gz", "*.fq", "*.fastq", "*.fq.gz", "*.fastq.gz"]
     file_list = []
     for ext in extensions:
