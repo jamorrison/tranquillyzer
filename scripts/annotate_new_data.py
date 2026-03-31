@@ -431,7 +431,15 @@ def model_predictions(
     else:
         bpt = estimate_bytes_per_token(num_labels=num_labels)
 
-    max_len = int(int(bin_name.replace("bp", "").split("_")[1]) + 10)
+    # Add one-sided receptive field of the largest dilated conv layer as padding
+    # so the model can properly predict end-of-sequence transitions for all reads in the bin.
+    if params:
+        kernel_sizes = params.get("conv_kernel_sizes", [25, 25, 25])
+        dilation_rates = params.get("dilation_rates", [1, 1, 1])
+        conv_padding = max((k - 1) * d for k, d in zip(kernel_sizes, dilation_rates)) // 2
+    else:
+        conv_padding = 12  # default: half of kernel_size=25
+    max_len = int(bin_name.replace("bp", "").split("_")[1]) + 1 + conv_padding
     global_bs = choose_global_batch(
         max_len,
         bytes_per_token=bpt,

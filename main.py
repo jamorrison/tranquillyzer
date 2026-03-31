@@ -725,6 +725,26 @@ def qc_metrics(
             "When not provided these plots are silently skipped."
         ),
     ),
+    counts_matrix: str = typer.Option(
+        None,
+        help=(
+            "Path to a featureCounts counts_matrix.tsv file.\n\n"
+            "Enables additional plots: genes per cell, UMIs per cell, "
+            "mitochondrial/ribosomal fractions, library complexity, "
+            "genes vs UMIs scatter, top expressed genes, barcode rank plot, "
+            "featureCounts assignment summary, and gene biotype breakdown. "
+            "Requires [cyan]--gtf[/cyan] to be provided as well."
+        ),
+    ),
+    gtf: str = typer.Option(
+        None,
+        help=(
+            "Path to a GTF annotation file (e.g. GENCODE).\n\n"
+            "Required when [cyan]--counts-matrix[/cyan] is provided. "
+            "Used to resolve Ensembl gene IDs to gene names (for mitochondrial / "
+            "ribosomal identification) and gene biotypes."
+        ),
+    ),
     threads: int = typer.Option(
         4,
         help="Number of parallel threads for computing independent QC metrics.",
@@ -752,12 +772,26 @@ def qc_metrics(
      12) Unique UMIs per cell (requires --bam).
      13) Mapping rate per cell (requires --bam).
      14) Duplicate rate per cell (requires --bam).
+     15) Genes per cell (requires --counts-matrix + --gtf).
+     16) UMIs per cell (requires --counts-matrix + --gtf).
+     17) Mitochondrial % per cell (requires --counts-matrix + --gtf).
+     18) Ribosomal % per cell (requires --counts-matrix + --gtf).
+     19) Genes vs UMIs scatter (requires --counts-matrix + --gtf).
+     20) Library complexity score (requires --counts-matrix + --gtf).
+     21) featureCounts assignment per cell (requires --counts-matrix).
+     22) featureCounts global assignment (requires --counts-matrix).
+     23) Top expressed genes (requires --counts-matrix + --gtf).
+     24) Barcode rank plot on counts (requires --counts-matrix + --gtf).
+     25) Gene biotype breakdown (requires --counts-matrix + --gtf).
 
     MultiQC usage:
       Run ``multiqc <output_dir>`` (or the parent directory) after this command
       to pick up all ``*_mqc.tsv`` files automatically.
     """
     from wrappers.qc_metrics_wrap import qc_metrics_wrap
+
+    if counts_matrix is not None and gtf is None:
+        raise typer.BadParameter("--gtf is required when --counts-matrix is provided.")
 
     resolved_output = output_dir or os.path.join(input_dir, "qc_metrics")
     resolved_sample = sample_name or os.path.basename(os.path.abspath(input_dir))
@@ -770,6 +804,8 @@ def qc_metrics(
         sample_name=resolved_sample,
         read_len_bin_width=read_len_bin_width,
         bam_file=bam,
+        counts_matrix=counts_matrix,
+        gtf=gtf,
         threads=threads,
     )
 
