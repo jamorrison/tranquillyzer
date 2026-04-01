@@ -12,6 +12,7 @@ __pycache__/
 ._*
 
 CLAUDE.md
+_version.py
 
 # Samba-related files
 .smbdelete*

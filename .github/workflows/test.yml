@@ -12,7 +12,9 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Miniconda
         uses: conda-incubator/setup-miniconda@v2

@@ -1,4 +1,11 @@
 # __init__.py
 """Main script package for Tranquillyzer."""
 
-__version__ = "0.2.2"
+try:
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("tranquillyzer")
+except Exception:
+    try:
+        from _version import __version__
+    except Exception:
+        __version__ = "0.0.0"
