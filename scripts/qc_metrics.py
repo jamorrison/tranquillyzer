@@ -68,7 +68,11 @@ def _write_tsv(tsv_dir, filename, df):
     if tsv_dir is None:
         return
     os.makedirs(tsv_dir, exist_ok=True)
-    df.write_csv(os.path.join(tsv_dir, filename), separator="\t")
+    path = os.path.join(tsv_dir, filename)
+    from utils import get_version
+    with open(path, "w") as fh:
+        fh.write(f"# tranquillyzer_version: {get_version()}\n")
+        fh.write(df.write_csv(separator="\t"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -381,11 +385,8 @@ def _write_html_report(path, row_figs, sample_name):
     Plotly.js is loaded once via CDN; each figure renders with its own modebar.
     """
     import plotly.io as pio
-    try:
-        from importlib.metadata import version as _pkg_version
-        __version__ = _pkg_version("tranquillyzer")
-    except Exception:
-        __version__ = "unknown"
+    from utils import get_version
+    __version__ = get_version()
 
     html_figs = []
     for i, fig in enumerate(row_figs):
@@ -401,7 +402,7 @@ def _write_html_report(path, row_figs, sample_name):
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(
             "<!DOCTYPE html><html>"
-            "<head><meta charset='utf-8'><style>"
+            f"<head><meta charset='utf-8'><meta name='generator' content='tranquillyzer v{__version__}'><style>"
             "body{background:#f5f7fa;font-family:Arial,sans-serif;margin:0;padding:16px}"
             "h1{text-align:center;font-size:18px;color:#333;margin:0 0 8px}"
             "</style></head>"
@@ -1350,7 +1351,7 @@ def _plot_knee_whitelist_free(metadata_dir, tsv_dir=None):
     if not os.path.exists(counts_path):
         return None
 
-    df = pl.read_csv(counts_path, separator="\t")
+    df = pl.read_csv(counts_path, separator="\t", comment_prefix="#")
     if df.is_empty() or "read_count" not in df.columns:
         return None
 

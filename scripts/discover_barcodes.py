@@ -343,7 +343,8 @@ def save_discovered_whitelist(whitelist_df, output_path):
     output_path : str
         Path to write the TSV file.
     """
-    whitelist_df.to_csv(output_path, sep="\t", index=False)
+    from utils import write_tsv_with_version
+    write_tsv_with_version(output_path, whitelist_df.to_csv(sep="\t", index=False))
     logger.info(f"Saved discovered whitelist ({len(whitelist_df)} barcodes) to {output_path}")
 
 
@@ -364,7 +365,9 @@ def save_discovery_stats(output_path, barcode_columns, tuple_counts, canonical_t
         Variant-to-canonical tuple mappings.
     """
     n_canonical = len(set(merged_mapping.values())) if merged_mapping else len(canonical_tuples)
+    from utils import get_version
     stats = {
+        "tranquillyzer_version": get_version(),
         "barcode_columns": barcode_columns,
         "unique_barcode_tuples_observed": len(tuple_counts),
         "total_reads_with_barcodes": sum(tuple_counts.values()),
@@ -412,7 +415,8 @@ def plot_barcode_rank(counts, n_knee, output_path):
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    from utils import get_version
+    fig.savefig(output_path, dpi=150, metadata={"Software": f"tranquillyzer v{get_version()}"})
     plt.close(fig)
     logger.info(f"Saved barcode rank plot to {output_path}")
 
@@ -453,7 +457,8 @@ def save_barcode_counts_tsv(counts, barcode_columns, knee_tuples, mapping, outpu
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    df.to_csv(output_path, sep="\t", index=False)
+    from utils import write_tsv_with_version
+    write_tsv_with_version(output_path, df.to_csv(sep="\t", index=False))
     logger.info(f"Saved barcode counts ({len(df)} entries) to {output_path}")
 
 

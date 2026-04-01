@@ -253,7 +253,7 @@ def barcode_correction_wrap(
         else:
             lazy_df = pl.scan_csv(input_file, separator="\t", infer_schema_length=5000)
 
-    whitelist_df = pd.read_csv(whitelist_file, sep="\t")
+    whitelist_df = pd.read_csv(whitelist_file, sep="\t", comment="#")
 
     effective_output_fmt = output_fmt
     if run_demux and output_fmt == "fastq":
@@ -561,9 +561,10 @@ def barcode_correction_wrap(
     # Combine chunk TSVs into final parquet
     logger.info(f"Combining {total_chunks} chunk TSVs into final parquet")
     if chunk_paths:
-        pl.scan_csv(chunk_paths, separator="\t", infer_schema_length=5000).sink_parquet(
-            corrected_parquet_tmp, compression="snappy"
-        )
+        from utils import get_version
+        pl.scan_csv(chunk_paths, separator="\t", infer_schema_length=5000).with_columns(
+            pl.lit(get_version()).alias("tranquillyzer_version")
+        ).sink_parquet(corrected_parquet_tmp, compression="snappy")
 
     # Cleanup
     shutil.rmtree(chunk_tsv_dir, ignore_errors=True)

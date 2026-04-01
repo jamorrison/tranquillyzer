@@ -205,6 +205,10 @@ def process_region(
         hdr = bam_in.header.to_dict()
         hdr.setdefault("HD", {})
         hdr["HD"]["SO"] = "coordinate"
+        from utils import get_version
+        hdr.setdefault("PG", []).append(
+            {"ID": "tranquillyzer-dedup", "PN": "tranquillyzer", "VN": get_version()}
+        )
         out_header = pysam.AlignmentHeader.from_dict(hdr)
 
         with pysam.AlignmentFile(temp_bam_path, "wb", header=out_header, threads=threads_bgzf) as bam_out:
@@ -330,9 +334,10 @@ def deduplication_parallel(
             total_unique += n_unique
             total_dup += n_dup
 
-    # Merge in @SQ order
+    # Merge in @SQ order — use first temp BAM as header source (carries @PG line)
     ordered_paths = [temp_paths[r] for r in regions if r in temp_paths]
-    merge_in_sq_order(output_bam, ordered_paths, sorted_bam, bgzf_threads_per_writer)
+    header_bam = ordered_paths[0] if ordered_paths else sorted_bam
+    merge_in_sq_order(output_bam, ordered_paths, header_bam, bgzf_threads_per_writer)
 
     # Cleanup temps
     for p in ordered_paths:

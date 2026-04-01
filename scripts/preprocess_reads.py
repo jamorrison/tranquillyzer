@@ -192,7 +192,9 @@ def convert_tsv_to_parquet(tsv_dir, row_group_size=1000000):
 
     if read_index:
         index_parquet_file = os.path.join(tsv_dir, "read_index.parquet")
+        from utils import get_version
         index_df = pl.DataFrame([{"ReadName": k, "ParquetFile": v} for k, v in read_index.items()])
+        index_df = index_df.with_columns(pl.lit(get_version()).alias("tranquillyzer_version"))
         index_df.write_parquet(index_parquet_file)
         logger.info(f"Index file saved at {index_parquet_file}")
 
