@@ -757,7 +757,7 @@ def qc_metrics(
     ),
     bam: str = typer.Option(
         None,
-        help="Dup-marked BAM with CB/UB tags. Enables saturation, mapping rate, and duplication plots.",
+        help="Dup-marked BAM with CB/UB tags. Enables saturation, mapping rate, duplication, and gene body coverage (with [cyan]--gtf[/cyan]) plots.",
         rich_help_panel="Alignment & Gene Quantification",
     ),
     counts_matrix: str = typer.Option(
@@ -767,7 +767,7 @@ def qc_metrics(
     ),
     gtf: str = typer.Option(
         None,
-        help="GTF annotation (e.g. GENCODE). Required with [cyan]--counts-matrix[/cyan] for gene name/biotype resolution.",
+        help="GTF annotation (e.g. GENCODE). Required with [cyan]--counts-matrix[/cyan]; also enables gene body coverage with [cyan]--bam[/cyan].",
         rich_help_panel="Alignment & Gene Quantification",
     ),
 ):
@@ -793,17 +793,18 @@ def qc_metrics(
      12) Unique UMIs per cell (requires --bam).
      13) Mapping rate per cell (requires --bam).
      14) Duplicate rate per cell (requires --bam).
-     15) Genes per cell (requires --counts-matrix + --gtf).
-     16) UMIs per cell (requires --counts-matrix + --gtf).
-     17) Mitochondrial % per cell (requires --counts-matrix + --gtf).
-     18) Ribosomal % per cell (requires --counts-matrix + --gtf).
-     19) Genes vs UMIs scatter (requires --counts-matrix + --gtf).
-     20) Library complexity score (requires --counts-matrix + --gtf).
-     21) featureCounts assignment per cell (requires --counts-matrix).
-     22) featureCounts global assignment (requires --counts-matrix).
-     23) Top expressed genes (requires --counts-matrix + --gtf).
-     24) Barcode rank plot on counts (requires --counts-matrix + --gtf).
-     25) Gene biotype breakdown (requires --counts-matrix + --gtf).
+     15) Gene body coverage profile (requires --bam + --gtf).
+     16) Genes per cell (requires --counts-matrix + --gtf).
+     17) UMIs per cell (requires --counts-matrix + --gtf).
+     18) Mitochondrial % per cell (requires --counts-matrix + --gtf).
+     19) Ribosomal % per cell (requires --counts-matrix + --gtf).
+     20) Genes vs UMIs scatter (requires --counts-matrix + --gtf).
+     21) Library complexity score (requires --counts-matrix + --gtf).
+     22) featureCounts assignment per cell (requires --counts-matrix).
+     23) featureCounts global assignment (requires --counts-matrix).
+     24) Top expressed genes (requires --counts-matrix + --gtf).
+     25) Barcode rank plot on counts (requires --counts-matrix + --gtf).
+     26) Gene biotype breakdown (requires --counts-matrix + --gtf).
 
     MultiQC usage:
       Run ``multiqc <output_dir>`` (or the parent directory) after this command
@@ -1194,6 +1195,110 @@ def train_model(
         vram_headroom,
         min_batch_size,
         max_batch_size,
+    )
+
+
+# =================
+#  Assess model
+# =================
+
+
+@app.command(no_args_is_help=True, context_settings={"help_option_names": []})
+def assess_model(
+    model_name: str,
+    model_dir: str,
+    output_dir: str,
+    threads: int = typer.Option(2, help="Number of CPU threads.", rich_help_panel="General"),
+    resume: bool = typer.Option(True, help="Resume from completed stages (simulation, preprocessing, annotation).", rich_help_panel="General"),
+    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
+    num_reads: int = typer.Option(100, help="Number of assessment reads to simulate.", rich_help_panel="Read Structure"),
+    concat_fraction: float = typer.Option(
+        None, help="Fraction of assessment reads that are concatenated. Overrides YAML proportions.", rich_help_panel="Read Structure",
+    ),
+    mismatch_rate: float = typer.Option(0.05, help="Base substitution probability.", rich_help_panel="Error Profile"),
+    insertion_rate: float = typer.Option(0.05, help="Base insertion probability.", rich_help_panel="Error Profile"),
+    deletion_rate: float = typer.Option(0.06, help="Base deletion probability.", rich_help_panel="Error Profile"),
+    min_cDNA: int = typer.Option(100, help="Minimum cDNA segment length.", rich_help_panel="Read Structure"),
+    max_cDNA: int = typer.Option(500, help="Maximum cDNA segment length.", rich_help_panel="Read Structure"),
+    polyT_error_rate: float = typer.Option(0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Error Profile"),
+    max_insertions: float = typer.Option(1, help="Maximum insertions allowed after a single base.", rich_help_panel="Error Profile"),
+    rc: bool = typer.Option(
+        True,
+        help=(
+            "Include reverse complements of all assessment reads."
+            " The final dataset will contain twice the requested number of reads."
+        ),
+        rich_help_panel="Read Structure",
+    ),
+    transcriptome: str = typer.Option(
+        None, help="Transcriptome FASTA. If omitted, random transcripts are generated.", rich_help_panel="Read Structure",
+    ),
+    max_trunc_5p: int = typer.Option(0, help="Max bases to truncate from 5' end when no random flank present. 0 disables.", rich_help_panel="Read Structure"),
+    max_trunc_3p: int = typer.Option(0, help="Max bases to truncate from 3' end when no random flank present. 0 disables.", rich_help_panel="Read Structure"),
+    min_spacer: int = typer.Option(0, help="Minimum length of random cDNA spacer between concatenated read fragments.", rich_help_panel="Read Structure"),
+    max_spacer: int = typer.Option(50, help="Maximum length of random cDNA spacer between concatenated read fragments.", rich_help_panel="Read Structure"),
+    bin_size: int = typer.Option(500, help="Bin width (bp) for length-binning assessment reads.", rich_help_panel="Read Structure"),
+    max_read_length: int = typer.Option(
+        None,
+        help="Maximum total read length (bp). Caps cDNA length in concatenated structures to keep reads within this limit.",
+        rich_help_panel="Read Structure",
+    ),
+    gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM, rich_help_panel="GPU & Batching")] = None,
+    target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS, rich_help_panel="GPU & Batching")] = 1_200_000,
+    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory reserved as headroom to reduce OOM risk.", rich_help_panel="GPU & Batching"),
+    min_batch_size: int = typer.Option(1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"),
+    max_batch_size: int = typer.Option(2000, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"),
+):
+    """
+    Assess a trained model's performance on synthetic reads.
+
+    Generates assessment reads using structures defined in `assessment_structures`
+    of the seq_orders.yaml config (single fragments + concatenated combos),
+    runs the annotation pipeline, and computes segment-level metrics:
+
+      - Segment detection rate and boundary accuracy
+      - Chimeric read fragment splitting accuracy
+      - Valid/invalid read classification rate
+
+    Results are saved as TSV files and a combined Plotly HTML report.
+
+    Args:
+        model_name: Key in seq_orders.yaml identifying the model architecture.
+        model_dir: Directory containing model weights (.h5) and label binarizer (_lbl_bin.pkl).
+        output_dir: Destination for assessment reads, annotation outputs, and metric artifacts.
+    """
+    from wrappers.evaluate_model_wrap import evaluate_model_wrap
+
+    evaluate_model_wrap(
+        model_name,
+        model_dir,
+        output_dir,
+        seq_orders_file,
+        num_reads,
+        concat_fraction,
+        mismatch_rate,
+        insertion_rate,
+        deletion_rate,
+        min_cDNA,
+        max_cDNA,
+        polyT_error_rate,
+        max_insertions,
+        threads,
+        rc,
+        transcriptome,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
+        bin_size,
+        max_read_length,
+        gpu_mem,
+        target_tokens,
+        vram_headroom,
+        min_batch_size,
+        max_batch_size,
+        resume,
     )
 
 

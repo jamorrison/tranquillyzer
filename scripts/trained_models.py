@@ -61,26 +61,26 @@ def _resolve_model(config, model):
         if field in model_entry:
             resolved[field] = model_entry[field]
 
-    # training_structures: dict-level merge
-    if "training_structures" in model_entry:
-        model_ts = model_entry["training_structures"]
-        if model_ts is None:
-            # Explicit null => no training structures (triggers default fallback)
-            resolved["training_structures"] = None
-        else:
-            lib_ts = resolved.get("training_structures")
-            if lib_ts is None:
-                resolved["training_structures"] = model_ts
+    # Dict-level merge for training_structures and assessment_structures
+    for struct_key in ("training_structures", "assessment_structures"):
+        if struct_key in model_entry:
+            model_ts = model_entry[struct_key]
+            if model_ts is None:
+                resolved[struct_key] = None
             else:
-                merged = copy.deepcopy(lib_ts)
-                for name, value in model_ts.items():
-                    if value is None:
-                        merged.pop(name, None)
-                    elif name in merged:
-                        merged[name].update(value)
-                    else:
-                        merged[name] = value
-                resolved["training_structures"] = merged
+                lib_ts = resolved.get(struct_key)
+                if lib_ts is None:
+                    resolved[struct_key] = model_ts
+                else:
+                    merged = copy.deepcopy(lib_ts)
+                    for name, value in model_ts.items():
+                        if value is None:
+                            merged.pop(name, None)
+                        elif name in merged:
+                            merged[name].update(value)
+                        else:
+                            merged[name] = value
+                    resolved[struct_key] = merged
 
     return resolved
 
@@ -186,6 +186,86 @@ def get_training_structures(file_path, model):
                     f"in training structure: {s}"
                 )
         result.append({
+            "order": order,
+            "patterns": patterns,
+            "repeat": repeat,
+            "rc_elements": rc_elements,
+            "rc_pattern": rc_pattern,
+            "proportion": s["proportion"],
+        })
+    return result
+
+
+def get_assessment_structures(file_path, model):
+    """Load assessment structures for model evaluation.
+
+    Returns list of dicts: [{order, patterns, repeat, proportion, rc_pattern, rc_elements}, ...].
+    Same format as get_training_structures but reads from 'assessment_structures'.
+    Falls back to a single full-order structure if not defined.
+    """
+    config = _load_yaml(file_path)
+    entry = _resolve_model(config, model)
+    ts = entry.get("assessment_structures", None)
+
+    if ts is None:
+        return [{
+            "name": "default",
+            "order": [s["name"] for s in entry["segments"]],
+            "patterns": [s["pattern"] for s in entry["segments"]],
+            "repeat": 1,
+            "proportion": 1.0,
+        }]
+
+    if isinstance(ts, dict):
+        struct_names = list(ts.keys())
+        structs = list(ts.values())
+    else:
+        struct_names = [f"struct_{i}" for i in range(len(ts))]
+        structs = ts
+
+    total = sum(s.get("proportion", 0) for s in structs)
+    if abs(total - 1.0) > 0.01:
+        logger.warning(
+            f"Assessment structure proportions for model '{model}' sum to {total:.4f}, expected ~1.0"
+        )
+
+    pattern_map = {s["name"]: s["pattern"] for s in entry["segments"]}
+    result = []
+    for sname, s in zip(struct_names, structs):
+        order_raw = s["order"]
+        order = []
+        rc_elements = {}
+        for name in order_raw:
+            if name.endswith(":reverse"):
+                clean = name[:-8]
+                order.append(clean)
+                rc_elements[clean] = "reverse"
+            elif name.endswith(":rev"):
+                clean = name[:-4]
+                order.append(clean)
+                rc_elements[clean] = "rev"
+            elif name.endswith(":fwd"):
+                clean = name[:-4]
+                order.append(clean)
+                rc_elements[clean] = "fwd"
+            else:
+                order.append(name)
+        patterns = [pattern_map[name] for name in order]
+        repeat = s.get("repeat", 1)
+        rc_pattern = s.get("rc_pattern", ["fwd"] * repeat)
+        if len(rc_pattern) != repeat:
+            raise ValueError(
+                f"rc_pattern length ({len(rc_pattern)}) must match repeat ({repeat}) "
+                f"in assessment structure: {s}"
+            )
+        for val in rc_pattern:
+            if val not in ("fwd", "rev", "reverse"):
+                raise ValueError(
+                    f"rc_pattern values must be 'fwd', 'rev', or 'reverse', got '{val}' "
+                    f"in assessment structure: {s}"
+                )
+        result.append({
+            "name": sname,
             "order": order,
             "patterns": patterns,
             "repeat": repeat,

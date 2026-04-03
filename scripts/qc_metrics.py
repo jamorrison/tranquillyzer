@@ -11,6 +11,7 @@ import os
 import re
 
 import numpy as np
+import pandas as pd
 import polars as pl
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -3022,3 +3023,333 @@ def _plot_genes_per_biotype(counts_df, gene_ids, gene_info_df, tsv_dir=None):
     _write_tsv(tsv_dir, "genes_per_biotype.tsv", bio_counts)
 
     return "Genes per Biotype", fig, caption, -0.14
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gene body coverage
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_gtf_gene_coords(gtf_path):
+    """
+    Parse gene-level records from a GTF for gene body coverage analysis.
+
+    Returns a Polars DataFrame with columns
+    ``[gene_id, chrom, start, end, strand]``.
+    Coordinates are 0-based half-open (GTF 1-based start is decremented).
+    Gene IDs have version suffixes stripped.
+    """
+    gene_id_re = re.compile(r'gene_id "([^"]+)"')
+
+    ids, chroms, starts, ends, strands = [], [], [], [], []
+    with open(gtf_path) as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 9 or parts[2] != "gene":
+                continue
+            m_id = gene_id_re.search(parts[8])
+            if m_id:
+                ids.append(_strip_gene_version(m_id.group(1)))
+                chroms.append(parts[0])
+                starts.append(int(parts[3]) - 1)  # GTF 1-based → 0-based
+                ends.append(int(parts[4]))         # GTF end is inclusive, but +1-1 cancels
+                strands.append(parts[6])
+
+    return pl.DataFrame({
+        "gene_id": ids,
+        "chrom": chroms,
+        "start": starts,
+        "end": ends,
+        "strand": strands,
+    })
+
+
+def _make_gaos_stranded():
+    """Factory for picklable stranded GenomicArrayOfSets."""
+    import HTSeq
+    return HTSeq.GenomicArrayOfSets("auto", stranded=True)
+
+
+def _resolve_chrom_mapping(gtf_chroms, bam_references):
+    """
+    Build a mapping from GTF chromosome names to BAM reference names.
+
+    Handles the common ``chr``-prefix mismatch (e.g. GTF has ``chr1``,
+    BAM has ``1``, or vice versa).  Returns a dict ``{gtf_chrom: bam_ref}``
+    for every GTF chromosome that can be matched to a BAM reference.
+    """
+    bam_set = set(bam_references)
+    mapping = {}
+    for chrom in gtf_chroms:
+        if chrom in bam_set:
+            mapping[chrom] = chrom
+        elif chrom.startswith("chr") and chrom[3:] in bam_set:
+            mapping[chrom] = chrom[3:]
+        elif f"chr{chrom}" in bam_set:
+            mapping[chrom] = f"chr{chrom}"
+    return mapping
+
+
+def _build_gene_percentiles(gtf_path, n_bins=100, min_mRNA_length=100):
+    """
+    Parse GTF and build 100 percentile positions per gene (RSeQC-style).
+
+    For each gene, picks the longest transcript, collects all exonic base
+    positions (1-based genomic coordinates) in 5'→3' order, and samples
+    *n_bins* evenly-spaced percentile points.
+
+    Returns
+    -------
+    dict
+        ``{gene_id: (chrom, strand, [100 genomic positions])}``
+    """
+    from collections import defaultdict
+    import HTSeq
+
+    tx_exons = defaultdict(list)
+    tx_gene = {}
+    gtf = HTSeq.GFF_Reader(gtf_path)
+    for feat in gtf:
+        if feat.type != "exon":
+            continue
+        tid = feat.attr.get("transcript_id", "").strip()
+        gid = _strip_gene_version(feat.attr.get("gene_id", "").strip())
+        if not tid or not gid:
+            continue
+        tx_exons[tid].append((feat.iv.chrom, feat.iv.strand, feat.iv.start, feat.iv.end))
+        tx_gene[tid] = gid
+
+    # Pick longest transcript per gene
+    best_tid_by_gene = {}
+    best_len_by_gene = {}
+    for tid, exs in tx_exons.items():
+        if not exs:
+            continue
+        total_len = sum(e - s for _, _, s, e in exs)
+        gid = tx_gene.get(tid)
+        if gid is None:
+            continue
+        if gid not in best_len_by_gene or total_len > best_len_by_gene[gid]:
+            best_len_by_gene[gid] = total_len
+            best_tid_by_gene[gid] = tid
+
+    g_percentiles = {}
+    for gid, tid in best_tid_by_gene.items():
+        exs = tx_exons[tid]
+        chrom = exs[0][0]
+        strand = exs[0][1]
+        # Sort exons by genomic position (ascending) — always, regardless of strand
+        exs_sorted = sorted(exs, key=lambda x: x[2])
+        # Collect all exonic base positions (1-based, like RSeQC) in ascending genomic order
+        gene_all_base = []
+        for _, _, start, end in exs_sorted:
+            gene_all_base.extend(range(start + 1, end + 1))
+        if len(gene_all_base) < min_mRNA_length:
+            continue
+        # Pick n_bins percentile positions (equivalent to mystat.percentile_list)
+        # Positions always in ascending genomic order; strand reversal happens after pileup
+        idx = np.linspace(0, len(gene_all_base) - 1, num=n_bins).astype(int)
+        positions = [gene_all_base[i] for i in idx]
+        g_percentiles[gid] = (chrom, strand, positions)
+
+    return g_percentiles
+
+
+def _process_chromosome_pileup(args):
+    """
+    Worker: RSeQC-style pileup coverage for genes on one chromosome.
+
+    For each gene, iterates the pileup at the 100 percentile positions and
+    counts reads (skipping deletions, qcfail, secondary, unmapped, duplicate).
+    Returns a dict mapping percentile index → summed coverage.
+    """
+    import pysam
+    import collections
+
+    chrom, bam_path, genes_on_chrom = args
+    aggregated_cvg = collections.defaultdict(int)
+
+    bam = pysam.AlignmentFile(bam_path, "rb")
+    # Check chromosome exists in BAM
+    try:
+        bam.pileup(chrom, 1, 2)
+    except Exception:
+        bam.close()
+        return dict(aggregated_cvg)
+
+    for _gid, strand, positions in genes_on_chrom:
+        coverage = {pos: 0 for pos in positions}
+        chrom_start = min(positions) - 1
+        if chrom_start < 0:
+            chrom_start = 0
+        chrom_end = max(positions)
+        pos_set = set(positions)
+
+        for pileupcolumn in bam.pileup(chrom, chrom_start, chrom_end, truncate=True):
+            ref_pos = pileupcolumn.pos + 1  # 1-based
+            if ref_pos not in pos_set:
+                continue
+            if pileupcolumn.n == 0:
+                coverage[ref_pos] = 0
+                continue
+            cover_read = 0
+            for pileupread in pileupcolumn.pileups:
+                if pileupread.is_del:
+                    continue
+                if pileupread.alignment.is_qcfail:
+                    continue
+                if pileupread.alignment.is_secondary:
+                    continue
+                if pileupread.alignment.is_unmapped:
+                    continue
+                if pileupread.alignment.is_duplicate:
+                    continue
+                cover_read += 1
+            coverage[ref_pos] = cover_read
+
+        tmp = [coverage[k] for k in sorted(coverage)]
+        if strand == "-":
+            tmp = tmp[::-1]
+        for i in range(len(tmp)):
+            aggregated_cvg[i] += tmp[i]
+
+    bam.close()
+    return dict(aggregated_cvg)
+
+
+def _compute_gene_body_coverage(bam_path, gtf_path, n_bins=100, threads=4):
+    """
+    Compute gene body coverage profile from a BAM and GTF (RSeQC-style).
+
+    For each gene, samples coverage at 100 percentile positions via pileup
+    and sums across all genes.  Parallelized per chromosome.
+
+    Returns
+    -------
+    dict or None
+        ``{"aggregate": ndarray(n_bins,), "n_models": int}``
+        None if insufficient data.
+    """
+    import pysam
+    from collections import defaultdict
+    from multiprocessing import Pool
+
+    logger.info("Computing gene body coverage (RSeQC-style pileup) ...")
+
+    bam = pysam.AlignmentFile(bam_path, "rb")
+    if not bam.has_index():
+        logger.warning("Gene body coverage skipped: BAM index not found.")
+        bam.close()
+        return None
+
+    logger.info("  Parsing GTF and building percentile positions ...")
+    g_percentiles = _build_gene_percentiles(gtf_path, n_bins=n_bins)
+
+    if not g_percentiles:
+        logger.warning("Gene body coverage skipped: no valid gene models found.")
+        bam.close()
+        return None
+
+    logger.info(f"  {len(g_percentiles):,} genes with exonic length >= 100 bp")
+
+    # Group genes by chromosome, filter to chromosomes present in BAM
+    bam_refs = set(bam.references)
+    bam.close()
+    genes_by_chrom = defaultdict(list)
+    for gid, (chrom, strand, positions) in g_percentiles.items():
+        if chrom in bam_refs:
+            genes_by_chrom[chrom].append((gid, strand, positions))
+
+    if not genes_by_chrom:
+        logger.warning("Gene body coverage skipped: no overlapping chromosomes between BAM and GTF.")
+        return None
+
+    logger.info(f"  Processing {len(genes_by_chrom)} chromosomes ...")
+    n_workers = min(threads, len(genes_by_chrom))
+    args = [
+        (chrom, bam_path, gene_list)
+        for chrom, gene_list in genes_by_chrom.items()
+    ]
+
+    with Pool(n_workers) as pool:
+        per_chrom = pool.map(_process_chromosome_pileup, args)
+
+    # Aggregate across chromosomes
+    total_cvg = np.zeros(n_bins, dtype=np.float64)
+    for cvg_dict in per_chrom:
+        for i, v in cvg_dict.items():
+            total_cvg[i] += v
+
+    n_models = sum(len(gl) for gl in genes_by_chrom.values())
+    logger.info(f"  Gene body coverage computed over {n_models:,} genes")
+    return {"aggregate": total_cvg, "n_models": n_models}
+
+
+def _plot_gene_body_coverage(bam_path, gtf_path, n_bins=100, tsv_dir=None, threads=4):
+    """
+    RSeQC-style gene body coverage plot.
+
+    Shows a single aggregate coverage line for both bulk and single-cell modes
+    (gene body coverage is a library-level metric).
+
+    Returns ``(title, fig, caption, caption_y)`` or ``None``.
+    """
+    result = _compute_gene_body_coverage(
+        bam_path,
+        gtf_path=gtf_path,
+        n_bins=n_bins,
+        threads=threads,
+    )
+    if result is None:
+        return None
+
+    agg = result["aggregate"]
+    percentiles = np.linspace(0, 100, len(agg), endpoint=False).tolist()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=percentiles,
+        y=agg.tolist(),
+        mode="lines",
+        line=dict(color="#72B7B2", width=2),
+        showlegend=False,
+        hovertemplate="Gene body: %{x:.0f}%<br>Coverage: %{y:,.0f}<extra></extra>",
+    ))
+
+    fig.update_layout(
+        xaxis=dict(
+            title="Gene Body Percentile (5' → 3')",
+            tickfont_size=13,
+            gridcolor="#f0f0f0",
+        ),
+        yaxis=dict(
+            title="Coverage",
+            tickfont_size=13,
+            gridcolor="#f0f0f0",
+            zerolinecolor="#ddd",
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+
+    # ── TSV export ──────────────────────────────────────────────────────────
+    tsv_df = pl.DataFrame({
+        "gene_body_percentile": percentiles,
+        "coverage": [round(v, 4) for v in agg.tolist()],
+    })
+    _write_tsv(tsv_dir, "gene_body_coverage.tsv", tsv_df)
+
+    # ── caption ─────────────────────────────────────────────────────────────
+    n_models = result["n_models"]
+    caption = (
+        f"Transcript body coverage across {n_models:,} expressed genes, using one "
+        "representative transcript per gene. "
+        "Coverage is sampled at 100 evenly-spaced percentile positions along each "
+        "transcript body (RSeQC-style) and summed across all transcripts. "
+        "A flat profile indicates uniform full-length coverage; "
+        "a 3' or 5' skew suggests incomplete capture or degradation."
+    )
+
+    return "Gene Body Coverage", fig, caption, -0.14

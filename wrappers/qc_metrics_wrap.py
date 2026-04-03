@@ -69,6 +69,7 @@ def qc_metrics_wrap(
         _plot_fc_global_assignment,
         _plot_top_expressed_genes,
         _plot_genes_per_biotype,
+        _plot_gene_body_coverage,
         _build_row_figure,
         _write_html_report,
     )
@@ -148,12 +149,18 @@ def qc_metrics_wrap(
         f_dup_g   = pool.submit(_plot_global_dup_stats, bam_file, tsv_dir=tsv_dir) if bam_file is not None else None
         f_mapping = pool.submit(_plot_mapping_rate_per_cell, bam_stats_df, tsv_dir=tsv_dir) if bam_stats_df is not None else None
         f_dup_c   = pool.submit(_plot_dup_rate_per_cell, bam_stats_df, has_dedup, tsv_dir=tsv_dir) if bam_stats_df is not None else None
+        f_genebody = (
+            pool.submit(_plot_gene_body_coverage, bam_file, gtf_path=gtf, tsv_dir=tsv_dir, threads=threads)
+            if bam_file is not None and gtf is not None
+            else None
+        )
 
         sat       = f_sat.result() if f_sat is not None else None
         aln_stats = f_aln.result() if f_aln is not None else None
         dup_stats = f_dup_g.result() if f_dup_g is not None else None
         mapping   = f_mapping.result() if f_mapping is not None else None
         dup       = f_dup_c.result() if f_dup_c is not None else None
+        genebody  = f_genebody.result() if f_genebody is not None else None
 
         # ── counts-matrix metrics ───────────────────────────────────────────
         cm_cell_metrics = None
@@ -266,6 +273,10 @@ def qc_metrics_wrap(
     # 14. FC Global Assignment (right after BAM-level per-cell plots).
     if fc_global is not None:
         rows.append([fc_global])
+
+    # 15. Gene body coverage (requires --bam + --gtf).
+    if genebody is not None:
+        rows.append([genebody])
 
     # ── counts-matrix metric rows ─────────────────────────────────────────────
 
