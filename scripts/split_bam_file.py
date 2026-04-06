@@ -206,6 +206,7 @@ def _process_ref_to_buckets(args) -> Tuple[str, List[int], Dict[str, int]]:
     with pysam.AlignmentFile(bam_path, "rb") as bam_in:
         header_dict = bam_in.header.to_dict()
         from utils import get_version
+
         header_dict.setdefault("PG", []).append(
             {"ID": "tranquillyzer-split", "PN": "tranquillyzer", "VN": get_version()}
         )

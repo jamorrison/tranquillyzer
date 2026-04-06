@@ -1,0 +1,185 @@
+---
+title: Barcode Correction and Demultiplexing
+page-navigation: true
+---
+
+After annotation, barcode sequences need to be corrected (matched to known barcodes) and reads need to be assigned to
+cells (demultiplexed). _Tranquillyzer_ offers two approaches depending on whether you have a barcode whitelist.
+
+# Whitelist-Based Barcode Correction
+
+If you have a barcode whitelist (e.g., from 10x Genomics), barcode correction can happen either **integrated** with
+annotation or as a **standalone** step.
+
+## Integrated Correction (Recommended)
+
+The fastest approach. Barcode correction and demultiplexing run concurrently with annotation. See the
+[Annotation](annotation.qmd) page for details:
+
+```bash
+tranquillyzer annotate-reads \
+    --run-barcode-correction \
+    --run-demux \
+    --gpu-mem 48 \
+    OUTPUT_DIR \
+    WHITELIST_FILE
+```
+
+## Standalone Correction
+
+Use `barcode-correct` when you have already annotated reads and want to correct barcodes separately. For example, if
+you want to try a different whitelist or adjust the Levenshtein threshold without re-running annotation:
+
+```bash
+tranquillyzer barcode-correct \
+    --bc-lv-threshold 2 \
+    --threads 12 \
+    INPUT_DIR \
+    WHITELIST_FILE
+```
+
+### Correction Strategy
+
+For each read, the corrected barcode is determined by:
+
+1. **Exact match**: check if the extracted barcode is directly in the whitelist (fastest path).
+2. **Reverse complement**: check if the reverse complement matches (handles strand ambiguity).
+3. **Fuzzy matching**: find the closest whitelist barcode within a Levenshtein edit distance threshold
+   (`--bc-lv-threshold`, default 2)
+
+If no match is found within the threshold, the barcode is labeled `NMF` (No Match Found). If multiple whitelist
+barcodes tie at the minimum distance, the read is marked as `ambiguous`.
+
+For multi-barcode protocols (e.g., combinatorial indexing with CBC + i5 + i7), all barcode columns are corrected
+independently, and a cell ID is assigned via product matching against the whitelist.
+
+### Concurrent Demultiplexing
+
+Add `--run-demux` to export demultiplexed FASTA/FASTQ files at the same time as correction:
+
+```bash
+tranquillyzer barcode-correct \
+    --run-demux \
+    --output-fmt fasta \
+    --threads 12 \
+    INPUT_DIR \
+    WHITELIST_FILE
+```
+
+### Standalone Correction Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `INPUT_DIR` | required | Directory containing annotation_metadata/ | |
+| `WHITELIST_FILE` | required | TSV with barcode columns | |
+| `--output-dir` | `INPUT_DIR` | Where to write corrected output | Set if you want separate output |
+| `--model-name` | `10x3p_sc_ont_012` | Model for barcode column resolution | Match your annotation model |
+| `--bc-lv-threshold` | 2 | Max Levenshtein distance for fuzzy matching | Increase for noisier barcodes |
+| `--run-demux` | off | Demultiplex concurrently | Enable to get FASTA/FASTQ output |
+| `--output-fmt` | `fasta` | Demux format | Use `fastq` if quality scores available |
+| `--include-barcode-quals` | off | Include barcode quality scores in headers | Enable for downstream QC |
+| `--include-polya` | off | Append polyA/T tail to demuxed reads | Enable if needed downstream |
+| `--chunk-size` | 100,000 | Rows per processing chunk | Rarely needs changing |
+| `--threads` | 12 | CPU threads | Match your available cores |
+| `--resume` / `--no-resume` | `--resume` | Resume from checkpoint | Disable to force full re-run |
+
+# Whitelist-Free Barcode Discovery
+
+If you do not have a barcode whitelist, _Tranquillyzer_ can discover cell barcodes directly from the annotation output
+using count-based knee-point detection.
+
+## Annotation Without a Whitelist
+
+```bash
+tranquillyzer annotate-reads \
+    --model-name 10x3p_sc_ont_012 \
+    --gpu-mem 48 \
+    OUTPUT_DIR
+```
+
+## Barcode Discovery
+
+```bash
+tranquillyzer generate-whitelist \
+    --model-name 10x3p_sc_ont_012 \
+    --expected-cells 5000 \
+    OUTPUT_DIR
+```
+
+### Discovery Process
+
+1. **Count barcodes**: scan all valid annotations and count occurrences of each unique barcode (or barcode tuple for
+   multi-barcode protocols). Barcodes are canonicalized via reverse complement (lexicographic minimum of sequence and
+   its RC) to collapse strand-ambiguous duplicates.
+
+2. **Knee-point detection**: sort barcodes by count (descending) and find the "knee" in the log-log rank-count curve
+   where real cell barcodes transition to background noise. If `--expected-cells` is provided, it guides the detection;
+   otherwise, the knee is found automatically using the kneedle algorithm.
+
+3. **Near-duplicate merging**: barcodes within edit distance 1 of a higher-count barcode are merged into it. This uses
+   deletion neighborhood hashing for efficient O(K*L) computation instead of O(K^2) pairwise comparison.
+
+4. **Output whitelist**:the surviving barcodes are written as a whitelist TSV, ready for `barcode-correct`.
+
+### Discovery Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `OUTPUT_DIR` | required | Annotation output directory | |
+| `--model-name` | `10x3p_sc_ont_012` | Model for barcode column resolution | Match your annotation model |
+| `--expected-cells` | None (auto) | Hint for expected number of cells | Provide if known for better knee detection |
+| `--min-cell-ratio` | 0.50 | Knee threshold as fraction of cliff-top count | Lower to include more cells; raise for stricter filtering |
+| `--min-reads-per-barcode` | 3 | Minimum reads for a barcode to be considered | Increase for noisier data |
+| `--barcode-columns` | auto (from model) | Comma-separated barcode column names | Only if model config is unavailable |
+| `--chunk-size` | 100,000 | Rows per streaming chunk | Rarely needs changing |
+
+### Discovery Output
+
+- **`annotation_metadata/discovered_whitelist.tsv`**: discovered barcode whitelist (use as input to `barcode-correct`)
+- **`annotation_metadata/barcode_discovery_stats.json`**: summary statistics (unique counts, knee threshold, merge
+  mapping)
+- **`annotation_metadata/barcode_counts.tsv`**: all observed barcodes with counts and above/below-knee status
+- **`annotation_metadata/barcode_rank_plot.png`**: log-log rank plot showing the knee threshold
+
+## Correction and Demultiplexing
+
+Use the discovered whitelist with `barcode-correct`:
+
+```bash
+tranquillyzer barcode-correct \
+    --run-demux \
+    --output-fmt fasta \
+    --threads 12 \
+    OUTPUT_DIR \
+    OUTPUT_DIR/annotation_metadata/discovered_whitelist.tsv
+```
+
+# Standalone Demultiplexing
+
+If barcode correction has already been run and you just need to re-export FASTA/FASTQ files (e.g., in a different
+format), use `demux-reads`:
+
+```bash
+tranquillyzer demux-reads \
+    --output-fmt fastq \
+    INPUT_DIR
+```
+
+This reads the corrected annotation parquet and exports demultiplexed reads without re-running correction.
+
+| Option | Default | Description |
+|---|:--:|---|
+| `INPUT_DIR` | required | Directory containing corrected annotations |
+| `--output-dir` | `INPUT_DIR` | Where to write demux output |
+| `--output-fmt` | `fasta` | Output format: `fasta` or `fastq` |
+
+## Demux Output
+
+- **`demuxed_fasta/demuxed.fasta.gz`**:reads assigned to cells (gzipped)
+- **`demuxed_fasta/ambiguous.fasta.gz`**:reads with ambiguous barcode matches (gzipped)
+
+FASTA/FASTQ headers include cell ID, corrected barcodes, UMI, and orientation:
+
+```
+>read_001_42_ACGTACGT cell_id:42|Barcodes:CBC:ATCGATCGATCGATCG|UMI:ACGTACGTACGT|orientation:+
+```

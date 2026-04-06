@@ -121,28 +121,44 @@ def _plot_classification_metrics(gt_labels_list, pred_labels_list, seq_order):
         precision = tp[label] / (tp[label] + fp[label]) if (tp[label] + fp[label]) > 0 else 0.0
         recall = tp[label] / (tp[label] + fn[label]) if (tp[label] + fn[label]) > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        rows.append({
-            "segment": label,
-            "precision": round(precision, 4),
-            "recall": round(recall, 4),
-            "f1_score": round(f1, 4),
-            "support": support,
-        })
+        rows.append(
+            {
+                "segment": label,
+                "precision": round(precision, 4),
+                "recall": round(recall, 4),
+                "f1_score": round(f1, 4),
+                "support": support,
+            }
+        )
 
     # Macro average
     n_labels = len(ordered_labels)
     macro_p = sum(r["precision"] for r in rows) / n_labels if n_labels else 0
     macro_r = sum(r["recall"] for r in rows) / n_labels if n_labels else 0
     macro_f1 = sum(r["f1_score"] for r in rows) / n_labels if n_labels else 0
-    rows.append({"segment": "macro avg", "precision": round(macro_p, 4), "recall": round(macro_r, 4),
-                 "f1_score": round(macro_f1, 4), "support": total_support})
+    rows.append(
+        {
+            "segment": "macro avg",
+            "precision": round(macro_p, 4),
+            "recall": round(macro_r, 4),
+            "f1_score": round(macro_f1, 4),
+            "support": total_support,
+        }
+    )
 
     # Weighted average
     weighted_p = sum(r["precision"] * r["support"] for r in rows[:-1]) / total_support if total_support else 0
     weighted_r = sum(r["recall"] * r["support"] for r in rows[:-1]) / total_support if total_support else 0
     weighted_f1 = sum(r["f1_score"] * r["support"] for r in rows[:-1]) / total_support if total_support else 0
-    rows.append({"segment": "weighted avg", "precision": round(weighted_p, 4), "recall": round(weighted_r, 4),
-                 "f1_score": round(weighted_f1, 4), "support": total_support})
+    rows.append(
+        {
+            "segment": "weighted avg",
+            "precision": round(weighted_p, 4),
+            "recall": round(weighted_r, 4),
+            "f1_score": round(weighted_f1, 4),
+            "support": total_support,
+        }
+    )
 
     df = pd.DataFrame(rows)
 
@@ -150,18 +166,24 @@ def _plot_classification_metrics(gt_labels_list, pred_labels_list, seq_order):
     seg_df = df[~df["segment"].isin(["macro avg", "weighted avg"])]
     fig = go.Figure()
     for metric, name in [("precision", "Precision"), ("recall", "Recall"), ("f1_score", "F1 Score")]:
-        fig.add_trace(go.Bar(
-            x=seg_df["segment"], y=seg_df[metric],
-            name=name, marker_color=_PLOT_COLOR,
-            opacity=0.6 if metric == "precision" else (0.8 if metric == "recall" else 1.0),
-            text=seg_df[metric].apply(lambda v: f"{v:.2f}"),
-            textposition="outside",
-        ))
+        fig.add_trace(
+            go.Bar(
+                x=seg_df["segment"],
+                y=seg_df[metric],
+                name=name,
+                marker_color=_PLOT_COLOR,
+                opacity=0.6 if metric == "precision" else (0.8 if metric == "recall" else 1.0),
+                text=seg_df[metric].apply(lambda v: f"{v:.2f}"),
+                textposition="outside",
+            )
+        )
     fig.update_layout(
-        barmode="group", height=450,
+        barmode="group",
+        height=450,
         yaxis=dict(range=[0, 1.15], title="Score", tickfont_size=13, gridcolor="#f0f0f0"),
         xaxis=dict(tickfont_size=13, gridcolor="#f0f0f0"),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
@@ -203,9 +225,7 @@ def _write_tsv_with_metadata(df, path, model_name, version):
 _PLOT_COLOR = "#4A7FB5"
 
 
-def _plot_architecture_accuracy(
-    expected_fragments, structure_names, valid_df, invalid_df
-):
+def _plot_architecture_accuracy(expected_fragments, structure_names, valid_df, invalid_df):
     """Compute structural filtering accuracy and fragment recovery per structure type.
 
     Single-fragment structures: proportion correctly classified as valid.
@@ -227,8 +247,10 @@ def _plot_architecture_accuracy(
         n_predicted = pred_frags.get(read_name, 0)
         if stype not in groups:
             groups[stype] = {
-                "n_reads": 0, "expected_per_read": n_expected,
-                "total_expected_frags": 0, "total_predicted_frags": 0,
+                "n_reads": 0,
+                "expected_per_read": n_expected,
+                "total_expected_frags": 0,
+                "total_predicted_frags": 0,
                 "n_correct": 0,
             }
         g = groups[stype]
@@ -251,18 +273,17 @@ def _plot_architecture_accuracy(
             accuracy = g["n_correct"] / g["n_reads"] if g["n_reads"] > 0 else 0
             recovery = accuracy  # same for single-fragment
         else:
-            recovery = (
-                g["total_predicted_frags"] / g["total_expected_frags"]
-                if g["total_expected_frags"] > 0 else 0
-            )
+            recovery = g["total_predicted_frags"] / g["total_expected_frags"] if g["total_expected_frags"] > 0 else 0
             accuracy = g["n_correct"] / g["n_reads"] if g["n_reads"] > 0 else 0
-        rows.append({
-            "structure_type": stype,
-            "expected_fragments": g["expected_per_read"],
-            "n_reads": g["n_reads"],
-            "structural_accuracy": round(accuracy, 4),
-            "fragment_recovery_rate": round(recovery, 4),
-        })
+        rows.append(
+            {
+                "structure_type": stype,
+                "expected_fragments": g["expected_per_read"],
+                "n_reads": g["n_reads"],
+                "structural_accuracy": round(accuracy, 4),
+                "fragment_recovery_rate": round(recovery, 4),
+            }
+        )
 
     df = pd.DataFrame(rows)
 
@@ -286,13 +307,12 @@ def _plot_architecture_accuracy(
                 x=single_df["structure_type"],
                 y=single_df["structural_accuracy"],
                 marker_color=_PLOT_COLOR,
-                text=single_df.apply(
-                    lambda r: f"{r['structural_accuracy']:.2f}<br>n={int(r['n_reads'])}", axis=1
-                ),
+                text=single_df.apply(lambda r: f"{r['structural_accuracy']:.2f}<br>n={int(r['n_reads'])}", axis=1),
                 textposition="outside",
                 name="Accuracy",
             ),
-            row=1, col=col,
+            row=1,
+            col=col,
         )
         fig.update_yaxes(range=[0, 1.15], row=1, col=col)
         col += 1
@@ -304,19 +324,20 @@ def _plot_architecture_accuracy(
                 x=concat_df["structure_type"],
                 y=concat_df["fragment_recovery_rate"],
                 marker_color=_PLOT_COLOR,
-                text=concat_df.apply(
-                    lambda r: f"{r['fragment_recovery_rate']:.2f}<br>n={int(r['n_reads'])}", axis=1
-                ),
+                text=concat_df.apply(lambda r: f"{r['fragment_recovery_rate']:.2f}<br>n={int(r['n_reads'])}", axis=1),
                 textposition="outside",
                 name="Recovery",
             ),
-            row=1, col=col,
+            row=1,
+            col=col,
         )
         fig.update_yaxes(range=[0, 1.15], row=1, col=col)
 
     fig.update_layout(
-        height=450, showlegend=False,
-        plot_bgcolor="white", paper_bgcolor="white",
+        height=450,
+        showlegend=False,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
     )
     return fig, df
 
@@ -343,13 +364,15 @@ def _compute_edit_distances(gt_segs_list, pred_segs_list, seq_order):
                 raw_dist = Levenshtein.distance(gt_s, pr_s)
                 gt_len = len(gt_s) if gt_s else 1
                 norm_dist = raw_dist / gt_len
-                records.append({
-                    "segment": seg,
-                    "raw_edit_distance": raw_dist,
-                    "normalized_edit_distance": round(norm_dist, 4),
-                    "gt_length": len(gt_s),
-                    "pred_length": len(pr_s),
-                })
+                records.append(
+                    {
+                        "segment": seg,
+                        "raw_edit_distance": raw_dist,
+                        "normalized_edit_distance": round(norm_dist, 4),
+                        "gt_length": len(gt_s),
+                        "pred_length": len(pr_s),
+                    }
+                )
 
     return pd.DataFrame(records)
 
@@ -389,8 +412,7 @@ def _write_html_report(path, panels, model_name):
                 fig,
                 full_html=False,
                 include_plotlyjs="cdn" if i == 0 else False,
-                config={"displaylogo": False,
-                        "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+                config={"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
             )
             fh.write('<div class="panel">')
             fh.write(f'<div class="panel-title">{title}</div>')
@@ -428,9 +450,14 @@ def evaluate_model(
 
     # ── 1. Read-architecture accuracy ──
     fig_arch, df_arch = _plot_architecture_accuracy(
-        expected_fragments, structure_names, valid_df, invalid_df,
+        expected_fragments,
+        structure_names,
+        valid_df,
+        invalid_df,
     )
-    _write_tsv_with_metadata(df_arch, os.path.join(output_dir, f"{model_name}_architecture_accuracy.tsv"), model_name, __version__)
+    _write_tsv_with_metadata(
+        df_arch, os.path.join(output_dir, f"{model_name}_architecture_accuracy.tsv"), model_name, __version__
+    )
 
     arch_caption = (
         "<b>Structural filtering accuracy</b> (left) shows the fraction of single-fragment reads "
@@ -464,17 +491,16 @@ def evaluate_model(
             except (ValueError, AttributeError):
                 continue
             read_seq = row.get("read", "")
-            gt_segs_list.append(
-                _extract_gt_segment_sequences(gt_labels[idx], read_seq, seq_order)
-            )
-            pred_segs_list.append(
-                _extract_pred_segment_sequences(row.to_dict(), seg_columns, read_seq)
-            )
+            gt_segs_list.append(_extract_gt_segment_sequences(gt_labels[idx], read_seq, seq_order))
+            pred_segs_list.append(_extract_pred_segment_sequences(row.to_dict(), seg_columns, read_seq))
 
     if gt_segs_list:
         df_edit = _compute_edit_distances(gt_segs_list, pred_segs_list, seq_order)
         _write_tsv_with_metadata(
-            df_edit, os.path.join(output_dir, f"{model_name}_segment_edit_distance.tsv"), model_name, __version__,
+            df_edit,
+            os.path.join(output_dir, f"{model_name}_segment_edit_distance.tsv"),
+            model_name,
+            __version__,
         )
 
         n_reads = len(gt_segs_list)
@@ -482,7 +508,8 @@ def evaluate_model(
 
         # Side-by-side box plots: raw (left) and normalized (right)
         fig_edit = make_subplots(
-            rows=1, cols=2,
+            rows=1,
+            cols=2,
             subplot_titles=["<b>Raw Edit Distance (bp)</b>", "<b>Normalized Edit Distance</b>"],
             shared_yaxes=True,
             horizontal_spacing=0.08,
@@ -510,31 +537,49 @@ def evaluate_model(
                 lower = max(mn, q1 - 1.5 * iqr)
                 upper = min(mx, q3 + 1.5 * iqr)
 
-                fig_edit.add_trace(go.Box(
-                    y=[seg], q1=[q1], median=[median], q3=[q3],
-                    lowerfence=[lower], upperfence=[upper],
-                    orientation="h", name=seg,
-                    marker=dict(color=_PLOT_COLOR, opacity=0.85),
-                    line=dict(color=_PLOT_COLOR),
-                    fillcolor=_PLOT_COLOR, opacity=0.85,
-                    showlegend=False, hoverinfo="skip",
-                ), row=1, col=col_idx)
-                fig_edit.add_trace(go.Scatter(
-                    x=[median], y=[seg], mode="markers",
-                    marker=dict(size=12, opacity=0),
-                    showlegend=False,
-                    hovertemplate=(
-                        f"<b>{seg}</b><br>"
-                        f"Median: {median:,.2f}<br>"
-                        f"Q1: {q1:,.2f}<br>Q3: {q3:,.2f}<br>"
-                        f"Lower fence: {lower:,.2f}<br>Upper fence: {upper:,.2f}<br>"
-                        f"n = {n:,}<extra></extra>"
+                fig_edit.add_trace(
+                    go.Box(
+                        y=[seg],
+                        q1=[q1],
+                        median=[median],
+                        q3=[q3],
+                        lowerfence=[lower],
+                        upperfence=[upper],
+                        orientation="h",
+                        name=seg,
+                        marker=dict(color=_PLOT_COLOR, opacity=0.85),
+                        line=dict(color=_PLOT_COLOR),
+                        fillcolor=_PLOT_COLOR,
+                        opacity=0.85,
+                        showlegend=False,
+                        hoverinfo="skip",
                     ),
-                ), row=1, col=col_idx)
+                    row=1,
+                    col=col_idx,
+                )
+                fig_edit.add_trace(
+                    go.Scatter(
+                        x=[median],
+                        y=[seg],
+                        mode="markers",
+                        marker=dict(size=12, opacity=0),
+                        showlegend=False,
+                        hovertemplate=(
+                            f"<b>{seg}</b><br>"
+                            f"Median: {median:,.2f}<br>"
+                            f"Q1: {q1:,.2f}<br>Q3: {q3:,.2f}<br>"
+                            f"Lower fence: {lower:,.2f}<br>Upper fence: {upper:,.2f}<br>"
+                            f"n = {n:,}<extra></extra>"
+                        ),
+                    ),
+                    row=1,
+                    col=col_idx,
+                )
 
         fig_edit.update_layout(
             height=max(350, 50 * len(segments) + 100),
-            plot_bgcolor="white", paper_bgcolor="white",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
         )
         fig_edit.update_xaxes(tickfont_size=13, gridcolor="#f0f0f0")
         fig_edit.update_yaxes(tickfont_size=13, gridcolor="#f0f0f0")
@@ -572,9 +617,7 @@ def evaluate_model(
             read_length = int(row.get("read_length", 0))
             if read_length == 0:
                 continue
-            pred_labels_list.append(
-                _reconstruct_per_base_labels(row.to_dict(), seg_columns, read_length)
-            )
+            pred_labels_list.append(_reconstruct_per_base_labels(row.to_dict(), seg_columns, read_length))
             gt_labels_matched.append(gt_labels[idx][:read_length])
 
         if pred_labels_list:
@@ -582,8 +625,10 @@ def evaluate_model(
             if result[0] is not None:
                 fig_cls, df_cls, html_table = result
                 _write_tsv_with_metadata(
-                    df_cls, os.path.join(output_dir, f"{model_name}_classification_report.tsv"),
-                    model_name, __version__,
+                    df_cls,
+                    os.path.join(output_dir, f"{model_name}_classification_report.tsv"),
+                    model_name,
+                    __version__,
                 )
 
                 cls_caption = (
@@ -602,10 +647,7 @@ def evaluate_model(
                 weighted = df_cls[df_cls["segment"] == "weighted avg"]
                 if not weighted.empty:
                     w = weighted.iloc[0]
-                    logger.info(
-                        f"Weighted avg: P={w['precision']:.4f}, R={w['recall']:.4f}, "
-                        f"F1={w['f1_score']:.4f}"
-                    )
+                    logger.info(f"Weighted avg: P={w['precision']:.4f}, R={w['recall']:.4f}, F1={w['f1_score']:.4f}")
 
     else:
         logger.warning("No matched single-fragment reads for segment metrics computation")

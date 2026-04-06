@@ -28,6 +28,7 @@ def evaluate_model_wrap(
     max_read_length,
     gpu_mem,
     target_tokens,
+    token_cap_above,
     vram_headroom,
     min_batch_size,
     max_batch_size,
@@ -176,17 +177,32 @@ def evaluate_model_wrap(
         chunk_sizes = [reads_per_chunk] * num_chunks
         total_assigned = reads_per_chunk * num_chunks
         if total_assigned > num_reads:
-            chunk_sizes[-1] -= (total_assigned - num_reads)
+            chunk_sizes[-1] -= total_assigned - num_reads
 
         worker_args = []
         start_idx = 0
         for chunk_idx, chunk_n_reads in enumerate(chunk_sizes):
             fasta_path = os.path.join(fasta_dir, f"assessment_reads_{chunk_idx}.fasta")
-            worker_args.append((
-                chunk_n_reads, length_range, mismatch_rate, insertion_rate, deletion_rate,
-                polyT_error_rate, max_insertions, assessment_structs, transcriptome_seqs,
-                rc, max_trunc_5p, max_trunc_3p, min_spacer, max_spacer, fasta_path, start_idx,
-            ))
+            worker_args.append(
+                (
+                    chunk_n_reads,
+                    length_range,
+                    mismatch_rate,
+                    insertion_rate,
+                    deletion_rate,
+                    polyT_error_rate,
+                    max_insertions,
+                    assessment_structs,
+                    transcriptome_seqs,
+                    rc,
+                    max_trunc_5p,
+                    max_trunc_3p,
+                    min_spacer,
+                    max_spacer,
+                    fasta_path,
+                    start_idx,
+                )
+            )
             start_idx += chunk_n_reads * (2 if rc else 1)
 
         total_expected = sum(cs * (2 if rc else 1) for cs in chunk_sizes)
@@ -219,12 +235,14 @@ def evaluate_model_wrap(
         # Save GT metadata
         gt_records = []
         for i in range(len(all_labels)):
-            gt_records.append({
-                "ReadName": f"assess_{i}",
-                "gt_labels": json.dumps(all_labels[i]),
-                "expected_fragments": all_expected_fragments[i],
-                "structure_type": all_structure_names[i],
-            })
+            gt_records.append(
+                {
+                    "ReadName": f"assess_{i}",
+                    "gt_labels": json.dumps(all_labels[i]),
+                    "expected_fragments": all_expected_fragments[i],
+                    "structure_type": all_structure_names[i],
+                }
+            )
         gt_df = pl.DataFrame(gt_records)
         gt_df = gt_df.with_columns(pl.lit(__version__).alias("tranquillyzer_version"))
         gt_df = gt_df.with_columns(pl.lit(model_name).alias("model_name"))
@@ -238,10 +256,16 @@ def evaluate_model_wrap(
     else:
         logger.info("Preprocessing assessment reads into length-binned parquets")
         preprocess_cmd = [
-            sys.executable, "-m", "main", "preprocess",
-            fasta_dir, output_dir,
-            "--bin-size", str(bin_size),
-            "--threads", str(threads),
+            sys.executable,
+            "-m",
+            "main",
+            "preprocess",
+            fasta_dir,
+            output_dir,
+            "--bin-size",
+            str(bin_size),
+            "--threads",
+            str(threads),
         ]
         subprocess.run(preprocess_cmd, check=True)
 
@@ -252,23 +276,36 @@ def evaluate_model_wrap(
     else:
         logger.info("Running annotation pipeline on assessment reads")
         annotate_cmd = [
-            sys.executable, "-m", "main", "annotate-reads",
+            sys.executable,
+            "-m",
+            "main",
+            "annotate-reads",
             output_dir,
-            "--model-name", model_name,
-            "--models-dir", model_dir,
-            "--preprocess-dir", output_dir,
+            "--model-name",
+            model_name,
+            "--models-dir",
+            model_dir,
+            "--preprocess-dir",
+            output_dir,
             "--split-concatenated",
-            "--threads", str(threads),
+            "--threads",
+            str(threads),
         ]
         if seq_orders_file:
             annotate_cmd += ["--seq-order-file", seq_orders_file]
         if gpu_mem:
             annotate_cmd += ["--gpu-mem", str(gpu_mem)]
         annotate_cmd += [
-            "--target-tokens", str(target_tokens),
-            "--vram-headroom", str(vram_headroom),
-            "--min-batch-size", str(min_batch_size),
-            "--max-batch-size", str(max_batch_size),
+            "--target-tokens",
+            str(target_tokens),
+            "--token-cap-above",
+            str(token_cap_above),
+            "--vram-headroom",
+            str(vram_headroom),
+            "--min-batch-size",
+            str(min_batch_size),
+            "--max-batch-size",
+            str(max_batch_size),
         ]
         subprocess.run(annotate_cmd, check=True)
 

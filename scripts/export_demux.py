@@ -102,8 +102,17 @@ def _write_from_demux_columns(df, output_fmt, demuxed_path, ambiguous_path):
                 target.write(f"{header}\n{seq}\n")
 
 
-def _write_corrected_demux(rows, output_fmt, demuxed_path, ambiguous_path, strand, barcode_columns,
-                           include_barcode_quals=False, include_polya=False, gzipped=False):
+def _write_corrected_demux(
+    rows,
+    output_fmt,
+    demuxed_path,
+    ambiguous_path,
+    strand,
+    barcode_columns,
+    include_barcode_quals=False,
+    include_polya=False,
+    gzipped=False,
+):
     """Write demuxed reads from corrected annotations with full whitelist-style headers.
 
     Parameters
@@ -206,8 +215,17 @@ def _write_corrected_demux(rows, output_fmt, demuxed_path, ambiguous_path, stran
                 target.write(f"{header}\n{sequence_out}\n")
 
 
-def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_path, strand, barcode_columns,
-                                   include_barcode_quals=False, include_polya=False, gzipped=False):
+def _write_corrected_demux_polars(
+    chunk,
+    output_fmt,
+    demuxed_path,
+    ambiguous_path,
+    strand,
+    barcode_columns,
+    include_barcode_quals=False,
+    include_polya=False,
+    gzipped=False,
+):
     """Fully vectorized demux writer using polars expressions (no Python row loop).
 
     All string slicing, reverse complement, and header assembly run in polars/Rust.
@@ -223,7 +241,10 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
     # --- Helper: parse comma-separated coordinate column → first int ---
     def _pc(col_name):
         return (
-            pl.col(col_name).cast(pl.Utf8).str.split(",").list.first()
+            pl.col(col_name)
+            .cast(pl.Utf8)
+            .str.split(",")
+            .list.first()
             .str.strip_chars()
             .replace(["", "None", "nan", "NaN"], None)
             .cast(pl.Int64, strict=False)
@@ -247,8 +268,12 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
     if has_umi:
         coord_exprs += [_pc("UMI_Starts").alias("_us"), _pc("UMI_Ends").alias("_ue")]
     if include_polya:
-        for col, alias in [("polyA_Starts", "_pas"), ("polyA_Ends", "_pae"),
-                           ("polyT_Starts", "_pts"), ("polyT_Ends", "_pte")]:
+        for col, alias in [
+            ("polyA_Starts", "_pas"),
+            ("polyA_Ends", "_pae"),
+            ("polyT_Starts", "_pts"),
+            ("polyT_Ends", "_pte"),
+        ]:
             if col in chunk.columns:
                 coord_exprs.append(_pc(col).alias(alias))
     if include_barcode_quals:
@@ -262,16 +287,17 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
 
     # --- 2. Filter valid cDNA rows ---
     chunk = chunk.filter(
-        pl.col("_cs").is_not_null() & pl.col("_ce").is_not_null()
-        & (pl.col("_ce") > pl.col("_cs")) & pl.col("read").is_not_null()
+        pl.col("_cs").is_not_null()
+        & pl.col("_ce").is_not_null()
+        & (pl.col("_ce") > pl.col("_cs"))
+        & pl.col("read").is_not_null()
     )
     if chunk.height == 0:
         return
 
     # --- 3. Slice sequences (vectorized str.slice in Rust) ---
-    needs_rc = (
-        ((pl.col("orientation") == "-") & pl.lit(strand == "fwd"))
-        | ((pl.col("orientation") == "+") & pl.lit(strand == "rev"))
+    needs_rc = ((pl.col("orientation") == "-") & pl.lit(strand == "fwd")) | (
+        (pl.col("orientation") == "+") & pl.lit(strand == "rev")
     )
 
     cDNA_raw = pl.col("read").str.slice(pl.col("_cs"), pl.col("_ce") - pl.col("_cs"))
@@ -282,8 +308,10 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
     if has_umi:
         umi_valid = pl.col("_us").is_not_null() & pl.col("_ue").is_not_null() & (pl.col("_ue") > pl.col("_us"))
         umi_raw = pl.col("read").str.slice(pl.col("_us"), pl.col("_ue") - pl.col("_us"))
-        umi_final = pl.when(umi_valid & needs_rc).then(_rc_expr(umi_raw)).otherwise(
-            pl.when(umi_valid).then(umi_raw).otherwise(pl.lit(""))
+        umi_final = (
+            pl.when(umi_valid & needs_rc)
+            .then(_rc_expr(umi_raw))
+            .otherwise(pl.when(umi_valid).then(umi_raw).otherwise(pl.lit("")))
         )
         chunk = chunk.with_columns(umi_final.alias("_umi"))
     else:
@@ -292,12 +320,22 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
     # PolyA
     if include_polya:
         # Coalesce polyA/polyT coordinates
-        pa_s = pl.coalesce([pl.col(c) for c in ["_pas", "_pts"] if c in chunk.columns]) if any(c in chunk.columns for c in ["_pas", "_pts"]) else pl.lit(None, dtype=pl.Int64)
-        pa_e = pl.coalesce([pl.col(c) for c in ["_pae", "_pte"] if c in chunk.columns]) if any(c in chunk.columns for c in ["_pae", "_pte"]) else pl.lit(None, dtype=pl.Int64)
+        pa_s = (
+            pl.coalesce([pl.col(c) for c in ["_pas", "_pts"] if c in chunk.columns])
+            if any(c in chunk.columns for c in ["_pas", "_pts"])
+            else pl.lit(None, dtype=pl.Int64)
+        )
+        pa_e = (
+            pl.coalesce([pl.col(c) for c in ["_pae", "_pte"] if c in chunk.columns])
+            if any(c in chunk.columns for c in ["_pae", "_pte"])
+            else pl.lit(None, dtype=pl.Int64)
+        )
         polya_valid = pa_s.is_not_null() & pa_e.is_not_null() & (pa_e > pa_s)
         polya_raw = pl.col("read").str.slice(pa_s, pa_e - pa_s)
-        polya_seq = pl.when(polya_valid & needs_rc).then(_rc_expr(polya_raw)).otherwise(
-            pl.when(polya_valid).then(polya_raw).otherwise(pl.lit(""))
+        polya_seq = (
+            pl.when(polya_valid & needs_rc)
+            .then(_rc_expr(polya_raw))
+            .otherwise(pl.when(polya_valid).then(polya_raw).otherwise(pl.lit("")))
         )
         chunk = chunk.with_columns(polya_seq.alias("_polya"))
         chunk = chunk.with_columns(pl.concat_str([pl.col("_cDNA"), pl.col("_polya")]).alias("_seq_out"))
@@ -316,12 +354,12 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
     if len(bc_parts) == 1:
         chunk = chunk.with_columns(bc_parts[0].alias("_bc_str"))
     else:
-        chunk = chunk.with_columns(
-            pl.concat_str(bc_parts, separator=";").alias("_bc_str")
-        )
+        chunk = chunk.with_columns(pl.concat_str(bc_parts, separator=";").alias("_bc_str"))
 
     # --- 5. Build cell_id string ---
-    cell_id_col = pl.col("cell_id").cast(pl.Utf8).fill_null("ambiguous") if "cell_id" in chunk.columns else pl.lit("ambiguous")
+    cell_id_col = (
+        pl.col("cell_id").cast(pl.Utf8).fill_null("ambiguous") if "cell_id" in chunk.columns else pl.lit("ambiguous")
+    )
     chunk = chunk.with_columns(cell_id_col.alias("_cid"))
 
     # UMI name/field parts
@@ -330,8 +368,12 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
     umi_field = pl.when(has_umi_expr).then(pl.concat_str([pl.lit("|UMI:"), pl.col("_umi")])).otherwise(pl.lit(""))
     chunk = chunk.with_columns(umi_name.alias("_umi_name"), umi_field.alias("_umi_field"))
 
-    read_name_col = pl.col("ReadName").cast(pl.Utf8).fill_null("read") if "ReadName" in chunk.columns else pl.lit("read")
-    orientation_col = pl.col("orientation").cast(pl.Utf8).fill_null("NA") if "orientation" in chunk.columns else pl.lit("NA")
+    read_name_col = (
+        pl.col("ReadName").cast(pl.Utf8).fill_null("read") if "ReadName" in chunk.columns else pl.lit("read")
+    )
+    orientation_col = (
+        pl.col("orientation").cast(pl.Utf8).fill_null("NA") if "orientation" in chunk.columns else pl.lit("NA")
+    )
 
     # --- 6. Build records ---
     if output_fmt == "fastq":
@@ -345,12 +387,22 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
         if include_polya and "_polya" in chunk.columns:
             # Recompute polyA quality
             if bq_col in chunk.columns:
-                pa_s_q = pl.coalesce([pl.col(c) for c in ["_pas", "_pts"] if c in chunk.columns]) if any(c in chunk.columns for c in ["_pas", "_pts"]) else pl.lit(None, dtype=pl.Int64)
-                pa_e_q = pl.coalesce([pl.col(c) for c in ["_pae", "_pte"] if c in chunk.columns]) if any(c in chunk.columns for c in ["_pae", "_pte"]) else pl.lit(None, dtype=pl.Int64)
+                pa_s_q = (
+                    pl.coalesce([pl.col(c) for c in ["_pas", "_pts"] if c in chunk.columns])
+                    if any(c in chunk.columns for c in ["_pas", "_pts"])
+                    else pl.lit(None, dtype=pl.Int64)
+                )
+                pa_e_q = (
+                    pl.coalesce([pl.col(c) for c in ["_pae", "_pte"] if c in chunk.columns])
+                    if any(c in chunk.columns for c in ["_pae", "_pte"])
+                    else pl.lit(None, dtype=pl.Int64)
+                )
                 pq_valid = pa_s_q.is_not_null() & pa_e_q.is_not_null() & (pa_e_q > pa_s_q)
-                polya_qual = pl.when(pq_valid).then(
-                    pl.col(bq_col).cast(pl.Utf8).str.slice(pa_s_q, pa_e_q - pa_s_q)
-                ).otherwise(pl.lit(""))
+                polya_qual = (
+                    pl.when(pq_valid)
+                    .then(pl.col(bq_col).cast(pl.Utf8).str.slice(pa_s_q, pa_e_q - pa_s_q))
+                    .otherwise(pl.lit(""))
+                )
                 qual_out = pl.concat_str([cDNA_qual, polya_qual])
             else:
                 qual_out = cDNA_qual
@@ -365,22 +417,48 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
                 bs_col = f"_{bc}_bs"
                 be_col = f"_{bc}_be"
                 if bs_col in chunk.columns and be_col in chunk.columns:
-                    bc_q_valid = pl.col(bs_col).is_not_null() & pl.col(be_col).is_not_null() & (pl.col(be_col) > pl.col(bs_col))
-                    bc_q_slice = pl.when(bc_q_valid).then(
-                        pl.concat_str([pl.lit(f"{bc}:"), pl.col(bq_col).cast(pl.Utf8).str.slice(pl.col(bs_col), pl.col(be_col) - pl.col(bs_col))])
-                    ).otherwise(pl.lit(None))
+                    bc_q_valid = (
+                        pl.col(bs_col).is_not_null() & pl.col(be_col).is_not_null() & (pl.col(be_col) > pl.col(bs_col))
+                    )
+                    bc_q_slice = (
+                        pl.when(bc_q_valid)
+                        .then(
+                            pl.concat_str(
+                                [
+                                    pl.lit(f"{bc}:"),
+                                    pl.col(bq_col)
+                                    .cast(pl.Utf8)
+                                    .str.slice(pl.col(bs_col), pl.col(be_col) - pl.col(bs_col)),
+                                ]
+                            )
+                        )
+                        .otherwise(pl.lit(None))
+                    )
                     bq_parts.append(bc_q_slice)
             if has_umi:
-                umi_q_valid = pl.col("_us").is_not_null() & pl.col("_ue").is_not_null() & (pl.col("_ue") > pl.col("_us"))
-                umi_q_slice = pl.when(umi_q_valid).then(
-                    pl.concat_str([pl.lit("UMI:"), pl.col(bq_col).cast(pl.Utf8).str.slice(pl.col("_us"), pl.col("_ue") - pl.col("_us"))])
-                ).otherwise(pl.lit(None))
+                umi_q_valid = (
+                    pl.col("_us").is_not_null() & pl.col("_ue").is_not_null() & (pl.col("_ue") > pl.col("_us"))
+                )
+                umi_q_slice = (
+                    pl.when(umi_q_valid)
+                    .then(
+                        pl.concat_str(
+                            [
+                                pl.lit("UMI:"),
+                                pl.col(bq_col).cast(pl.Utf8).str.slice(pl.col("_us"), pl.col("_ue") - pl.col("_us")),
+                            ]
+                        )
+                    )
+                    .otherwise(pl.lit(None))
+                )
                 bq_parts.append(umi_q_slice)
             if bq_parts:
                 bq_joined = pl.concat_str([p.fill_null("") for p in bq_parts], separator=";")
-                bq_suffix = pl.when(bq_joined.str.len_chars() > 0).then(
-                    pl.concat_str([pl.lit("|BQ:"), bq_joined])
-                ).otherwise(pl.lit(""))
+                bq_suffix = (
+                    pl.when(bq_joined.str.len_chars() > 0)
+                    .then(pl.concat_str([pl.lit("|BQ:"), bq_joined]))
+                    .otherwise(pl.lit(""))
+                )
             else:
                 bq_suffix = pl.lit("")
         else:
@@ -388,25 +466,49 @@ def _write_corrected_demux_polars(chunk, output_fmt, demuxed_path, ambiguous_pat
         chunk = chunk.with_columns(bq_suffix.alias("_bq_sfx"))
 
         # FASTQ record: @header\nsequence\n+\nquality\n
-        record = pl.concat_str([
-            pl.lit("@"), read_name_col, pl.lit("_"), pl.col("_cid"), pl.col("_umi_name"),
-            pl.lit(" cell_id:"), pl.col("_cid"),
-            pl.lit("|Barcodes:"), pl.col("_bc_str"),
-            pl.col("_umi_field"),
-            pl.lit("|orientation:"), orientation_col,
-            pl.col("_bq_sfx"),
-            pl.lit("\n"), pl.col("_seq_out"), pl.lit("\n+\n"), pl.col("_qual"), pl.lit("\n"),
-        ])
+        record = pl.concat_str(
+            [
+                pl.lit("@"),
+                read_name_col,
+                pl.lit("_"),
+                pl.col("_cid"),
+                pl.col("_umi_name"),
+                pl.lit(" cell_id:"),
+                pl.col("_cid"),
+                pl.lit("|Barcodes:"),
+                pl.col("_bc_str"),
+                pl.col("_umi_field"),
+                pl.lit("|orientation:"),
+                orientation_col,
+                pl.col("_bq_sfx"),
+                pl.lit("\n"),
+                pl.col("_seq_out"),
+                pl.lit("\n+\n"),
+                pl.col("_qual"),
+                pl.lit("\n"),
+            ]
+        )
     else:
         # FASTA record: >header\nsequence\n
-        record = pl.concat_str([
-            pl.lit(">"), read_name_col, pl.lit("_"), pl.col("_cid"), pl.col("_umi_name"),
-            pl.lit(" cell_id:"), pl.col("_cid"),
-            pl.lit("|Barcodes:"), pl.col("_bc_str"),
-            pl.col("_umi_field"),
-            pl.lit("|orientation:"), orientation_col,
-            pl.lit("\n"), pl.col("_seq_out"), pl.lit("\n"),
-        ])
+        record = pl.concat_str(
+            [
+                pl.lit(">"),
+                read_name_col,
+                pl.lit("_"),
+                pl.col("_cid"),
+                pl.col("_umi_name"),
+                pl.lit(" cell_id:"),
+                pl.col("_cid"),
+                pl.lit("|Barcodes:"),
+                pl.col("_bc_str"),
+                pl.col("_umi_field"),
+                pl.lit("|orientation:"),
+                orientation_col,
+                pl.lit("\n"),
+                pl.col("_seq_out"),
+                pl.lit("\n"),
+            ]
+        )
 
     chunk = chunk.with_columns(record.alias("_record"))
 

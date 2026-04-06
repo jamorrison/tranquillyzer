@@ -146,8 +146,12 @@ def pick_per_replica_batch_by_tokens(seq_len, target_tokens_per_replica=1_200_00
 
 
 def estimate_bytes_per_token(
-    embedding_dim=128, conv_filters=128, conv_layers=3,
-    lstm_units=96, bidirectional=True, num_labels=10,
+    embedding_dim=128,
+    conv_filters=128,
+    conv_layers=3,
+    lstm_units=96,
+    bidirectional=True,
+    num_labels=10,
     overhead_factor=1.12,
 ):
     """Estimate GPU memory per token from model architecture params.
@@ -159,12 +163,12 @@ def estimate_bytes_per_token(
     cf = sum(conv_filters) if isinstance(conv_filters, list) else int(conv_filters) * int(conv_layers)
     lu = sum(lstm_units) if isinstance(lstm_units, list) else int(lstm_units)
     bpt = (
-        4                       # input int32
-        + embedding_dim * 4     # embedding
-        + cf * 4                # conv layer outputs
-        + lu * bidir * 4        # LSTM outputs
-        + lu * 4 * bidir * 4    # LSTM gate activations
-        + num_labels * 4        # CRF/output
+        4  # input int32
+        + embedding_dim * 4  # embedding
+        + cf * 4  # conv layer outputs
+        + lu * bidir * 4  # LSTM outputs
+        + lu * 4 * bidir * 4  # LSTM gate activations
+        + num_labels * 4  # CRF/output
     )
     return bpt * overhead_factor
 
@@ -237,8 +241,12 @@ def predict_with_backoff(model, build_dataset_fn, start_batch: int, min_batch: i
             ds = build_dataset_fn(bs)
             result = model.predict(ds, verbose=0)
             return result, bs, model
-        except (tf.errors.ResourceExhaustedError, tf.errors.CancelledError, tf.errors.InternalError,
-                tf.errors.UnknownError) as e:
+        except (
+            tf.errors.ResourceExhaustedError,
+            tf.errors.CancelledError,
+            tf.errors.InternalError,
+            tf.errors.UnknownError,
+        ) as e:
             last_err = e
             new_bs = max(int(min_batch), bs // 2)
             logger.warning(f"OOM at batch={bs}. Retrying with batch={new_bs}...")
@@ -481,7 +489,10 @@ def model_predictions(
                 model = build_model(model_path, conv_filters, num_labels, strategy=strategy)
                 using_strategy = True
             chunk_predictions, model = annotate_new_data_parallel(
-                X_new_padded, model, global_bs, min_batch=min_batch,
+                X_new_padded,
+                model,
+                global_bs,
+                min_batch=min_batch,
                 rebuild_model_fn=_rebuild_model,
             )
         else:

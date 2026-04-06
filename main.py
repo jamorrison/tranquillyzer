@@ -3,6 +3,7 @@ import typer
 from typing_extensions import Annotated
 import logging
 import os
+from utils import get_version
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -34,9 +35,6 @@ logger = setup_logger()
 # =========================
 # versioning and app setup
 # =========================
-
-
-from utils import get_version
 
 
 app = typer.Typer(rich_markup_mode="rich")
@@ -72,9 +70,7 @@ _HELP_TOKEN_CAP_ABOVE = (
 
 _HELP_MODEL_NAME = "Base model name."
 
-_HELP_SEQ_ORDER_FILE = (
-    "Path to [cyan]seq_orders.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
-)
+_HELP_SEQ_ORDER_FILE = "Path to [cyan]seq_orders.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan]."
 
 _HELP_MODELS_DIR = (
     "Directory containing [cyan]<model>.h5[/cyan] and"
@@ -330,10 +326,15 @@ def annotate_reads(
     vram_headroom: float = typer.Option(
         0.35, help="Fraction of GPU memory reserved as headroom to reduce OOM risk.", rich_help_panel="GPU & Batching"
     ),
-    min_batch_size: int = typer.Option(1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"),
-    max_batch_size: int = typer.Option(8192, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"),
+    min_batch_size: int = typer.Option(
+        1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"
+    ),
+    max_batch_size: int = typer.Option(
+        8192, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"
+    ),
     whitelist_file: str = typer.Option(
-        None, "--whitelist-file",
+        None,
+        "--whitelist-file",
         help="Barcode whitelist TSV (one barcode per line). Required when [cyan]--run-barcode-correction[/cyan] is enabled.",
         rich_help_panel="Barcode Correction",
     ),
@@ -429,8 +430,18 @@ def annotate_reads(
         ),
         rich_help_panel="Demultiplexing",
     ),
-    threads: int = typer.Option(12, help="CPU threads for barcode correction, demux, and post-processing.", rich_help_panel="General"),
-    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    threads: int = typer.Option(
+        12, help="CPU threads for barcode correction, demux, and post-processing.", rich_help_panel="General"
+    ),
+    help: bool = typer.Option(
+        None,
+        "--help",
+        "-h",
+        help="Show this message and exit.",
+        is_eager=True,
+        callback=_help_callback,
+        rich_help_panel="General",
+    ),
 ):
     """
     Annotation pipeline with optional barcode correction and demultiplexing.
@@ -517,7 +528,9 @@ def annotate_reads(
 def barcode_correct(
     input_dir: str,
     whitelist_file: str,
-    output_dir: str = typer.Option(None, help="Output directory. Defaults to [cyan]input_dir[/cyan].", rich_help_panel="General"),
+    output_dir: str = typer.Option(
+        None, help="Output directory. Defaults to [cyan]input_dir[/cyan].", rich_help_panel="General"
+    ),
     input_file: str = typer.Option(
         None,
         help=(
@@ -576,7 +589,15 @@ def barcode_correct(
         rich_help_panel="Processing",
     ),
     threads: int = typer.Option(12, help="CPU threads for parallel barcode correction.", rich_help_panel="General"),
-    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    help: bool = typer.Option(
+        None,
+        "--help",
+        "-h",
+        help="Show this message and exit.",
+        is_eager=True,
+        callback=_help_callback,
+        rich_help_panel="General",
+    ),
 ):
     """
     Correct barcode segments on annotated valid reads, with optional concurrent demultiplexing.
@@ -688,7 +709,9 @@ def demux_reads(
             " or falls back to [cyan]<input_dir>/annotation_metadata/annotations_valid.parquet[/cyan] for bulk export."
         ),
     ),
-    output_fmt: str = typer.Option("fasta", help="Output format for demultiplexed reads: [cyan]fasta[/cyan] or [cyan]fastq[/cyan]."),
+    output_fmt: str = typer.Option(
+        "fasta", help="Output format for demultiplexed reads: [cyan]fasta[/cyan] or [cyan]fastq[/cyan]."
+    ),
 ):
     """
     Write FASTA/FASTQ from annotations.
@@ -719,7 +742,15 @@ def qc_metrics(
         help="Number of parallel threads for computing independent QC metrics.",
         rich_help_panel="General",
     ),
-    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    help: bool = typer.Option(
+        None,
+        "--help",
+        "-h",
+        help="Show this message and exit.",
+        is_eager=True,
+        callback=_help_callback,
+        rich_help_panel="General",
+    ),
     output_dir: str = typer.Option(
         None,
         help="Output directory for QC files. Defaults to [cyan]<input_dir>/qc_metrics/[/cyan].",
@@ -953,8 +984,7 @@ def split_bam(
     ),
     max_open_cb_writers: int = typer.Option(
         128,
-        help="Max per-CB output BAM writers kept open per process (LRU cache).\n\n"
-        "Prevents 'too many open files'.",
+        help="Max per-CB output BAM writers kept open per process (LRU cache).\n\nPrevents 'too many open files'.",
     ),
     filter_secondary: bool = typer.Option(False, help="Drop secondary alignments."),
     filter_supplementary: bool = typer.Option(False, help="Drop supplementary alignments."),
@@ -1016,13 +1046,25 @@ def simulate_data(
     model_name: str,
     output_dir: str,
     threads: int = typer.Option(2, help="Number of CPU threads.", rich_help_panel="General"),
-    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    help: bool = typer.Option(
+        None,
+        "--help",
+        "-h",
+        help="Show this message and exit.",
+        is_eager=True,
+        callback=_help_callback,
+        rich_help_panel="General",
+    ),
     training_seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
     mismatch_rate: float = typer.Option(0.05, help="Base substitution probability.", rich_help_panel="Error Profile"),
     insertion_rate: float = typer.Option(0.05, help="Base insertion probability.", rich_help_panel="Error Profile"),
     deletion_rate: float = typer.Option(0.06, help="Base deletion probability.", rich_help_panel="Error Profile"),
-    polyT_error_rate: float = typer.Option(0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Error Profile"),
-    max_insertions: float = typer.Option(1, help="Maximum insertions allowed after a single base.", rich_help_panel="Error Profile"),
+    polyT_error_rate: float = typer.Option(
+        0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Error Profile"
+    ),
+    max_insertions: float = typer.Option(
+        1, help="Maximum insertions allowed after a single base.", rich_help_panel="Error Profile"
+    ),
     num_reads: int = typer.Option(50000, help="Number of reads to simulate.", rich_help_panel="Read Structure"),
     min_cDNA: int = typer.Option(100, help="Minimum cDNA segment length.", rich_help_panel="Read Structure"),
     max_cDNA: int = typer.Option(500, help="Maximum cDNA segment length.", rich_help_panel="Read Structure"),
@@ -1034,11 +1076,31 @@ def simulate_data(
         ),
         rich_help_panel="Read Structure",
     ),
-    transcriptome: str = typer.Option(None, help="Transcriptome FASTA. If omitted, random transcripts are generated.", rich_help_panel="Read Structure"),
-    max_trunc_5p: int = typer.Option(0, help="Max bases to truncate from 5' end when no random flank present. 0 disables.", rich_help_panel="Read Structure"),
-    max_trunc_3p: int = typer.Option(0, help="Max bases to truncate from 3' end when no random flank present. 0 disables.", rich_help_panel="Read Structure"),
-    min_spacer: int = typer.Option(0, help="Minimum length of random cDNA spacer between concatenated read fragments.", rich_help_panel="Read Structure"),
-    max_spacer: int = typer.Option(50, help="Maximum length of random cDNA spacer between concatenated read fragments.", rich_help_panel="Read Structure"),
+    transcriptome: str = typer.Option(
+        None,
+        help="Transcriptome FASTA. If omitted, random transcripts are generated.",
+        rich_help_panel="Read Structure",
+    ),
+    max_trunc_5p: int = typer.Option(
+        0,
+        help="Max bases to truncate from 5' end when no random flank present. 0 disables.",
+        rich_help_panel="Read Structure",
+    ),
+    max_trunc_3p: int = typer.Option(
+        0,
+        help="Max bases to truncate from 3' end when no random flank present. 0 disables.",
+        rich_help_panel="Read Structure",
+    ),
+    min_spacer: int = typer.Option(
+        0,
+        help="Minimum length of random cDNA spacer between concatenated read fragments.",
+        rich_help_panel="Read Structure",
+    ),
+    max_spacer: int = typer.Option(
+        50,
+        help="Maximum length of random cDNA spacer between concatenated read fragments.",
+        rich_help_panel="Read Structure",
+    ),
 ):
     """
     Generate synthetic labeled reads for training, and serialize to PKL.
@@ -1102,20 +1164,35 @@ def train_model(
     model_name: str,
     output_dir: str,
     threads: int = typer.Option(2, help="Number of CPU threads.", rich_help_panel="General"),
-    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    help: bool = typer.Option(
+        None,
+        "--help",
+        "-h",
+        help="Show this message and exit.",
+        is_eager=True,
+        callback=_help_callback,
+        rich_help_panel="General",
+    ),
     param_file: str = typer.Option(
-        None, help="Path to [cyan]training_params.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan].",
+        None,
+        help="Path to [cyan]training_params.yaml[/cyan]. Defaults to the bundled file in [cyan]utils/[/cyan].",
         rich_help_panel="Model",
     ),
     training_seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
-    num_val_reads: int = typer.Option(20, help="Number of validation reads to synthesize.", rich_help_panel="Validation Data"),
+    num_val_reads: int = typer.Option(
+        20, help="Number of validation reads to synthesize.", rich_help_panel="Validation Data"
+    ),
     mismatch_rate: float = typer.Option(0.05, help="Base substitution probability.", rich_help_panel="Validation Data"),
     insertion_rate: float = typer.Option(0.05, help="Base insertion probability.", rich_help_panel="Validation Data"),
     deletion_rate: float = typer.Option(0.06, help="Base deletion probability.", rich_help_panel="Validation Data"),
     min_cDNA: int = typer.Option(100, help="Minimum cDNA segment length.", rich_help_panel="Validation Data"),
     max_cDNA: int = typer.Option(500, help="Maximum cDNA segment length.", rich_help_panel="Validation Data"),
-    polyT_error_rate: float = typer.Option(0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Validation Data"),
-    max_insertions: float = typer.Option(2, help="Maximum insertions allowed after a single base.", rich_help_panel="Validation Data"),
+    polyT_error_rate: float = typer.Option(
+        0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Validation Data"
+    ),
+    max_insertions: float = typer.Option(
+        2, help="Maximum insertions allowed after a single base.", rich_help_panel="Validation Data"
+    ),
     rc: bool = typer.Option(
         True,
         help=(
@@ -1125,13 +1202,21 @@ def train_model(
         rich_help_panel="Validation Data",
     ),
     transcriptome: str = typer.Option(
-        None, help="Transcriptome FASTA. If omitted, random transcripts are generated.", rich_help_panel="Validation Data"
+        None,
+        help="Transcriptome FASTA. If omitted, random transcripts are generated.",
+        rich_help_panel="Validation Data",
     ),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM, rich_help_panel="GPU & Batching")] = None,
     target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS, rich_help_panel="GPU & Batching")] = 1_200_000,
-    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory reserved as headroom to reduce OOM risk.", rich_help_panel="GPU & Batching"),
-    min_batch_size: int = typer.Option(1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"),
-    max_batch_size: int = typer.Option(2000, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"),
+    vram_headroom: float = typer.Option(
+        0.35, help="Fraction of GPU memory reserved as headroom to reduce OOM risk.", rich_help_panel="GPU & Batching"
+    ),
+    min_batch_size: int = typer.Option(
+        1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"
+    ),
+    max_batch_size: int = typer.Option(
+        2000, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"
+    ),
 ):
     """
     Grid-train model variants from parameter table and export artifacts.
@@ -1209,20 +1294,38 @@ def assess_model(
     model_dir: str,
     output_dir: str,
     threads: int = typer.Option(2, help="Number of CPU threads.", rich_help_panel="General"),
-    resume: bool = typer.Option(True, help="Resume from completed stages (simulation, preprocessing, annotation).", rich_help_panel="General"),
-    help: bool = typer.Option(None, "--help", "-h", help="Show this message and exit.", is_eager=True, callback=_help_callback, rich_help_panel="General"),
+    resume: bool = typer.Option(
+        True, help="Resume from completed stages (simulation, preprocessing, annotation).", rich_help_panel="General"
+    ),
+    help: bool = typer.Option(
+        None,
+        "--help",
+        "-h",
+        help="Show this message and exit.",
+        is_eager=True,
+        callback=_help_callback,
+        rich_help_panel="General",
+    ),
     seq_orders_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
-    num_reads: int = typer.Option(100, help="Number of assessment reads to simulate.", rich_help_panel="Read Structure"),
+    num_reads: int = typer.Option(
+        100, help="Number of assessment reads to simulate.", rich_help_panel="Read Structure"
+    ),
     concat_fraction: float = typer.Option(
-        None, help="Fraction of assessment reads that are concatenated. Overrides YAML proportions.", rich_help_panel="Read Structure",
+        None,
+        help="Fraction of assessment reads that are concatenated. Overrides YAML proportions.",
+        rich_help_panel="Read Structure",
     ),
     mismatch_rate: float = typer.Option(0.05, help="Base substitution probability.", rich_help_panel="Error Profile"),
     insertion_rate: float = typer.Option(0.05, help="Base insertion probability.", rich_help_panel="Error Profile"),
     deletion_rate: float = typer.Option(0.06, help="Base deletion probability.", rich_help_panel="Error Profile"),
     min_cDNA: int = typer.Option(100, help="Minimum cDNA segment length.", rich_help_panel="Read Structure"),
     max_cDNA: int = typer.Option(500, help="Maximum cDNA segment length.", rich_help_panel="Read Structure"),
-    polyT_error_rate: float = typer.Option(0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Error Profile"),
-    max_insertions: float = typer.Option(1, help="Maximum insertions allowed after a single base.", rich_help_panel="Error Profile"),
+    polyT_error_rate: float = typer.Option(
+        0.02, help="Error rate within polyT/polyA segments.", rich_help_panel="Error Profile"
+    ),
+    max_insertions: float = typer.Option(
+        1, help="Maximum insertions allowed after a single base.", rich_help_panel="Error Profile"
+    ),
     rc: bool = typer.Option(
         True,
         help=(
@@ -1232,13 +1335,33 @@ def assess_model(
         rich_help_panel="Read Structure",
     ),
     transcriptome: str = typer.Option(
-        None, help="Transcriptome FASTA. If omitted, random transcripts are generated.", rich_help_panel="Read Structure",
+        None,
+        help="Transcriptome FASTA. If omitted, random transcripts are generated.",
+        rich_help_panel="Read Structure",
     ),
-    max_trunc_5p: int = typer.Option(0, help="Max bases to truncate from 5' end when no random flank present. 0 disables.", rich_help_panel="Read Structure"),
-    max_trunc_3p: int = typer.Option(0, help="Max bases to truncate from 3' end when no random flank present. 0 disables.", rich_help_panel="Read Structure"),
-    min_spacer: int = typer.Option(0, help="Minimum length of random cDNA spacer between concatenated read fragments.", rich_help_panel="Read Structure"),
-    max_spacer: int = typer.Option(50, help="Maximum length of random cDNA spacer between concatenated read fragments.", rich_help_panel="Read Structure"),
-    bin_size: int = typer.Option(500, help="Bin width (bp) for length-binning assessment reads.", rich_help_panel="Read Structure"),
+    max_trunc_5p: int = typer.Option(
+        0,
+        help="Max bases to truncate from 5' end when no random flank present. 0 disables.",
+        rich_help_panel="Read Structure",
+    ),
+    max_trunc_3p: int = typer.Option(
+        0,
+        help="Max bases to truncate from 3' end when no random flank present. 0 disables.",
+        rich_help_panel="Read Structure",
+    ),
+    min_spacer: int = typer.Option(
+        0,
+        help="Minimum length of random cDNA spacer between concatenated read fragments.",
+        rich_help_panel="Read Structure",
+    ),
+    max_spacer: int = typer.Option(
+        50,
+        help="Maximum length of random cDNA spacer between concatenated read fragments.",
+        rich_help_panel="Read Structure",
+    ),
+    bin_size: int = typer.Option(
+        500, help="Bin width (bp) for length-binning assessment reads.", rich_help_panel="Read Structure"
+    ),
     max_read_length: int = typer.Option(
         None,
         help="Maximum total read length (bp). Caps cDNA length in concatenated structures to keep reads within this limit.",
@@ -1246,9 +1369,16 @@ def assess_model(
     ),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM, rich_help_panel="GPU & Batching")] = None,
     target_tokens: Annotated[int, typer.Option(help=_HELP_TARGET_TOKENS, rich_help_panel="GPU & Batching")] = 1_200_000,
-    vram_headroom: float = typer.Option(0.35, help="Fraction of GPU memory reserved as headroom to reduce OOM risk.", rich_help_panel="GPU & Batching"),
-    min_batch_size: int = typer.Option(1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"),
-    max_batch_size: int = typer.Option(2000, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"),
+    token_cap_above: Annotated[int, typer.Option(help=_HELP_TOKEN_CAP_ABOVE, rich_help_panel="GPU & Batching")] = 0,
+    vram_headroom: float = typer.Option(
+        0.35, help="Fraction of GPU memory reserved as headroom to reduce OOM risk.", rich_help_panel="GPU & Batching"
+    ),
+    min_batch_size: int = typer.Option(
+        1, help="Floor for batch size during inference.", rich_help_panel="GPU & Batching"
+    ),
+    max_batch_size: int = typer.Option(
+        2000, help="Ceiling for batch size during inference.", rich_help_panel="GPU & Batching"
+    ),
 ):
     """
     Assess a trained model's performance on synthetic reads.
@@ -1295,6 +1425,7 @@ def assess_model(
         max_read_length,
         gpu_mem,
         target_tokens,
+        token_cap_above,
         vram_headroom,
         min_batch_size,
         max_batch_size,

@@ -1,9 +1,10 @@
 ---
-title: Usage
+title: CLI Reference
 ---
 
-This page gives a detailed description of each component/subcommand of Tranquillyzer. For a quick overview of how to run
-Tranquillyzer, see the [Quick Start](quick_start.qmd) guide.
+This page provides a complete reference for all _Tranquillyzer_ commands and their options. For conceptual explanations
+and workflow guidance, see the [Pipeline Guide](pipeline_guide.qmd). For a quick overview, see the
+[Quick Start](quick_start.qmd) guide.
 
 # Input / Output
 
@@ -156,7 +157,7 @@ reads to their respective cells (i.e., demultiplexes) in a single step. It produ
 your dataset. Tranquillyzer uses CNN-LSTM-CRF models for annotation.
 
 Model files follow the naming convention: `<model_name>.h5`, `<model_name>_lbl_bin.pkl`,
-`<model_name>_params.yaml` (e.g., `10x3p_sc_ont_011.h5`).
+`<model_name>_params.yaml` (e.g., `10x3p_sc_ont_012.h5`).
 
 Currently available trained models can be downloaded from [this  Dropbox link](https://www.dropbox.com/scl/fo/3lms8n97bnufzqa4ausv9/AGkO3EVrL1ZgctwEwTK1mEA?rlkey=47m69a6smwsisdznbwu3jvjpu&st=253al7s3&dl=0)
 and should be placed in the `models/` directory within the cloned Tranquillyzer repository.
@@ -187,7 +188,7 @@ Required Arguments
 Optional Arguments
 
 - `--output-fmt TEXT`: Output format for demultiplexed reads: `fasta` or `fastq` (default: `fasta`)
-- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_011`)
+- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_012`)
 - `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--chunk-size INTEGER`: Base chunk size for processing, dynamically adjusts based on read length (default: 100000)
@@ -319,7 +320,7 @@ Required Arguments
 Optional Arguments
 
 - `--output-file TEXT`: Prefix for output file name. `.pdf` will be added automatically (default: `full_read_annots`)
-- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_011`)
+- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_012`)
 - `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--gpu-mem TEXT`: Total memory of the GPU in gigabytes (GB). For a single GPU or multiple GPUs with the same memory,

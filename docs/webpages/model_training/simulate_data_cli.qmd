@@ -3,31 +3,34 @@ title: "simulate-data CLI"
 page-navigation: true
 ---
 
-# Input Parameters to `simulate-data`
+The `simulate-data` command generates synthetic labeled reads for training. It builds reads according to the library
+structure defined in `seq_orders.yaml`, introduces sequencing errors, and outputs the reads and their per-base labels
+as pickle files in `{output_dir}/simulated_data/`.
 
-Careful tuning of the following parameters allows the simulation to match the empirical error profile of specific
-sequencing platforms or chemistries.
+For background on how reads are simulated and why, see [Read Structure Simulation](read_simulation.qmd) and
+[Sequencing Error Modeling](read_simulation.qmd#stage-2-sequencing-error-modeling).
 
-| CLI Option | Type | What It Controls | Default |
-|:-----------|:----:|:-----------------|:-------:|
-| `model_name`                 | TEXT  | Library model key defining segment order and motifs                      | required                        |
-| `output_dir`                 | TEXT  | Output directory for simulated data (simulated_data/)                    | required                        |
-| `--training-seq-orders-file` | TEXT  | Path to seq_orders.yaml defining segment order and sequences     | `utils/seq_orders.yaml` |
-| `--num-reads`                | INT   | Number of primary reads to simulate (before reverse-complement doubling) | 50000                           |
-| `--mismatch-rate`            | FLOAT | Base substitution probability during training read simulation            | 0.05                            |
-| `--insertion-rate`           | FLOAT | Base insertion probability during training read simulation               | 0.05                            |
-| `--deletion-rate`            | FLOAT | Base deletion probability during training read simulation                | 0.06                            |
-| `--min-cdna`                 | INT   | Minimum cDNA length used in training read simulation                     | 100                             |
-| `--max-cdna`                 | INT   | Maximum cDNA length used in training read simulation                     | 500                             |
-| `--polyt-error-rate`         | FLOAT | Error rate within polyA/polyT segments during training simulation        | 0.02                            |
-| `--max-insertions`           | INT   | Maximum number of insertions allowed after a single base                 | 1                               |
-| `--threads`                  | INT   | CPU threads used for training read simulation                            | 2                               |
-| `--rc` / `--no-rc`           | FLAG  | Include reverse-complemented reads (doubles training set size)           | `--rc`                          |
-| `--transcriptome`            | TEXT  | Transcriptome FASTA used for cDNA generation (else random transcripts)   | None                            |
-| `--invalid-fraction`         | FLOAT | Fraction of training reads generated as invalid/artifactual              | 0.3                             |
-| `--help`                     | FLAG  | Show help message                                                        | —                               |
+# Command Line Options
 
-# Example Use Case
+| CLI Option | Type | Default | What it controls | When to change it |
+|:-----------|:----:|:-------:|:-----------------|:------------------|
+| `model_name` | TEXT | required | Library model key defining segment order and motifs | Set to match your protocol |
+| `output_dir` | TEXT | required | Output directory (writes to `simulated_data/` subdirectory) | — |
+| `--training-seq-orders-file` | TEXT | `utils/seq_orders.yaml` | Library definition file specifying segment order and sequences | Only if using a custom file |
+| `--num-reads` | INT | 50,000 | Number of reads to simulate (before reverse-complement doubling) | Increase for more training data; decrease for quick tests |
+| `--mismatch-rate` | FLOAT | 0.05 | Base substitution probability | Match your sequencing platform's error profile |
+| `--insertion-rate` | FLOAT | 0.05 | Base insertion probability | Match your sequencing platform's error profile |
+| `--deletion-rate` | FLOAT | 0.06 | Base deletion probability | Match your sequencing platform's error profile |
+| `--min-cdna` | INT | 100 | Minimum cDNA length in simulated reads | Adjust to match expected read lengths |
+| `--max-cdna` | INT | 500 | Maximum cDNA length in simulated reads | Adjust to match expected read lengths |
+| `--polyt-error-rate` | FLOAT | 0.02 | Error rate within polyA/polyT segments | Increase if your data has noisy homopolymers |
+| `--max-insertions` | INT | 1 | Maximum insertions allowed after a single base | Rarely needs changing |
+| `--threads` | INT | 2 | CPU threads for read simulation | Increase for faster generation on multi-core machines |
+| `--rc` / `--no-rc` | FLAG | `--rc` | Include reverse complements (doubles the training set) | Disable only if your protocol has a fixed known orientation |
+| `--transcriptome` | TEXT | None | Transcriptome FASTA for realistic cDNA generation | Recommended — improves model accuracy on real data |
+| `--invalid-fraction` | FLOAT | 0.3 | Fraction of reads generated as structurally invalid artifacts | Increase if your data has many malformed reads |
+
+# Example Usage
 
 ```bash
 tranquillyzer simulate-data \

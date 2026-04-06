@@ -125,6 +125,7 @@ class Deduper:
 
     def _mk_bktree(self):
         """Create a new BK-tree seeded with the given UMI."""
+
         def df(a, b, cutoff=self.umi_ld):
             return _umi_dist(a, b, cutoff)
 
@@ -206,9 +207,8 @@ def process_region(
         hdr.setdefault("HD", {})
         hdr["HD"]["SO"] = "coordinate"
         from utils import get_version
-        hdr.setdefault("PG", []).append(
-            {"ID": "tranquillyzer-dedup", "PN": "tranquillyzer", "VN": get_version()}
-        )
+
+        hdr.setdefault("PG", []).append({"ID": "tranquillyzer-dedup", "PN": "tranquillyzer", "VN": get_version()})
         out_header = pysam.AlignmentHeader.from_dict(hdr)
 
         with pysam.AlignmentFile(temp_bam_path, "wb", header=out_header, threads=threads_bgzf) as bam_out:

@@ -3,186 +3,376 @@ title: Resource Requirements
 tbl-cap-location: bottom
 ---
 
-# GPU Feasibility
+_Tranquillyzer_ uses a GPU to annotate reads. This page helps you figure out whether your GPU has enough memory for your
+data, explains how _Tranquillyzer_ automatically manages GPU resources, and gives practical advice for tuning
+performance.
 
-To provide transparent and hardware-agnostic guidance, we characterize GPU feasibility in terms of the **maximum read
-length supportable at a per-GPU (per-replica) batch size = 1**. This criterion reflects strict feasibility (i.e.,
-whether the inference can run without out-of-memory errors), rather than throughput or performance.
+# GPU Memory Requirement?
 
-All reported limits correspond to **single-replica inference** and are therefore governed by **per-GPU memory
-capacity**. Multi-GPU execution increases global throughput via data parallelism but does **not** increase the maximum
-feasible read length per replica.
+The main factor is **read length**: longer reads require more GPU memory. The table below shows the longest read each GPU
+can handle. If the longest reads in your dataset are shorter than the limit listed for your GPU, you are good to go.
 
-# Model Configuration Used for All Estimates
-
-All estimates correspond to the default **_Tranquillyzer_ CNN-BiLSTM-CRF** annotation model with the following fixed
-architecture:
-
-- `embedding_dim = 128`
-- `conv_layers = 3`
-- `conv_filters = 128`
-- `conv_kernel_size = 25`
-- `lstm_layers = 1`
-- `lstm_units = 96`
-- `bidirectional = TRUE`
-- `CRF = TRUE`
-- `attention_heads = 0`
-
-Unless otherwise stated, all estimates assume a **VRAM headroom of 0.35**, meaning _Tranquillyzer_ intentionally targets
-only ~65% of available GPU memory to ensure inference safety.
-
-# Empirical versus Theoretical Feasibility
-
-- **Empirical**: The model was directly observed to run successfully at per-replica batch size = 1 for the stated read
-  length.
-- **Theoretical**: Values are extrapolated from empirical measurements using a linear memory-scaling approximation.
-  Real-world feasibility may be lower due to TensorFlow/XLA workspace buffers, allocator fragmentation, driver/runtime
-  differences, or changes to the model architecture.
-
-# Computation of Theoretical Feasibility Limits
-
-All theoretical estimates are anchored to the following empirical observation:
-
-> On a system with **4× NVIDIA L40S GPUs (48 GB VRAM each)**, _Tranquillyzer_ successfully processed reads of
-approximately **400 kb** at a global batch size ≤ 4, corresponding to **per-replica batch size = 1**.
-
-With `VRAM headroom = 0.35`, usable memory per GPU is approximated as:
-
-$$
-U \approx V \times (1 - H)
-$$
-
-where $U$ is the size of the usable memory in bytes, $V$ is the size of VRAM in bytes, and $H$ is the VRAM headroom
-fraction.
-
-For an NVIDIA L40S GPU with VRAM = 48 GB, the usable memory is:
-
-$$
-\begin{aligned}
-U &\approx 48~GB \times (1 - 0.35) \\
-&\approx 48~GB \times 0.65 \\
-&\approx 31.2~GB
-\end{aligned}
-$$
-We estimate an effective memory cost per base as:
-
-$$
-k \approx \frac{U}{L_{\max,\text{empirical}}}
-$$
-
-Substituting the NVIDIA L40S values:
-
-$$
-k \approx \frac{31.2~GB}{400{,}000~\text{bp}}
-\approx 78~\text{KB per base}
-$$
-
-For any other GPU, the maximum feasible read length is approximated as:
-
-$$
-L_{\max,\text{theoretical}} \approx \frac{\text{V} \times (1 - \text{H})}{k}
-$$
-
-This simplified scaling is intended as a **rough feasibility estimate**, not a guaranteed bound.
-
-# Rationale behind Empirical Scaling Use
-
-Memory usage for CNN-BiLSTM-CRF models in TensorFlow/XLA is not dominated by a single activation tensor. Instead, it
-is a combination of:
-
-- recurrent activations and LSTM state,
-- CRF decoding buffers,
-- XLA compilation workspaces,
-- allocator fragmentation and padding overhead, and/or
-- temporary tensors created during graph execution.
-
-Empirical anchoring, therefore, provides more realistic bounds than analytical token-count-based estimates, which tend
-to overestimate feasibility for ultra-long reads.
-
-# Maximum Supportable Read-Length
-
-| GPU | VRAM (GB) | Max Read-Length (bp) | Status |
+| GPU | VRAM (GB) | Max Read Length (bp) | Status |
 |---|:--:|:--:|:-:|
-| NVIDIA T4 | 16 | ~133,000 | Theoretical |
-| NVIDIA L4 | 24 | ~200,000 | Theoretical |
-| NVIDIA A10 | 24 | ~200,000 | Theoretical |
-| RTX 3090 | 24 | ~200,000 | Theoretical |
-| RTX 4090 | 24 | ~200,000 | Theoretical |
-| NVIDIA A100 | 40 | ~333,000 | Theoretical |
-| **NVIDIA L40S** | **48** | **~400,000** | **Empirically tested** |
-| NVIDIA A100 | 80 | ~666,000 | Theoretical |
-| NVIDIA H100 | 80 | ~666,000 | Theoretical |
+| NVIDIA T4 | 16 | ~142,000 | Theoretical |
+| NVIDIA L4 | 24 | ~212,000 | Theoretical |
+| NVIDIA A10 | 24 | ~212,000 | Theoretical |
+| RTX 3090 | 24 | ~212,000 | Theoretical |
+| RTX 4090 | 24 | ~212,000 | Theoretical |
+| NVIDIA A100 | 40 | ~354,000 | Theoretical |
+| **NVIDIA L40S** | **48** | **~425,000** | **Empirically tested** |
+| NVIDIA A100 | 80 | ~708,000 | Theoretical |
+| NVIDIA H100 | 80 | ~708,000 | Theoretical |
 
-: All calculations assume a headroom of 0.35 and an effective memory cost per base of 78 KB / bp.
+: These limits assume XLA is enabled, `--vram-headroom 0.35` (the default), and the default model architecture
+(`10x3p_sc_ont_012`). **Empirically tested** means the model was directly observed to run at that read length.
+**Theoretical** values are extrapolated from the empirical measurement (see
+[How feasibility limits are computed](#how-feasibility-limits-are-computed)).
 
-## Interpretation Notes
+**A few things to keep in mind:**
 
-- These limits indicate **feasibility**, not optimal performance; ultra-long reads near these bounds may run correctly
-  but slowly.
-- Increasing the number of GPUs improves throughput but does **not** increase the per-replica maximum read length.
-- Architectural changes (e.g., additional LSTM layers, attention heads, or larger embeddings) will reduce these limits.
+- These limits tell you whether a read *can* be processed, not how fast it will be. Reads near the limit will work but
+  may be slow.
+- Adding more GPUs makes processing **faster** (more reads in parallel), but does **not** increase the maximum read
+  length each GPU can handle. That is determined by the memory on each individual GPU.
+- If you train a custom model with a larger architecture (more LSTM layers, attention heads, etc.), these limits will
+  decrease.
 
-# Dynamic Batch Size Selection in _Tranquillyzer_
+## What if my GPU is not listed?
 
-_Tranquillyzer_ employs a **dynamic, memory-aware batching strategy** designed to be safe by default and robust across
-datasets.
-
-## Step 1: Length Binning and Padding
-
-Reads are processed in predefined length bins (e.g., 0-499 bp, 500-999 bp, ...). For each bin, reads are padded to:
-
-$$
-L \approx B + 10
-$$
-
-where $L$ is the padded length and $B$ is the upper bound of the bin. Ultimately, the padded length, rather than the raw
-read length, determines memory usage.
-
-## Step 2: Per-Replica Batch Size Estimation
-
-For each bin, _Tranquillyzer_ computes the per-replica batch size as the lesser of a heuristic based on the number of
-processed tokens and a proxy for the memory needed for the CNN:
+You can estimate the maximum read length for any GPU using this rule of thumb:
 
 $$
-B_{\text{per-replica}} = \min(B_{\text{tokens}}, B_{\text{mem}})
+L_{\max} \approx \frac{\text{VRAM (GB)} \times 0.65}{73.4~\text{KB}}
 $$
 
-**(A) Token-budget heuristic**
+For example, a GPU with 32 GB of VRAM: $L_{\max} \approx \frac{32 \times 0.65}{0.0000734} \approx 283{,}000~\text{bp}$.
+
+The 0.65 factor comes from the default `--vram-headroom` of 0.35 (only ~65% of memory is used, the rest is kept as a
+safety buffer). The 73.4 KB/bp constant is derived from empirical testing on NVIDIA L40S GPUs — see
+[Technical Details](#how-feasibility-limits-are-computed) for the full derivation.
+
+# How _Tranquillyzer_ Uses GPU
+
+You generally do not need to configure GPU settings manually. _Tranquillyzer_ automatically:
+
+1. Groups reads by length, so reads in each batch are a similar size
+2. Picks a batch size that fits in your GPU memory
+3. Recovers gracefully if it guesses too high (automatic retry with smaller batches)
+
+The sections below explain each step in more detail.
+
+## Grouping Reads by Length
+
+### Length bins
+
+During preprocessing, reads are sorted into **length bins** (e.g., 0-499 bp, 500-999 bp, ...). Within each bin, all
+reads are padded to the same length so they can be processed together as a batch. The padded length is:
 
 $$
-B_{\text{tokens}} = \left\lfloor \frac{\text{T}}{L} \right\rfloor
+L = B + 1 + P_{\text{conv}}
 $$
 
-where $T$ is the target number of tokens to process per replicate. $T$ is controlled by the `target_tokens_per_replica`
-parameter and has a default value of 1,200,000.
-
-**(B) Memory-based activation proxy**
+where $B$ is the upper bound of the bin and $P_{\text{conv}}$ is extra padding required by the model's convolutional
+layers (specifically, the one-sided receptive field of the largest dilated convolution):
 
 $$
-B_{\text{mem}} \approx \left\lfloor \frac{\text{U}}{C \times L \times b} \right\rfloor
+P_{\text{conv}} = \left\lfloor \frac{\max_i\bigl((k_i - 1) \times d_i\bigr)}{2} \right\rfloor
 $$
 
-where $U$ is still the number of usable bytes, $C$ is the number of convolutional filters (`conv_filters = 128`), $L$ is
-the padded length, and $b$ is the number of bytes per element (`bytes_per_element = 4`).
+For the default model (`conv_kernel_sizes = [25, 25, 25]`, `dilation_rates = [1, 3, 5]`), this works out to
+$P_{\text{conv}} = 60$. This padding ensures the model can see enough context to correctly label bases near the end of
+each read.
 
-## Step 3: Global Batch Size
+### Chunks
 
-The TensorFlow Mirrored Strategy replicates the per-replica batch size across each replica/GPU. Therefore, for $R$
-replicas, the global batch size is:
+Each length bin may contain thousands or millions of reads, so _Tranquillyzer_ processes them in **chunks** — manageable
+groups that are loaded into memory one at a time. The chunk size adapts to read length:
 
 $$
-B_{\text{global}} = B_{\text{per-replica}} \times R
+\text{chunk size} = \min\!\left(\left\lfloor \text{base chunk size} \times \frac{500}{\text{avg read length in bin}} \right\rfloor,\; 500{,}000\right)
 $$
 
-## Step 4: Automatic Out-of-Memory (OOM) Backoff
+The idea is simple: short reads use less memory per read, so more of them can fit in a chunk. Long reads use more memory,
+so fewer are loaded at once. The base chunk size is controlled by `--chunk-size` (default: 100,000). The hard cap of
+500,000 prevents any single chunk from using too much memory, even for very short reads.
 
-Inference is wrapped in a fail-safe loop:
+## Choosing How Many Reads to Process at Once
 
-1. Attempt inference at the selected batch size.
-2. If OOM or internal runtime error:
-   - clear TensorFlow session,
-   - trigger garbage collection,
-   - halve the batch size.
-3. Retry until success (down to batch size = 1).
+Within each chunk, _Tranquillyzer_ decides how many reads to send to the GPU in a single batch. It runs two checks and
+picks the **smaller** (safer) value:
 
-This mechanism ensures robust execution even when theoretical estimates prove inaccurate.
+$$
+B_{\text{per GPU}} = \min(B_{\text{tokens}}, B_{\text{mem}})
+$$
+
+### Check 1: Token budget
+
+The first check limits the total amount of "work" per batch. A **token** is one position in a padded read (roughly
+one DNA base). The token budget controls how many total tokens are processed at once:
+
+$$
+B_{\text{tokens}} = \left\lfloor \frac{T}{L} \right\rfloor
+$$
+
+where $T$ is the token budget (`--target-tokens`, default 1,200,000) and $L$ is the padded read length. For example,
+with 1,200,000 tokens and a padded length of 1,000 bp, the batch size would be 1,200 reads.
+
+**When to adjust:** If you have a high-memory GPU and want larger batches for faster processing, increase
+`--target-tokens`. If you are hitting memory errors, decrease it.
+
+### Check 2: Memory estimate
+
+The second check estimates whether the batch will actually fit in GPU memory, based on the model architecture. Each
+token (each position in a read) consumes a certain amount of GPU memory as it passes through the model's layers.
+_Tranquillyzer_ estimates this **bytes per token** value by adding up the memory used at each layer:
+
+$$
+\text{bpt} = \bigl(\underbrace{4}_{\text{input}} + \underbrace{d_e \cdot 4}_{\text{embedding}} + \underbrace{C_f \cdot 4}_{\text{conv}} + \underbrace{l_u \cdot d_{\text{bi}} \cdot 4}_{\text{LSTM out}} + \underbrace{l_u \cdot 4 \cdot d_{\text{bi}} \cdot 4}_{\text{LSTM gates}} + \underbrace{n_l \cdot 4}_{\text{CRF/output}}\bigr) \times \alpha
+$$
+
+Each term corresponds to a layer of the model:
+
+- **Input** (4 bytes): the encoded DNA base (stored as an integer).
+- **Embedding** ($d_e \times 4$): the learned vector representation of each base ($d_e$ = 128 by default).
+- **Conv activations** ($C_f \times 4$): outputs from the convolutional layers. $C_f$ is the total filter count across
+  all conv layers (128 filters $\times$ 3 layers = 384 for the default model).
+- **LSTM outputs** ($l_u \times d_{\text{bi}} \times 4$): outputs from the recurrent layer ($l_u$ = 96 units, $d_{\text{bi}}$ = 2 for bidirectional).
+- **LSTM gates** ($l_u \times 4 \times d_{\text{bi}} \times 4$): internal memory used by the four LSTM gates
+  (input, forget, cell, output).
+- **CRF / output** ($n_l \times 4$): the final prediction scores for each label ($n_l \approx$ 10 labels).
+- **Overhead** ($\alpha$ = 1.12): a 12% multiplier to account for TensorFlow's internal bookkeeping.
+
+For the default model, this works out to approximately **6,644 bytes per token** (see
+[worked example](#bytes-per-token-estimation-formula)).
+
+The batch size from the memory check is then:
+
+$$
+B_{\text{mem}} = \left\lfloor \frac{U}{\text{bpt} \times L} \right\rfloor
+$$
+
+where $U$ is the usable GPU memory and $L$ is the padded read length. If you have multiple GPUs with different amounts
+of memory, _Tranquillyzer_ uses the limit from the **smallest** GPU (since every GPU must be able to handle its share
+of the batch).
+
+### How usable memory is calculated
+
+_Tranquillyzer_ does not assume it can use all of your GPU memory. It reserves a fraction as a safety buffer (controlled
+by `--vram-headroom`, default 0.35) and accounts for memory that TensorFlow has already allocated:
+
+$$
+U = \max\!\bigl(0,\; (\text{total GPU budget} - \text{already in use}) \times (1 - \text{headroom})\bigr)
+$$
+
+With the default headroom of 0.35, about 65% of the remaining GPU memory is actually used for inference. You can tell
+_Tranquillyzer_ how much VRAM your GPU has via `--gpu-mem` (default: 12 GB if not specified).
+
+## Scaling Across Multiple GPUs
+
+When _Tranquillyzer_ detects more than one GPU, it automatically distributes work across all of them using TensorFlow's
+`MirroredStrategy`. Each GPU processes its own portion of the batch in parallel:
+
+$$
+B_{\text{global}} = B_{\text{per GPU}} \times \text{number of GPUs}
+$$
+
+For example, with 4 GPUs and a per-GPU batch size of 300, the global batch size is 1,200 — meaning 1,200 reads are
+processed simultaneously (300 on each GPU).
+
+If your GPUs have different amounts of memory, you can specify each one's VRAM budget individually with a
+comma-separated list: `--gpu-mem 48,48,24`. If you pass a single number (e.g., `--gpu-mem 48`), it is applied to all
+GPUs. If you don't specify `--gpu-mem` at all, 12 GB per GPU is assumed.
+
+## What Happens If the GPU Runs Out of Memory
+
+If a batch turns out to be too large and the GPU runs out of memory (OOM), _Tranquillyzer_ automatically recovers:
+
+1. It clears the GPU memory and triggers garbage collection.
+2. It cuts the batch size in half.
+3. It rebuilds the model if needed (to restore multi-GPU state).
+4. It retries with the smaller batch.
+
+This process repeats until it finds a batch size that works (down to `--min-batch-size`, default 1). Your run will
+not crash from an OOM error — but repeated recovery cycles are slow, so it is better to tune your settings proactively
+(see [Tuning Performance](#tuning-performance)).
+
+## Running Without a GPU
+
+_Tranquillyzer_ can run without a GPU, but this is **not recommended for production datasets** — CPU-only inference is
+orders of magnitude slower and impractical for large sequencing runs. CPU mode exists primarily for testing, development,
+and small exploratory analyses. When no GPU is detected:
+
+- Batch sizes are determined by the token budget only (no memory estimation is needed since there is no GPU memory to
+  manage).
+- The batch size is capped at 32 reads to keep memory usage predictable on CPU.
+- No multi-device parallelism is used.
+
+# Tuning Performance
+
+## Quick Reference: CLI Flags
+
+| Flag | Default | What it does | When to change it |
+|---|:--:|---|---|
+| `--gpu-mem` | 12 GB | Tells _Tranquillyzer_ how much VRAM your GPU has | Always set this to your actual VRAM for the best results |
+| `--target-tokens` | 1,200,000 | Controls batch size via a token budget | Increase for faster processing on high-VRAM GPUs; decrease if hitting OOM |
+| `--vram-headroom` | 0.35 | Fraction of GPU memory kept as a safety buffer | Increase (e.g., 0.50) if you get OOM errors; decrease (e.g., 0.20) for more speed |
+| `--token-cap-above` | 0 (off) | Enables aggressive batching for short reads | Set to a length threshold (e.g., 5000) to speed up short-read bins |
+| `--min-batch-size` | 1 | Smallest allowed batch size per GPU | Rarely needs changing |
+| `--max-batch-size` | 8,192 | Largest allowed batch size per GPU | Increase on high-VRAM GPUs to allow larger batches for short-read bins (default is 2,000 for `visualize` and `train-model`) |
+| `--chunk-size` | 100,000 | Base number of reads loaded into memory at once | Rarely needs changing; adapts automatically to read length |
+| `--threads` | 12 | CPU threads for barcode correction, demux, and I/O | Increase if you have many CPU cores; decrease on shared machines |
+
+: These flags are available for `annotate-reads`. A subset is also available for `visualize` and `train-model`.
+
+## Common Scenarios
+
+### Resolving Out-of-Memory Errors
+
+Try these steps in order:
+
+1. **Set `--gpu-mem` to your actual VRAM.** For example, if you have an NVIDIA T4 (16 GB), use `--gpu-mem 16`. The
+   default of 12 GB may cause _Tranquillyzer_ to overestimate what fits in memory on smaller GPUs.
+2. **Increase `--vram-headroom`** from 0.35 to 0.50. This reserves more memory as a safety buffer, leaving less for
+   batches but reducing OOM risk.
+3. **Decrease `--target-tokens`** from 1,200,000 to 800,000 or lower. This directly reduces batch sizes.
+4. If none of the above help, note that the automatic OOM recovery (see
+   [above](#what-happens-if-the-gpu-runs-out-of-memory)) will eventually find a working batch size — but it is slow.
+   Proactive tuning avoids this overhead.
+
+### Maximizing Throughput
+
+- **Set `--gpu-mem` to your actual VRAM** — this is the single most important setting. If you have a 48 GB GPU but leave
+  the default at 12, _Tranquillyzer_ will use only a fraction of your GPU's capacity.
+- **Lower `--vram-headroom`** from 0.35 to 0.20 if you are not seeing any OOM errors. This lets _Tranquillyzer_ use
+  more of your GPU memory for larger batches.
+- **Set `--token-cap-above`** to a threshold like 5,000. This tells _Tranquillyzer_ to use full GPU capacity (without
+  the token budget constraint) for all bins with reads shorter than 5,000 bp — where OOM is unlikely. Longer bins still
+  use the safer, dual-constraint approach.
+- **Increase `--target-tokens`** on high-VRAM GPUs (e.g., 1,500,000 or higher on A100/H100) to allow larger batches for
+  longer reads.
+
+### Heterogeneous Multi-GPU Setups
+
+Use `--gpu-mem` with a comma-separated list matching your GPUs. For example, if you have two 48 GB GPUs and one 24 GB
+GPU:
+
+```bash
+--gpu-mem 48,48,24
+```
+
+_Tranquillyzer_ will compute the per-GPU batch size based on the smallest GPU (24 GB in this case), so all GPUs can
+handle their share of the work.
+
+
+# Technical Details
+
+This section provides the mathematical derivations behind the estimates and algorithms described above. It is optional
+reading — you do not need to understand these details to use _Tranquillyzer_ effectively.
+
+## Model Configuration Used for Estimates
+
+All estimates on this page correspond to the default **_Tranquillyzer_ CNN-BiLSTM-CRF** annotation model
+(`10x3p_sc_ont_012`) with the following architecture:
+
+| Parameter | Value |
+|---|:--:|
+| `embedding_dim` | 128 |
+| `conv_layers` | 3 |
+| `conv_filters` | 128 |
+| `conv_kernel_sizes` | [25, 25, 25] |
+| `dilation_rates` | [1, 3, 5] |
+| `lstm_layers` | 1 |
+| `lstm_units` | 96 |
+| `bidirectional` | TRUE |
+| `CRF` | TRUE |
+| `attention_heads` | 0 |
+
+## How Feasibility Limits Are Computed
+
+The GPU feasibility limits in the [table above](#how-much-gpu-memory-do-you-need) are derived from a single empirical
+measurement and then scaled to other GPUs.
+
+### Empirical anchor
+
+> On a system with **4x NVIDIA L40S GPUs (48 GB VRAM each)** and XLA enabled, _Tranquillyzer_ (model
+`10x3p_sc_ont_012`) successfully processed reads of approximately **425 kb** at a per-GPU batch size of 1.
+
+### Scaling to other GPUs
+
+With the default headroom of 0.35, the usable memory on the L40S is:
+
+$$
+U \approx 48~\text{GB} \times (1 - 0.35) \approx 31.2~\text{GB}
+$$
+
+Dividing by the maximum read length gives an effective memory cost per base:
+
+$$
+k \approx \frac{31.2~\text{GB}}{425{,}000~\text{bp}} \approx 73.4~\text{KB/bp}
+$$
+
+For any GPU, the maximum read length is then approximately:
+
+$$
+L_{\max} \approx \frac{\text{VRAM} \times (1 - H)}{k}
+$$
+
+where $H$ is the headroom fraction (default 0.35).
+
+### Why empirical scaling rather than analytical calculation?
+
+GPU memory usage during inference is not just the model activations. It also includes TensorFlow/XLA compilation
+buffers, memory allocator fragmentation, LSTM internal state, CRF decoding workspace, and other overhead that is
+difficult to predict analytically. Anchoring to a real measurement captures all of these factors, giving more reliable
+estimates — especially for ultra-long reads where these overheads become significant.
+
+## Bytes-Per-Token Estimation Formula
+
+The per-token memory estimate used in [batch sizing](#check-2-memory-estimate) sums the activation footprint across
+each layer of the model:
+
+$$
+\text{bpt} = \bigl(\underbrace{4}_{\text{input}} + \underbrace{d_e \cdot 4}_{\text{embedding}} + \underbrace{C_f \cdot 4}_{\text{conv}} + \underbrace{l_u \cdot d_{\text{bi}} \cdot 4}_{\text{LSTM out}} + \underbrace{l_u \cdot 4 \cdot d_{\text{bi}} \cdot 4}_{\text{LSTM gates}} + \underbrace{n_l \cdot 4}_{\text{CRF/output}}\bigr) \times \alpha
+$$
+
+| Term | Formula | Default value | Description |
+|---|---|:--:|---|
+| Input | 4 | 4 | One int32 per position |
+| Embedding | $d_e \times 4$ | 512 | Float32 embedding vector |
+| Conv | $C_f \times 4$ | 1,536 | Conv filter outputs ($C_f$ = filters $\times$ layers = 128 $\times$ 3) |
+| LSTM out | $l_u \times d_{\text{bi}} \times 4$ | 768 | Recurrent layer outputs (96 units $\times$ 2 directions) |
+| LSTM gates | $l_u \times 4 \times d_{\text{bi}} \times 4$ | 3,072 | Four LSTM gates, both directions |
+| CRF/output | $n_l \times 4$ | 40 | Prediction scores for ~10 labels |
+| **Subtotal** | | **5,932** | |
+| Overhead ($\alpha$ = 1.12) | | | 12% TensorFlow bookkeeping |
+| **Total bpt** | | **~6,644** | **bytes per token** |
+
+## Usable Memory at Runtime
+
+When _Tranquillyzer_ is running, it queries TensorFlow to find out how much GPU memory is already in use and calculates
+the usable portion:
+
+$$
+U = \max\!\bigl(0,\; (V_{\text{total}} - V_{\text{in use}}) \times (1 - H)\bigr)
+$$
+
+- $V_{\text{total}}$ = the GPU memory budget you specified via `--gpu-mem` (default 12 GB)
+- $V_{\text{in use}}$ = memory already allocated by TensorFlow on that GPU
+- $H$ = headroom fraction (`--vram-headroom`, default 0.35)
+
+Before a model is loaded, $V_{\text{in use}} = 0$, which gives the simpler formula
+$U \approx V \times (1 - H)$ used for the [feasibility estimates](#how-feasibility-limits-are-computed).
+
+## Two-Tier Batching with `--token-cap-above`
+
+By default, _Tranquillyzer_ uses the conservative $\min(B_{\text{tokens}}, B_{\text{mem}})$ for every length bin. The
+`--token-cap-above` flag enables a two-tier strategy:
+
+- **Short-read bins** (padded length < threshold): batch size is set by GPU memory capacity only ($B_{\text{mem}}$),
+  ignoring the token budget. This allows larger batches because short reads rarely approach OOM limits.
+- **Long-read bins** (padded length $\geq$ threshold): batch size uses the safer
+  $\min(B_{\text{tokens}}, B_{\text{mem}})$ to protect against OOM.
+
+For example, `--token-cap-above 5000` uses aggressive GPU-capacity-only batching for bins up to 5,000 bp, while longer
+bins use the dual-constraint approach.

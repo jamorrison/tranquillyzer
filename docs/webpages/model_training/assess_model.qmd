@@ -1,0 +1,200 @@
+---
+title: "Model Assessment"
+page-navigation: true
+---
+
+After training a model, you need to know how well it actually performs. The `assess-model` command provides a
+quantitative evaluation of a trained model by simulating reads with known ground-truth labels, running
+them through the full annotation pipeline, and comparing the model's predictions against the truth.
+
+This goes well beyond the quick visual check produced by `train-model` (which generates a small PDF of ~20 annotated
+reads). `assess-model` produces detailed metrics on structural accuracy, segment boundary precision, and per-base
+classification performance — giving you a basis for comparing model variants and deciding which to deploy.
+
+# How It Works
+
+The assessment runs a fully automated 4-stage pipeline:
+
+| Stage | Description |
+|:--:|---|
+| 1 | Simulate assessment reads with known ground-truth labels |
+| 2 | Preprocess the simulated reads (length-binning into Parquet) |
+| 3 | Run the full annotation pipeline on the simulated reads |
+| 4 | Compare predictions to ground truth and compute metrics |
+
+Each stage supports **resume** — if a stage has already completed (e.g., from a previous interrupted run), it is
+skipped automatically. This is controlled by `--resume` / `--no-resume` (enabled by default).
+
+# Assessment Structures
+
+The reads used for assessment are generated from **assessment structures** defined in `seq_orders.yaml`. These are
+separate from the training structures and are specifically designed to evaluate model performance across different read
+types:
+
+- **Single-fragment reads** in both forward and reverse-complement orientations
+- **Concatenated reads** with various orientation combinations (fwd+rev, fwd+fwd, rev+fwd, rev+rev)
+
+This ensures the model is tested on the full range of read architectures it will encounter in real data, including the
+concatenation artifacts that are common in nanopore sequencing.
+
+Assessment structures are defined per library in `seq_orders.yaml` using the same format as training structures:
+
+```yaml
+    assessment_structures:
+      single_fwd:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        proportion: 0.25
+      single_rev:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        rc_pattern: [rev]
+        proportion: 0.25
+      concat_fwd_rev:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, rev]
+        proportion: 0.125
+      concat_fwd_fwd:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, fwd]
+        proportion: 0.125
+      # ... additional orientation combinations
+```
+
+See [Writing Your Own `seq_orders.yaml`](read_simulation.qmd#writing-your-own-seq_orders.yaml) for details on the
+structure format.
+
+# Metrics
+
+The assessment produces three categories of quantitative metrics, each addressing a different aspect of model quality.
+
+## Read Architecture Accuracy
+
+This metric evaluates the model's ability to correctly identify the overall structure of a read:
+
+- **Single-fragment reads:** What fraction of single-fragment reads were correctly classified as valid (i.e., the model
+  recognized them as well-formed reads)?
+- **Concatenated reads:** When a read contains multiple concatenated fragments, how many of the expected fragments did
+  the model successfully recover? This is reported as a **fragment recovery rate** — the ratio of predicted fragments
+  to expected fragments across all concatenated reads.
+
+These metrics are especially important for nanopore data, where read concatenation is a common artifact that must be
+correctly identified and split.
+
+## Segment Edit Distance
+
+For each structural segment (adapters, barcodes, UMIs, polyA/T), this metric measures how closely the model's predicted
+segment boundaries match the ground truth. It computes the **Levenshtein edit distance** between the predicted and true
+sequence for each segment, both as:
+
+- **Raw edit distance** (in base pairs) — the absolute number of insertions, deletions, or substitutions needed to
+  transform the predicted segment into the true segment
+- **Normalized edit distance** — the raw distance divided by the true segment length, giving a length-independent
+  measure of boundary accuracy
+
+Lower edit distances indicate more precise boundary predictions. Segments like cDNA and random flanks are excluded from
+this analysis since their sequences are inherently variable.
+
+## Per-Base Classification Metrics
+
+This is the most granular evaluation. For every base in every assessment read, the model's predicted label is compared
+to the ground-truth label, producing standard classification metrics for each segment type:
+
+- **Precision** — of all bases the model labeled as segment X, what fraction actually belong to segment X?
+- **Recall** — of all bases that truly belong to segment X, what fraction did the model correctly label?
+- **F1 Score** — the harmonic mean of precision and recall, providing a single balanced measure
+
+Macro and weighted averages across all segments are also reported.
+
+# Output Artifacts
+
+All outputs are written to the assessment output directory:
+
+| File | Description |
+|---|---|
+| `assessment_fasta/` | Simulated assessment reads (FASTA files) |
+| `assessment_gt/assessment_gt.parquet` | Ground-truth metadata (per-base labels, expected fragment count, structure type) |
+| `annotation_metadata/annotations_valid.parquet` | Model predictions for valid reads |
+| `annotation_metadata/annotations_invalid.parquet` | Model predictions for invalid reads |
+| `assessment_metrics/{model}_architecture_accuracy.tsv` | Read architecture accuracy by structure type |
+| `assessment_metrics/{model}_segment_edit_distance.tsv` | Per-segment edit distances |
+| `assessment_metrics/{model}_classification_report.tsv` | Per-base precision, recall, F1 by segment |
+| `assessment_metrics/{model}_assessment_report.html` | Interactive HTML report with all metrics and visualizations |
+
+The **HTML report** is a single-page interactive dashboard (built with Plotly) that combines all metrics into zoomable,
+pannable plots with hover tooltips. This is the primary artifact for reviewing model quality.
+
+# Command Line Options
+
+| CLI Option | Type | Default | What it controls | When to change it |
+|:-----------|:----:|:-------:|:-----------------|:------------------|
+| `model_name` | TEXT | required | Library model key in seq_orders.yaml | Set to match your model |
+| `model_dir` | TEXT | required | Directory containing .h5 and _lbl_bin.pkl files | Point to your trained model |
+| `output_dir` | TEXT | required | Where to write assessment outputs | — |
+| `--seq-order-file` | TEXT | `utils/seq_orders.yaml` | Library definition file | Only if using a custom file |
+| `--num-reads` | INT | 100 | Number of assessment reads to simulate | Increase for more reliable metrics (e.g., 500-1000) |
+| `--concat-fraction` | FLOAT | None | Override the fraction of concatenated reads | Use to test concat handling specifically |
+| `--min-cDNA` | INT | 100 | Minimum cDNA length in assessment reads | Match expected read lengths |
+| `--max-cDNA` | INT | 500 | Maximum cDNA length in assessment reads | Match expected read lengths |
+| `--max-read-length` | INT | None | Cap total read length (adjusts cDNA accordingly) | Use to test behavior at specific read lengths |
+| `--mismatch-rate` | FLOAT | 0.05 | Substitution error rate | Match your sequencing platform |
+| `--insertion-rate` | FLOAT | 0.05 | Insertion error rate | Match your sequencing platform |
+| `--deletion-rate` | FLOAT | 0.06 | Deletion error rate | Match your sequencing platform |
+| `--polyt-error-rate` | FLOAT | 0.02 | PolyA/T region error rate | Adjust for homopolymer noise |
+| `--max-insertions` | INT | 1 | Max insertions per base position | Rarely needs changing |
+| `--rc` / `--no-rc` | FLAG | `--rc` | Include reverse complements (doubles dataset) | Keep enabled for thorough assessment |
+| `--transcriptome` | TEXT | None | Transcriptome FASTA for realistic cDNA | Recommended for realistic assessment |
+| `--min-spacer` | INT | 0 | Minimum spacer length between concatenated fragments | Adjust if your data has inter-fragment cDNA |
+| `--max-spacer` | INT | 50 | Maximum spacer length between concatenated fragments | Adjust if your data has inter-fragment cDNA |
+| `--max-trunc-5p` | INT | 0 | Max 5' truncation (bp) | Enable to test truncated read handling |
+| `--max-trunc-3p` | INT | 0 | Max 3' truncation (bp) | Enable to test truncated read handling |
+| `--threads` | INT | 2 | CPU threads | Increase for faster simulation |
+| `--resume` / `--no-resume` | FLAG | `--resume` | Skip completed stages on re-run | Disable to force full re-run |
+| `--gpu-mem` | TEXT | None (12 GB) | GPU memory budget | Set to your actual VRAM |
+| `--target-tokens` | INT | 1,200,000 | Token budget per GPU | See [Resource Requirements](../resource_requirements.qmd) |
+| `--vram-headroom` | FLOAT | 0.35 | VRAM headroom fraction | Increase if OOM during assessment |
+| `--min-batch-size` | INT | 1 | Minimum batch size | Rarely needs changing |
+| `--max-batch-size` | INT | 2,000 | Maximum batch size | Rarely needs changing |
+| `--bin-size` | INT | 500 | Bin width for length-binning assessment reads | Rarely needs changing |
+| `--token-cap-above` | INT | 0 | Two-tier batching threshold | See [Resource Requirements](../resource_requirements.qmd) |
+
+# Example Usage
+
+```bash
+tranquillyzer assess-model \
+    10x3p_sc_ont_012 \
+    models/ \
+    assessment_output/ \
+    --num-reads 500 \
+    --mismatch-rate 0.05 \
+    --insertion-rate 0.05 \
+    --deletion-rate 0.06 \
+    --min-cDNA 100 \
+    --max-cDNA 500 \
+    --rc \
+    --threads 12 \
+    --gpu-mem 48 \
+    --transcriptome gencode.v44.transcripts.fa
+```
+
+# Interpreting Results
+
+## What to Look For
+
+- **Architecture accuracy near 100%** for single-fragment reads — the model should correctly validate most well-formed
+  reads.
+- **High fragment recovery rate** for concatenated reads — ideally close to 1.0, meaning the model correctly identifies
+  and splits all concatenated fragments.
+- **Low edit distances** for fixed-sequence segments (adapters, primers) — these have known sequences, so boundaries
+  should be precise. Variable-length segments (barcodes, UMIs) may have slightly higher distances due to sequencing
+  errors.
+- **F1 scores above 0.95** for most segments — values below this may indicate the model struggles with a particular
+  segment type.
+
+## Comparing Model Variants
+
+When comparing models trained with different hyperparameters, focus on:
+
+1. **Segment edit distances** — the most sensitive metric for boundary quality
+2. **Architecture accuracy on concatenated reads** — tests the model's ability to handle complex read structures
+3. **F1 for low-abundance segments** (e.g., UMIs, short adapters) — these are often the hardest to label correctly

@@ -49,7 +49,7 @@ def annotate_reads_wrap(
         _convert_chunk_outputs,
         _combine_demux_chunk_outputs,
     )
-    from scripts.annotate_new_data import load_model_for_inference, load_model_params
+    from scripts.annotate_new_data import load_model_for_inference
 
     (
         os,
@@ -95,6 +95,7 @@ def annotate_reads_wrap(
     def _available_models(seq_orders_path):
         """Return list of model names defined in seq_orders.yaml (best-effort)."""
         import yaml
+
         models = []
         try:
             with open(seq_orders_path, "r") as f:
@@ -120,6 +121,21 @@ def annotate_reads_wrap(
         suffix = f" Available models: {', '.join(available)}" if available else " No models found in seq_orders file."
         raise ValueError(f"Model '{model_name}' not found in seq_orders file: {seq_order_file}.{suffix}")
     valid_structs = get_valid_structures(seq_order_file, model_name)
+
+    # Build known_patterns for segments with literal adapter sequences
+    import re as _re
+
+    known_patterns = {}
+    for seg_name, seg_pattern in zip(seq_order, sequences):
+        if (
+            seg_pattern not in ("NN", "RN", "A", "T")
+            and not _re.match(r"N\d+", seg_pattern)
+            and seg_name not in barcodes
+        ):
+            known_patterns[seg_name] = seg_pattern
+    if known_patterns:
+        logger.info(f"Known-pattern segments for edit distance: {list(known_patterns.keys())}")
+
     if run_barcode_correction:
         if not whitelist_file:
             raise ValueError("whitelist_file is required when run_barcode_correction=True")
@@ -179,9 +195,7 @@ def annotate_reads_wrap(
     if run_demux and output_fmt == "fastq":
         has_base_qualities = _has_usable_base_qualities_in_parquets(parquet_files, pl)
         if not has_base_qualities:
-            logger.warning(
-                "Base quality scores not available; requested FASTQ demux output will be written as FASTA."
-            )
+            logger.warning("Base quality scores not available; requested FASTQ demux output will be written as FASTA.")
             effective_output_fmt = "fasta"
     if run_demux and not run_barcode_correction:
         logger.info("Bulk export mode enabled: demux output will contain all valid reads without barcode correction.")
@@ -277,6 +291,7 @@ def annotate_reads_wrap(
                     chunk_output_dir,
                     split_concatenated,
                     valid_structs,
+                    known_patterns,
                 )
 
                 if success:
@@ -366,7 +381,7 @@ def annotate_reads_wrap(
         else:
             start_bin_idx, start_chunk = pass1_pointer
             logger.info(
-                f"Resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet','') if (run_files := parquet_files[start_bin_idx:]) else 'N/A'}, "
+                f"Resume target -> start_bin={os.path.basename(run_files[0]).replace('.parquet', '') if (run_files := parquet_files[start_bin_idx:]) else 'N/A'}, "
                 f"start_chunk={start_chunk}"
             )
             run_files = parquet_files[start_bin_idx:]
@@ -420,16 +435,14 @@ def annotate_reads_wrap(
     idle_start = None
     while any(w.is_alive() for w in workers) or not result_queue.empty():
         try:
-            result = result_queue.get(timeout=15)
+            result_queue.get(timeout=15)
             idle_start = None
         except queue.Empty:
             if idle_start is None:
                 idle_start = time.time()
                 logger.info("Result queue idle, waiting for worker results...")
             elif time.time() - idle_start > 60:
-                raise TimeoutError(
-                    "Result queue timed out after no data for 60 seconds and no workers finished."
-                )
+                raise TimeoutError("Result queue timed out after no data for 60 seconds and no workers finished.")
 
     logger.info(f"[Memory] RSS: {psutil.Process().memory_info().rss / 1e6:.2f} MB")
 
@@ -442,7 +455,9 @@ def annotate_reads_wrap(
     if resume and total_queued_chunks == 0:
         logger.info("All annotation chunks are already completed. Dataset has already been annotated.")
         if combine_chunk_outputs:
-            valid_parquet_name = "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
+            valid_parquet_name = (
+                "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
+            )
             metadata_dir = os.path.join(output_dir, "annotation_metadata")
             valid_parquet = os.path.join(metadata_dir, valid_parquet_name)
             invalid_parquet = os.path.join(metadata_dir, "annotations_invalid.parquet")
@@ -475,6 +490,7 @@ def annotate_reads_wrap(
     # Clean up annotation_chunks directory when not keeping chunks
     if not keep_chunk_tsv_after_combine:
         import shutil
+
         if os.path.isdir(chunk_output_dir):
             shutil.rmtree(chunk_output_dir, ignore_errors=True)
 

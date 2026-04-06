@@ -292,9 +292,6 @@ def test_split_bam():
 #     )
 
 
-
-
-
 # @pytest.mark.order(14)
 # def test_annotate_reads_requires_whitelist_for_barcode_correction():
 #     p = run_cmd(

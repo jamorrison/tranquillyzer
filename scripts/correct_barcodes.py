@@ -1,7 +1,6 @@
 import logging
 import gc
 import gzip
-import os
 import tensorflow as tf
 import pandas as pd
 from tqdm import tqdm
@@ -28,12 +27,20 @@ def correct_barcode(row, column_name, whitelist, threshold):
 
     # Get distance scores for observed barcode and reverse complement
     candidates = process.extract(
-        observed_barcode, whitelist, scorer=Levenshtein.distance,
-        score_cutoff=threshold, processor=None, limit=5,
+        observed_barcode,
+        whitelist,
+        scorer=Levenshtein.distance,
+        score_cutoff=threshold,
+        processor=None,
+        limit=5,
     )
     candidates_rev = process.extract(
-        reverse_comp_barcode, whitelist, scorer=Levenshtein.distance,
-        score_cutoff=threshold, processor=None, limit=5,
+        reverse_comp_barcode,
+        whitelist,
+        scorer=Levenshtein.distance,
+        score_cutoff=threshold,
+        processor=None,
+        limit=5,
     )
 
     # Combine results and find minimum distance
@@ -91,6 +98,7 @@ def process_row(
     whitelist_sets=None,
 ):
     """Correct barcodes, assign cell ID, and build demux output for a single annotation row."""
+
     def _parse_optional_int(value):
         if value is None or pd.isna(value):
             return None

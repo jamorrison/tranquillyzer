@@ -1,0 +1,109 @@
+---
+title: QC Metrics
+page-navigation: true
+---
+
+The `qc-metrics` command generates a comprehensive quality control report from annotation outputs and, optionally, from
+aligned BAM files and gene count matrices. The output is an interactive HTML dashboard with all metrics and plots, plus
+individual TSV files compatible with MultiQC.
+
+# Available Metrics
+
+The metrics fall into three tiers, depending on what input files you provide:
+
+## Tier 1: Annotation-Based Metrics (Always Available)
+
+These require only the annotation parquet files:
+
+- **Read counts**:total, valid, invalid, and validity rate
+- **Demux summary**:demultiplexed vs ambiguous read counts (if barcode-corrected)
+- **Read-length distributions**:for all, valid, invalid, demuxed, and ambiguous reads
+- **Segment length distributions**:per-segment box plots
+- **PolyA/T tail-length distribution**
+- **Read orientation balance**:forward vs reverse complement
+- **Cell-barcode knee plot**:log-log rank-count curve for cell barcodes
+- **Per-cell read counts**
+- **Barcode edit distance distributions**:per barcode type
+
+## Tier 2: BAM-Based Metrics (Requires `--bam`)
+
+Providing an aligned BAM file (with CB and UB tags) enables:
+
+- **Sequencing saturation curve**:UMI saturation as a function of sequencing depth
+- **Unique UMIs per cell**
+- **Mapping rate per cell**
+- **Duplicate rate per cell**
+- **Gene body coverage** (also requires `--gtf`)
+
+## Tier 3: Gene Quantification Metrics (Requires `--counts-matrix` and `--gtf`)
+
+Providing a featureCounts counts matrix and GTF annotation enables:
+
+- **Genes detected per cell**
+- **UMIs per cell**
+- **Mitochondrial read fraction** per cell
+- **Ribosomal read fraction** per cell
+- **Library complexity** (genes vs UMIs colored by mitochondrial %)
+- **Top expressed genes**
+- **Gene biotype breakdown**
+- **featureCounts assignment summary**
+
+# Usage
+
+## Basic (Annotation Only)
+
+```bash
+tranquillyzer qc-metrics \
+    --threads 4 \
+    INPUT_DIR
+```
+
+## With BAM and Gene Counts
+
+```bash
+tranquillyzer qc-metrics \
+    --threads 4 \
+    --bam aligned_files/dup_marked.bam \
+    --counts-matrix counts_matrix.tsv \
+    --gtf gencode.v44.annotation.gtf \
+    INPUT_DIR
+```
+
+# Command Line Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `INPUT_DIR` | required | Directory containing annotation_metadata/ | |
+| `--output-dir` | `INPUT_DIR/qc_metrics` | Where to write the report | |
+| `--threads` | 4 | Threads for parallel metric computation | Increase for faster report generation |
+| `--sample-name` | directory name | Label used in the report | Set for clearer report titles |
+| `--valid-file` | auto-detect | Path to valid annotations parquet | Only if non-standard location |
+| `--invalid-file` | auto-detect | Path to invalid annotations parquet | Only if non-standard location |
+| `--bam` | None | Coordinate-sorted BAM with CB/UB tags | Provide for saturation and alignment metrics |
+| `--counts-matrix` | None | featureCounts counts matrix TSV | Provide for gene-level QC |
+| `--gtf` | None | GTF annotation file | Required with `--counts-matrix`; also used for gene body coverage |
+| `--read-len-bin-width` | 100 | Bin width for read-length histograms | Decrease for finer resolution |
+
+# Output
+
+All outputs are written to the QC metrics directory:
+
+- **`report.html`**: self-contained interactive HTML dashboard (Plotly-based; zoomable, pannable, with hover
+  tooltips). This is the primary QC artifact.
+- **`plot_data/*.tsv`**: individual metric TSV files for MultiQC integration:
+  - `barcode_assignment_mqc.tsv`
+  - `read_architecture_mqc.tsv`
+  - `edit_distance_mqc.tsv`
+  - `read_length_dist_mqc.tsv`
+  - `knee_plot_mqc.tsv`
+  - `saturation_curve_mqc.tsv` (if BAM provided)
+  - `genes_per_cell_mqc.tsv` (if counts matrix provided)
+  - and others
+
+# Recommendations
+
+- The QC report can be generated at any point after annotation. You do not need to wait for alignment or
+  deduplication. Run it early with just annotations, then re-run with `--bam` and `--counts-matrix` for the full
+  picture.
+- Metrics are computed independently in parallel, so increasing `--threads` directly speeds up report generation.
+- The HTML report is fully self-contained and can be shared or viewed without a web server.

@@ -12,32 +12,53 @@ logger = logging.getLogger(__name__)
 _worker_shared = {}
 
 
-def _init_worker(barcode_columns, whitelist_dict, whitelist_sets,
-                 cell_id_lookup, whitelist_df, threshold, strand,
-                 output_fmt, include_barcode_quals, include_polya, run_demux):
+def _init_worker(
+    barcode_columns,
+    whitelist_dict,
+    whitelist_sets,
+    cell_id_lookup,
+    whitelist_df,
+    threshold,
+    strand,
+    output_fmt,
+    include_barcode_quals,
+    include_polya,
+    run_demux,
+):
     """Pool initializer: store shared data in worker globals (once per process)."""
-    _worker_shared.update({
-        "barcode_columns": barcode_columns,
-        "whitelist_dict": whitelist_dict,
-        "whitelist_sets": whitelist_sets,
-        "cell_id_lookup": cell_id_lookup,
-        "whitelist_df": whitelist_df,
-        "threshold": threshold,
-        "strand": strand,
-        "output_fmt": output_fmt,
-        "include_barcode_quals": include_barcode_quals,
-        "include_polya": include_polya,
-        "run_demux": run_demux,
-    })
+    _worker_shared.update(
+        {
+            "barcode_columns": barcode_columns,
+            "whitelist_dict": whitelist_dict,
+            "whitelist_sets": whitelist_sets,
+            "cell_id_lookup": cell_id_lookup,
+            "whitelist_df": whitelist_df,
+            "threshold": threshold,
+            "strand": strand,
+            "output_fmt": output_fmt,
+            "include_barcode_quals": include_barcode_quals,
+            "include_polya": include_polya,
+            "run_demux": run_demux,
+        }
+    )
 
 
 def _worker_fn(row_data):
     """Pool worker entry point: unpack shared args from globals."""
     s = _worker_shared
     return _correct_and_demux_row(
-        row_data, s["barcode_columns"], s["whitelist_dict"], s["whitelist_sets"],
-        s["cell_id_lookup"], s["whitelist_df"], s["threshold"], s["strand"],
-        s["output_fmt"], s["include_barcode_quals"], s["include_polya"], s["run_demux"],
+        row_data,
+        s["barcode_columns"],
+        s["whitelist_dict"],
+        s["whitelist_sets"],
+        s["cell_id_lookup"],
+        s["whitelist_df"],
+        s["threshold"],
+        s["strand"],
+        s["output_fmt"],
+        s["include_barcode_quals"],
+        s["include_polya"],
+        s["run_demux"],
     )
 
 
@@ -54,18 +75,27 @@ def _parse_first_int(value):
         return None
 
 
-def _correct_and_demux_row(row_data, barcode_columns, whitelist_dict, whitelist_sets,
-                            cell_id_lookup, whitelist_df, threshold, strand, output_fmt,
-                            include_barcode_quals, include_polya, run_demux):
+def _correct_and_demux_row(
+    row_data,
+    barcode_columns,
+    whitelist_dict,
+    whitelist_sets,
+    cell_id_lookup,
+    whitelist_df,
+    threshold,
+    strand,
+    output_fmt,
+    include_barcode_quals,
+    include_polya,
+    run_demux,
+):
     """Pool worker: correct barcodes + build demux record for one row.
 
     Returns (correction_dict, demux_record_str_or_None, is_ambiguous).
     """
     from scripts.correct_barcodes import correct_barcode, reverse_complement
 
-    (read_name, read_seq, orientation, bc_seqs,
-     cs, ce, us, ue, base_q,
-     pa_s, pa_e, bc_starts_ends) = row_data
+    (read_name, read_seq, orientation, bc_seqs, cs, ce, us, ue, base_q, pa_s, pa_e, bc_starts_ends) = row_data
 
     # --- 1. Barcode correction: exact-match short-circuit + fuzzy ---
     correction = {}
@@ -99,8 +129,10 @@ def _correct_and_demux_row(row_data, barcode_columns, whitelist_dict, whitelist_
             continue
 
         _, corrected, min_dist, count = correct_barcode(
-            {f"{bc_col}_Sequences": seq}, f"{bc_col}_Sequences",
-            whitelist_dict[bc_col], threshold,
+            {f"{bc_col}_Sequences": seq},
+            f"{bc_col}_Sequences",
+            whitelist_dict[bc_col],
+            threshold,
         )
         correction[f"corrected_{bc_col}"] = corrected
         correction[f"corrected_{bc_col}_min_dist"] = min_dist
@@ -116,6 +148,7 @@ def _correct_and_demux_row(row_data, barcode_columns, whitelist_dict, whitelist_
     else:
         # Multi-barcode: product match via assign_cell_id
         from scripts.demultiplex import assign_cell_id
+
         cell_id = assign_cell_id(correction, whitelist_df, barcode_columns)
     correction["cell_id"] = str(cell_id)
     correction["match_type"] = "Exact match" if cell_id != "ambiguous" else "Ambiguous"
@@ -265,7 +298,9 @@ def barcode_correction_wrap(
     if first_chunk.height == 0:
         raise ValueError(f"No rows found in annotation file: {input_file}")
 
-    barcode_columns, strand = _infer_barcode_columns(first_chunk.columns, whitelist_df, seq_order_file, model_name, seq_orders)
+    barcode_columns, strand = _infer_barcode_columns(
+        first_chunk.columns, whitelist_df, seq_order_file, model_name, seq_orders
+    )
     if not barcode_columns:
         raise ValueError(
             "Could not infer barcode columns. Provide --seq-order-file/--model-name or ensure whitelist columns "
@@ -290,12 +325,10 @@ def barcode_correction_wrap(
     bc_metadata_dir = os.path.join(output_dir, "annotation_metadata")
     os.makedirs(bc_metadata_dir, exist_ok=True)
     corrected_parquet = f"{bc_metadata_dir}/annotations_valid_bc_corrected.parquet"
-    in_place_corrected_overwrite = (
-        not multi_file_input and os.path.abspath(input_file) == os.path.abspath(corrected_parquet)
+    in_place_corrected_overwrite = not multi_file_input and os.path.abspath(input_file) == os.path.abspath(
+        corrected_parquet
     )
-    corrected_parquet_tmp = (
-        f"{corrected_parquet}.tmp" if in_place_corrected_overwrite else corrected_parquet
-    )
+    corrected_parquet_tmp = f"{corrected_parquet}.tmp" if in_place_corrected_overwrite else corrected_parquet
     if os.path.exists(corrected_parquet_tmp):
         os.remove(corrected_parquet_tmp)
     if os.path.exists(corrected_parquet) and not in_place_corrected_overwrite:
@@ -378,9 +411,17 @@ def barcode_correction_wrap(
 
     # Persistent Pool for fuzzy correction — shared data sent once via initializer
     shared_args = (
-        barcode_columns, whitelist_dict, whitelist_sets,
-        cell_id_lookup, whitelist_df, bc_lv_threshold, strand,
-        effective_output_fmt, include_barcode_quals, include_polya, run_demux,
+        barcode_columns,
+        whitelist_dict,
+        whitelist_sets,
+        cell_id_lookup,
+        whitelist_df,
+        bc_lv_threshold,
+        strand,
+        effective_output_fmt,
+        include_barcode_quals,
+        include_polya,
+        run_demux,
     )
     pool = Pool(threads, initializer=_init_worker, initargs=shared_args) if threads > 1 else None
     chunk_paths = []
@@ -407,8 +448,12 @@ def barcode_correction_wrap(
             # --- Pre-parse coordinates in polars (vectorized) ---
             def _pc(col_name):
                 return (
-                    pl.col(col_name).cast(pl.Utf8).str.split(",").list.first()
-                    .str.strip_chars().replace(["", "None", "nan", "NaN"], None)
+                    pl.col(col_name)
+                    .cast(pl.Utf8)
+                    .str.split(",")
+                    .list.first()
+                    .str.strip_chars()
+                    .replace(["", "None", "nan", "NaN"], None)
                     .cast(pl.Int64, strict=False)
                 )
 
@@ -417,8 +462,12 @@ def barcode_correction_wrap(
             if has_umi:
                 coord_exprs += [_pc("UMI_Starts").alias("_us"), _pc("UMI_Ends").alias("_ue")]
             if include_polya:
-                for col, alias in [("polyA_Starts", "_pas"), ("polyA_Ends", "_pae"),
-                                   ("polyT_Starts", "_pts"), ("polyT_Ends", "_pte")]:
+                for col, alias in [
+                    ("polyA_Starts", "_pas"),
+                    ("polyA_Ends", "_pae"),
+                    ("polyT_Starts", "_pts"),
+                    ("polyT_Ends", "_pte"),
+                ]:
                     if col in chunk.columns:
                         coord_exprs.append(_pc(col).alias(alias))
             if include_barcode_quals:
@@ -437,7 +486,11 @@ def barcode_correction_wrap(
             ce_list = chunk["_ce"].to_list()
             us_list = chunk["_us"].to_list() if has_umi else [None] * n_rows
             ue_list = chunk["_ue"].to_list() if has_umi else [None] * n_rows
-            base_q_list = chunk["base_qualities"].to_list() if (effective_output_fmt == "fastq" and "base_qualities" in chunk.columns) else [None] * n_rows
+            base_q_list = (
+                chunk["base_qualities"].to_list()
+                if (effective_output_fmt == "fastq" and "base_qualities" in chunk.columns)
+                else [None] * n_rows
+            )
 
             # Barcode sequences
             bc_seq_lists = {}
@@ -475,26 +528,37 @@ def barcode_correction_wrap(
                     for bc in barcode_columns:
                         bs, be = bc_starts_ends_lists[bc]
                         bc_se[bc] = (bs[i], be[i])
-                row_data_list.append((
-                    read_names[i], str(reads[i]) if reads[i] is not None else "",
-                    orientations[i], bc_seqs,
-                    cs_list[i], ce_list[i], us_list[i], ue_list[i],
-                    base_q_list[i], pa_s_list[i], pa_e_list[i], bc_se,
-                ))
+                row_data_list.append(
+                    (
+                        read_names[i],
+                        str(reads[i]) if reads[i] is not None else "",
+                        orientations[i],
+                        bc_seqs,
+                        cs_list[i],
+                        ce_list[i],
+                        us_list[i],
+                        ue_list[i],
+                        base_q_list[i],
+                        pa_s_list[i],
+                        pa_e_list[i],
+                        bc_se,
+                    )
+                )
 
             # --- Dispatch to Pool: only row_data sent per row (shared data in worker globals) ---
             if pool is not None:
                 results = pool.map(_worker_fn, row_data_list)
             else:
-                results = [
-                    _correct_and_demux_row(rd, *shared_args)
-                    for rd in row_data_list
-                ]
+                results = [_correct_and_demux_row(rd, *shared_args) for rd in row_data_list]
 
-            n_fuzzy = sum(1 for corr, _, _ in results if any(
-                corr.get(f"corrected_{bc}_min_dist", 0) not in (0, -1) for bc in barcode_columns
-            ))
-            logger.info(f"Chunk {chunk_idx}: {n_rows - n_fuzzy} exact/RC matches, {n_fuzzy} fuzzy ({100*(n_rows-n_fuzzy)//n_rows}%/{100*n_fuzzy//n_rows}%)")
+            n_fuzzy = sum(
+                1
+                for corr, _, _ in results
+                if any(corr.get(f"corrected_{bc}_min_dist", 0) not in (0, -1) for bc in barcode_columns)
+            )
+            logger.info(
+                f"Chunk {chunk_idx}: {n_rows - n_fuzzy} exact/RC matches, {n_fuzzy} fuzzy ({100 * (n_rows - n_fuzzy) // n_rows}%/{100 * n_fuzzy // n_rows}%)"
+            )
 
             # --- Collect results: correction TSV ---
             correction_dicts = [r[0] for r in results]
@@ -562,6 +626,7 @@ def barcode_correction_wrap(
     logger.info(f"Combining {total_chunks} chunk TSVs into final parquet")
     if chunk_paths:
         from utils import get_version
+
         pl.scan_csv(chunk_paths, separator="\t", infer_schema_length=5000).with_columns(
             pl.lit(get_version()).alias("tranquillyzer_version")
         ).sink_parquet(corrected_parquet_tmp, compression="snappy")

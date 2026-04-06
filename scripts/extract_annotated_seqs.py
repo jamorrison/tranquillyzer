@@ -3,6 +3,8 @@ import logging
 import multiprocessing as mp
 import numpy as np
 import tensorflow as tf
+from rapidfuzz.distance import Levenshtein
+from scripts.correct_barcodes import reverse_complement
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +153,20 @@ def _collapsed_to_base_coords(collapsed_array, indices_dict):
     return coords
 
 
-def _build_fragment_annotation(read, read_length, collapsed_array, indices_dict,
-                               match_start, match_end, orientation,
-                               seq_order, barcodes, frag_idx, total_frags):
+def _build_fragment_annotation(
+    read,
+    read_length,
+    collapsed_array,
+    indices_dict,
+    match_start,
+    match_end,
+    orientation,
+    seq_order,
+    barcodes,
+    frag_idx,
+    total_frags,
+    known_patterns=None,
+):
     """Build an annotation dict for a single fragment extracted from a concatenated read."""
     base_coords = _collapsed_to_base_coords(collapsed_array, indices_dict)
 
@@ -177,8 +190,23 @@ def _build_fragment_annotation(read, read_length, collapsed_array, indices_dict,
     for barcode in barcodes:
         if annotations[barcode]["Starts"]:
             annotations[barcode]["Sequences"] = [
-                read[int(annotations[barcode]["Starts"][0]):int(annotations[barcode]["Ends"][0])]
+                read[int(annotations[barcode]["Starts"][0]) : int(annotations[barcode]["Ends"][0])]
             ]
+
+    if known_patterns:
+        for seg, pattern in known_patterns.items():
+            if seg in annotations and annotations[seg]["Starts"]:
+                rc_pattern = reverse_complement(pattern)
+                seqs = []
+                dists = []
+                for s, e in zip(annotations[seg]["Starts"], annotations[seg]["Ends"]):
+                    seg_seq = read[int(s) : int(e)]
+                    seqs.append(seg_seq)
+                    dist_fwd = Levenshtein.distance(seg_seq, pattern)
+                    dist_rc = Levenshtein.distance(seg_seq, rc_pattern)
+                    dists.append(min(dist_fwd, dist_rc))
+                annotations[seg]["Sequences"] = seqs
+                annotations[seg]["EditDist"] = dists
 
     return annotations
 
@@ -186,7 +214,7 @@ def _build_fragment_annotation(read, read_length, collapsed_array, indices_dict,
 # =================== process full-length reads =================== #
 
 
-def process_full_len_reads(data, barcodes, label_binarizer, model_path, split_concatenated=False):
+def process_full_len_reads(data, barcodes, label_binarizer, model_path, split_concatenated=False, known_patterns=None):
     """Process a batch of reads: collapse labels, validate structure, extract annotations."""
     read, prediction, read_length, seq_order, valid_structs = data
 
@@ -224,13 +252,21 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path, split_co
         # 1) Extract each full fragment as a valid annotation
         for frag_idx, (m_start, m_end, m_orient) in enumerate(match_details, 1):
             frag_ann = _build_fragment_annotation(
-                read, read_length, collapsed_array, indices_dict,
-                m_start, m_end, m_orient,
-                seq_order, barcodes, frag_idx, total_frags,
+                read,
+                read_length,
+                collapsed_array,
+                indices_dict,
+                m_start,
+                m_end,
+                m_orient,
+                seq_order,
+                barcodes,
+                frag_idx,
+                total_frags,
+                known_patterns,
             )
             frag_ann["reason"] = (
-                f"split from concatenated (frag {frag_idx}/{total_frags})"
-                f" — parent read in invalid annotations"
+                f"split from concatenated (frag {frag_idx}/{total_frags}) — parent read in invalid annotations"
             )
             results.append(frag_ann)
 
@@ -247,10 +283,7 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path, split_co
         remainder["architecture"] = "invalid"
         remainder["read_length"] = str(read_length)
         remainder["orientation"] = order
-        remainder["reason"] = (
-            f"{reasons}"
-            f" — {total_frags} fragment(s) extracted to valid annotations"
-        )
+        remainder["reason"] = f"{reasons} — {total_frags} fragment(s) extracted to valid annotations"
         results.append(remainder)
 
         return results
@@ -315,12 +348,38 @@ def process_full_len_reads(data, barcodes, label_binarizer, model_path, split_co
                 read[int(annotations[barcode]["Starts"][0]) : int(annotations[barcode]["Ends"][0])]
             ]
 
+    # Compute edit distances for segments with known literal patterns (all reads, not just valid)
+    if known_patterns:
+        for seg, pattern in known_patterns.items():
+            if seg in annotations and annotations[seg]["Starts"]:
+                rc_pattern = reverse_complement(pattern)
+                seqs = []
+                dists = []
+                for s, e in zip(annotations[seg]["Starts"], annotations[seg]["Ends"]):
+                    seg_seq = read[int(s) : int(e)]
+                    seqs.append(seg_seq)
+                    dist_fwd = Levenshtein.distance(seg_seq, pattern)
+                    dist_rc = Levenshtein.distance(seg_seq, rc_pattern)
+                    dists.append(min(dist_fwd, dist_rc))
+                annotations[seg]["Sequences"] = seqs
+                annotations[seg]["EditDist"] = dists
+
     return [annotations]
 
 
 def extract_annotated_full_length_seqs(
-    new_data, predictions, model_path, read_lengths, label_binarizer, seq_order, barcodes, n_jobs,
-    original_read_names=None, split_concatenated=False, valid_structures=None,
+    new_data,
+    predictions,
+    model_path,
+    read_lengths,
+    label_binarizer,
+    seq_order,
+    barcodes,
+    n_jobs,
+    original_read_names=None,
+    split_concatenated=False,
+    valid_structures=None,
+    known_patterns=None,
 ):
     """Extract annotated sequences from predictions using label binarizer and seq order."""
     if valid_structures is None:
@@ -332,14 +391,16 @@ def extract_annotated_full_length_seqs(
     if n_jobs == 1:
         for i in range(len(data)):
             raw_results.append(
-                process_full_len_reads(data[i], barcodes, label_binarizer, model_path, split_concatenated)
+                process_full_len_reads(
+                    data[i], barcodes, label_binarizer, model_path, split_concatenated, known_patterns
+                )
             )
 
     elif n_jobs > 1:
         with mp.Pool(processes=n_jobs) as pool:
             raw_results = pool.starmap(
                 process_full_len_reads,
-                [(d, barcodes, label_binarizer, model_path, split_concatenated) for d in data],
+                [(d, barcodes, label_binarizer, model_path, split_concatenated, known_patterns) for d in data],
             )
             pool.close()
 

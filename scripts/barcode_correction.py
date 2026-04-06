@@ -89,9 +89,7 @@ def _has_usable_base_qualities(lazy_df):
         return False
     probe = (
         lazy_df.select(
-            (
-                pl.col("base_qualities").is_not_null() & (pl.col("base_qualities").cast(pl.Utf8).str.len_chars() > 0)
-            )
+            (pl.col("base_qualities").is_not_null() & (pl.col("base_qualities").cast(pl.Utf8).str.len_chars() > 0))
             .any()
             .alias("has_bq")
         )

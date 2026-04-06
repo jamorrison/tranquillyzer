@@ -3,8 +3,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def demux_wrap(input_dir, output_dir, input_file, output_fmt, strand=None, barcode_columns=None,
-               include_barcode_quals=False, include_polya=False):
+def demux_wrap(
+    input_dir,
+    output_dir,
+    input_file,
+    output_fmt,
+    strand=None,
+    barcode_columns=None,
+    include_barcode_quals=False,
+    include_polya=False,
+):
     """Export demultiplexed reads to FASTA/FASTQ from annotation files."""
     import os
 
@@ -64,8 +72,14 @@ def demux_wrap(input_dir, output_dir, input_file, output_fmt, strand=None, barco
     elif has_corrected_columns and strand and barcode_columns:
         logger.info("Writing demux from corrected annotations with full headers.")
         _write_corrected_demux(
-            df.iter_rows(named=True), effective_output_fmt, demuxed_path, ambiguous_path,
-            strand, barcode_columns, include_barcode_quals, include_polya,
+            df.iter_rows(named=True),
+            effective_output_fmt,
+            demuxed_path,
+            ambiguous_path,
+            strand,
+            barcode_columns,
+            include_barcode_quals,
+            include_polya,
         )
     else:
         logger.info("Demux columns not found; exporting bulk reads from annotation coordinates.")

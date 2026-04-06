@@ -125,6 +125,7 @@ def save_plots_to_pdf(
     """Generate annotation plots for multiple reads and save them to a PDF."""
     with PdfPages(filename) as pdf:
         from utils import get_version
+
         d = pdf.infodict()
         d["Creator"] = f"tranquillyzer v{get_version()}"
         d["Producer"] = f"tranquillyzer v{get_version()}"

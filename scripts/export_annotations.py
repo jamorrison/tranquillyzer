@@ -113,6 +113,7 @@ def process_full_length_reads_in_chunks_and_save(
     chunk_output_dir=None,
     split_concatenated=False,
     valid_structures=None,
+    known_patterns=None,
 ):
     """Post-process predictions into annotated reads and write chunk outputs."""
     reads_in_chunk = len(reads)
@@ -121,10 +122,21 @@ def process_full_length_reads_in_chunks_and_save(
 
     n_jobs_extract = min(16, reads_in_chunk)
     chunk_contiguous_annotated_sequences, expanded_read_names, source_indices = extract_annotated_full_length_seqs(
-        reads, predictions, model_path, actual_lengths, label_binarizer, seq_order, barcodes, n_jobs_extract,
-        original_read_names=original_read_names, split_concatenated=split_concatenated,
+        reads,
+        predictions,
+        model_path,
+        actual_lengths,
+        label_binarizer,
+        seq_order,
+        barcodes,
+        n_jobs_extract,
+        original_read_names=original_read_names,
+        split_concatenated=split_concatenated,
         valid_structures=valid_structures,
+        known_patterns=known_patterns,
     )
+
+    known_seg_names = list(known_patterns.keys()) if known_patterns else []
 
     chunk_df = pd.DataFrame.from_records(
         (
@@ -146,6 +158,18 @@ def process_full_length_reads_in_chunks_and_save(
                     f"{label}_Sequences": ", ".join(map(str, annotated_read[label]["Sequences"]))
                     for label in barcodes
                     if label in annotated_read and "Sequences" in annotated_read[label]
+                },
+                **{
+                    f"{seg}_Sequences": ", ".join(map(str, annotated_read[seg]["Sequences"]))
+                    if seg in annotated_read and "Sequences" in annotated_read.get(seg, {})
+                    else None
+                    for seg in known_seg_names
+                },
+                **{
+                    f"{seg}_edit_dist": ", ".join(map(str, annotated_read[seg]["EditDist"]))
+                    if seg in annotated_read and "EditDist" in annotated_read.get(seg, {})
+                    else None
+                    for seg in known_seg_names
                 },
                 "base_qualities": base_qualities[source_indices[i]] if output_fmt == "fastq" else None,
                 "architecture": annotated_read["architecture"],
@@ -199,8 +223,10 @@ def process_full_length_reads_in_chunks_and_save(
         else:
             output_df = valid_reads_df.copy()
             output_df["cDNA_length"] = output_df.apply(
-                lambda row: int(float(str(row["cDNA_Ends"]).split(",")[0].strip()))
-                - int(float(str(row["cDNA_Starts"]).split(",")[0].strip())),
+                lambda row: (
+                    int(float(str(row["cDNA_Ends"]).split(",")[0].strip()))
+                    - int(float(str(row["cDNA_Starts"]).split(",")[0].strip()))
+                ),
                 axis=1,
             )
             if run_demux and demuxed_chunk_file:
@@ -270,6 +296,7 @@ def post_process_reads(
     chunk_output_dir=None,
     split_concatenated=False,
     valid_structures=None,
+    known_patterns=None,
 ):
     """Wrapper around process_full_length_reads_in_chunks_and_save with memory cleanup."""
     process_full_length_reads_in_chunks_and_save(
@@ -299,10 +326,9 @@ def post_process_reads(
         chunk_output_dir,
         split_concatenated,
         valid_structures,
+        known_patterns,
     )
 
     gc.collect()  # Clean up memory after processing each chunk
 
     return True
-
-

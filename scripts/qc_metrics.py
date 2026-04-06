@@ -11,7 +11,6 @@ import os
 import re
 
 import numpy as np
-import pandas as pd
 import polars as pl
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -71,6 +70,7 @@ def _write_tsv(tsv_dir, filename, df):
     os.makedirs(tsv_dir, exist_ok=True)
     path = os.path.join(tsv_dir, filename)
     from utils import get_version
+
     with open(path, "w") as fh:
         fh.write(f"# tranquillyzer_version: {get_version()}\n")
         fh.write(df.write_csv(separator="\t"))
@@ -108,14 +108,11 @@ def _first_present(col_names, candidates):
 # ── shared cell_id expressions ────────────────────────────────────────────────
 # cell_id is numeric (as string) → demuxed; "ambiguous" string → ambiguous.
 
+
 def _expr_is_demuxed(cell_col):
     """Polars expression: read has a resolved numeric cell assignment."""
     col = pl.col(cell_col).cast(pl.Utf8)
-    return (
-        pl.col(cell_col).is_not_null()
-        & (col != "ambiguous")
-        & (col != "")
-    )
+    return pl.col(cell_col).is_not_null() & (col != "ambiguous") & (col != "")
 
 
 def _expr_is_ambiguous(cell_col):
@@ -126,8 +123,7 @@ def _expr_is_ambiguous(cell_col):
 def _add_cdna_length(df):
     """Add ``cDNA_length`` column from scalar ``cDNA_Starts`` / ``cDNA_Ends``."""
     return df.with_columns(
-        (pl.col("cDNA_Ends").cast(pl.Int64) - pl.col("cDNA_Starts").cast(pl.Int64))
-        .alias("cDNA_length")
+        (pl.col("cDNA_Ends").cast(pl.Int64) - pl.col("cDNA_Starts").cast(pl.Int64)).alias("cDNA_length")
     )
 
 
@@ -200,16 +196,16 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
     k = len(row)
 
     if k == n_cols:
-        spec_row   = [{} for _ in range(n_cols)]
-        colspans   = [1] * k
+        spec_row = [{} for _ in range(n_cols)]
+        colspans = [1] * k
         start_cols = list(range(1, n_cols + 1))
     elif k == 1:
-        spec_row   = [{"colspan": n_cols}] + [None] * (n_cols - 1)
-        colspans   = [n_cols]
+        spec_row = [{"colspan": n_cols}] + [None] * (n_cols - 1)
+        colspans = [n_cols]
         start_cols = [1]
     else:
-        base_span  = n_cols // k
-        extra      = n_cols % k
+        base_span = n_cols // k
+        extra = n_cols % k
         spec_row, start_cols, colspans = [], [], []
         col_cursor = 1
         for i in range(k):
@@ -223,7 +219,8 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
     subplot_titles = [_row_item(item)[0] for item in row]
 
     combined = make_subplots(
-        rows=1, cols=n_cols,
+        rows=1,
+        cols=n_cols,
         specs=[spec_row],
         subplot_titles=subplot_titles,
         horizontal_spacing=0.08,
@@ -240,7 +237,7 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
 
     for col_i, item in enumerate(row):
         _, fig, caption, caption_y, caption_xalign = _row_item(item)
-        c   = start_cols[col_i]
+        c = start_cols[col_i]
         sfx = "" if col_i == 0 else str(col_i + 1)
 
         trace_start = len(combined.data)
@@ -274,20 +271,25 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
             cap_x = new_right + 0.01
             cap_y = (ydom[0] + ydom[1]) / 2
             combined.add_annotation(
-                xref="paper", yref="paper",
-                x=cap_x, y=cap_y,
-                xanchor="left", yanchor="middle",
-                text=_wrap_caption(caption, colspans[col_i], n_cols,
-                                   full_chars=45),
+                xref="paper",
+                yref="paper",
+                x=cap_x,
+                y=cap_y,
+                xanchor="left",
+                yanchor="middle",
+                text=_wrap_caption(caption, colspans[col_i], n_cols, full_chars=45),
                 showarrow=False,
                 align="left",
                 font=dict(size=11, color="#666"),
             )
         elif caption:
             combined.add_annotation(
-                xref=f"x{sfx} domain", yref=f"y{sfx} domain",
-                x=0.5, y=caption_y,
-                xanchor="center", yanchor="top",
+                xref=f"x{sfx} domain",
+                yref=f"y{sfx} domain",
+                x=0.5,
+                y=caption_y,
+                xanchor="center",
+                yanchor="top",
                 text=_wrap_caption(caption, colspans[col_i], n_cols),
                 showarrow=False,
                 align="center",
@@ -331,11 +333,7 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
                     for key in ("visible", "showlegend"):
                         if key in args_list[0]:
                             local = args_list[0][key]
-                            padded = (
-                                [None] * trace_start
-                                + local
-                                + [None] * (total_traces - trace_start - len(local))
-                            )
+                            padded = [None] * trace_start + local + [None] * (total_traces - trace_start - len(local))
                             args_list[0][key] = padded
                 extra_menus.append(um_dict)
 
@@ -348,11 +346,8 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
                 extra_annots.append(an_dict)
 
     # Dynamic height/margin: taller when captions are below the plot.
-    has_below_caption = any(
-        _row_item(item)[2] and _row_item(item)[4] != "side"
-        for item in row
-    )
-    height   = 560 if has_below_caption else 480
+    has_below_caption = any(_row_item(item)[2] and _row_item(item)[4] != "side" for item in row)
+    height = 560 if has_below_caption else 480
     b_margin = 160 if has_below_caption else 40
 
     combined.update_layout(
@@ -362,8 +357,7 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
         plot_bgcolor="white",
         paper_bgcolor="#f5f7fa",
         showlegend=True,
-        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.9)",
-                    bordercolor="#ddd", borderwidth=1),
+        legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.9)", bordercolor="#ddd", borderwidth=1),
         margin=dict(t=80 if extra_menus else 60, b=b_margin, l=65, r=45),
         **({"updatemenus": extra_menus} if extra_menus else {}),
     )
@@ -371,10 +365,10 @@ def _build_row_figure(row, n_cols, shared_yaxes=False):
         for an in extra_annots:
             combined.add_annotation(**an)
     # Consistent axis styling across all subplots.
-    combined.update_xaxes(gridcolor="#eaeaea",
-                          title_font=dict(size=14, color="#444", family="Arial Black"))
-    combined.update_yaxes(gridcolor="#eaeaea", zeroline=False,
-                          title_font=dict(size=14, color="#444", family="Arial Black"))
+    combined.update_xaxes(gridcolor="#eaeaea", title_font=dict(size=14, color="#444", family="Arial Black"))
+    combined.update_yaxes(
+        gridcolor="#eaeaea", zeroline=False, title_font=dict(size=14, color="#444", family="Arial Black")
+    )
     if shared_yaxes:
         combined.update_yaxes(showticklabels=True)
     return combined
@@ -387,17 +381,19 @@ def _write_html_report(path, row_figs, sample_name):
     """
     import plotly.io as pio
     from utils import get_version
+
     __version__ = get_version()
 
     html_figs = []
     for i, fig in enumerate(row_figs):
-        html_figs.append(pio.to_html(
-            fig,
-            full_html=False,
-            include_plotlyjs="cdn" if i == 0 else False,
-            config={"displaylogo": False,
-                    "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
-        ))
+        html_figs.append(
+            pio.to_html(
+                fig,
+                full_html=False,
+                include_plotlyjs="cdn" if i == 0 else False,
+                config={"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+            )
+        )
 
     page_title = f"Tranquillyzer v{__version__} QC Report \u2014 {sample_name}"
     with open(path, "w", encoding="utf-8") as fh:
@@ -412,7 +408,7 @@ def _write_html_report(path, row_figs, sample_name):
         for fig_html in html_figs:
             fh.write(
                 '<div style="background:white;border-radius:8px;'
-                'box-shadow:0 1px 4px rgba(0,0,0,0.12);'
+                "box-shadow:0 1px 4px rgba(0,0,0,0.12);"
                 'margin-bottom:16px;padding:8px">'
             )
             fh.write(fig_html)
@@ -460,9 +456,7 @@ def _compute_summary(valid_path, invalid_path, vcols):
     if valid_path is not None:
         exprs = [pl.len().alias("n_rows")]
         if "ReadName" in vcols:
-            exprs.append(
-                pl.col("ReadName").cast(pl.Utf8).str.contains(r"__frag\d+$").sum().alias("n_fragments")
-            )
+            exprs.append(pl.col("ReadName").cast(pl.Utf8).str.contains(r"__frag\d+$").sum().alias("n_fragments"))
         if has_cell:
             exprs.append(_expr_is_demuxed(cell_col).sum().alias("n_demuxed"))
             exprs.append(_expr_is_ambiguous(cell_col).sum().alias("n_ambiguous"))
@@ -478,30 +472,28 @@ def _compute_summary(valid_path, invalid_path, vcols):
         icols = _probe_schema(invalid_path)
         i_exprs = [pl.len().alias("n_rows")]
         if "ReadName" in icols:
-            i_exprs.append(
-                pl.col("ReadName").cast(pl.Utf8).str.contains(r"__remainder$").sum().alias("n_remainder")
-            )
+            i_exprs.append(pl.col("ReadName").cast(pl.Utf8).str.contains(r"__remainder$").sum().alias("n_remainder"))
         irow = pl.scan_parquet(invalid_path).select(i_exprs).collect().row(0, named=True)
         n_invalid_rows = irow["n_rows"]
         n_concat_parents = irow.get("n_remainder", 0)
 
-    has_split        = n_fragments > 0
-    n_valid_natural  = n_valid_rows - n_fragments
-    n_invalid_true   = n_invalid_rows - n_concat_parents
+    has_split = n_fragments > 0
+    n_valid_natural = n_valid_rows - n_fragments
+    n_invalid_true = n_invalid_rows - n_concat_parents
     n_total_physical = n_valid_natural + n_concat_parents + n_invalid_true
 
     return {
-        "n_total":           n_total_physical,
-        "n_valid":           n_valid_natural,
-        "n_invalid":         n_invalid_true,
-        "n_concat_parents":  n_concat_parents,
-        "n_fragments":       n_fragments,
+        "n_total": n_total_physical,
+        "n_valid": n_valid_natural,
+        "n_invalid": n_invalid_true,
+        "n_concat_parents": n_concat_parents,
+        "n_fragments": n_fragments,
         "n_effective_valid": n_valid_natural + n_fragments,
-        "has_split":         has_split,
-        "n_demuxed":         n_demuxed,
-        "n_ambiguous":       n_ambiguous,
-        "has_cell":          has_cell,
-        "cell_col":          cell_col,
+        "has_split": has_split,
+        "n_demuxed": n_demuxed,
+        "n_ambiguous": n_ambiguous,
+        "has_cell": has_cell,
+        "cell_col": cell_col,
     }
 
 
@@ -514,13 +506,13 @@ def _plot_read_architecture(summary, sample_name, tsv_dir=None):
     (natural valid + recovered fragments).
     Returns (title, go.Figure, caption).
     """
-    n_total    = summary["n_total"]
-    n_valid    = summary["n_valid"]
-    n_invalid  = summary["n_invalid"]
-    has_split  = summary["has_split"]
-    n_concat   = summary["n_concat_parents"]
-    n_frags    = summary["n_fragments"]
-    n_eff      = summary["n_effective_valid"]
+    n_total = summary["n_total"]
+    n_valid = summary["n_valid"]
+    n_invalid = summary["n_invalid"]
+    has_split = summary["has_split"]
+    n_concat = summary["n_concat_parents"]
+    n_frags = summary["n_fragments"]
+    n_eff = summary["n_effective_valid"]
 
     def _pct(n, d):
         return 100.0 * n / d if d > 0 else 0.0
@@ -528,7 +520,7 @@ def _plot_read_architecture(summary, sample_name, tsv_dir=None):
     labels = ["Total", "Valid"]
     colors = ["#4C78A8", "#54A24B"]
     counts = [n_total, n_valid]
-    text   = [
+    text = [
         f"{n_total:,}",
         f"{n_valid:,}<br>({_pct(n_valid, n_total):.1f}%)",
     ]
@@ -537,10 +529,7 @@ def _plot_read_architecture(summary, sample_name, tsv_dir=None):
         labels.append("Concatenated")
         colors.append("#EECA3B")
         counts.append(n_concat)
-        text.append(
-            f"{n_concat:,}<br>({_pct(n_concat, n_total):.1f}%)"
-            f"<br>\u2192 {n_frags:,} frags"
-        )
+        text.append(f"{n_concat:,}<br>({_pct(n_concat, n_total):.1f}%)<br>\u2192 {n_frags:,} frags")
 
     labels.append("Invalid")
     colors.append("#E45756")
@@ -553,18 +542,25 @@ def _plot_read_architecture(summary, sample_name, tsv_dir=None):
         counts.append(n_eff)
         text.append(f"{n_eff:,}<br>({_pct(n_eff, n_total):.1f}%)")
 
-    fig = go.Figure(go.Bar(
-        x=labels, y=counts, text=text,
-        textposition="outside", cliponaxis=False,
-        textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1)),
-        hovertemplate="%{x}: %{y:,}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=counts,
+            text=text,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13),
+            marker=dict(color=colors, line=dict(color="white", width=1)),
+            hovertemplate="%{x}: %{y:,}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(tickfont_size=13),
         yaxis=dict(tickfont_size=13, title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
-        uniformtext_minsize=13, uniformtext_mode="show",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        uniformtext_minsize=13,
+        uniformtext_mode="show",
     )
 
     caption = (
@@ -574,21 +570,23 @@ def _plot_read_architecture(summary, sample_name, tsv_dir=None):
         "<b>Valid</b>: single complete pattern.&nbsp;&nbsp;"
     )
     if has_split:
-        caption += (
-            "<b>Concatenated</b>: reads split into fragments "
-            "(arrow shows recovered fragment count).&nbsp;&nbsp;"
-        )
+        caption += "<b>Concatenated</b>: reads split into fragments (arrow shows recovered fragment count).&nbsp;&nbsp;"
     caption += "<b>Invalid</b>: no identifiable pattern."
     if has_split:
-        caption += (
-            "&nbsp;&nbsp;<b>Effective Valid</b>: Valid + recovered fragments."
-        )
+        caption += "&nbsp;&nbsp;<b>Effective Valid</b>: Valid + recovered fragments."
     caption += "\n\n"
 
-    _write_tsv(tsv_dir, "read_architecture.tsv", pl.DataFrame({
-        "category": labels, "count": counts,
-        "percent": [round(100.0 * c / n_total, 2) if n_total > 0 else 0.0 for c in counts],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "read_architecture.tsv",
+        pl.DataFrame(
+            {
+                "category": labels,
+                "count": counts,
+                "percent": [round(100.0 * c / n_total, 2) if n_total > 0 else 0.0 for c in counts],
+            }
+        ),
+    )
 
     return "Read Architecture", fig, caption, -0.14
 
@@ -604,9 +602,9 @@ def _plot_barcode_assignment(summary, sample_name, tsv_dir=None):
     if not summary["has_cell"]:
         return None
 
-    has_split  = summary["has_split"]
-    n_denom    = summary["n_effective_valid"] if has_split else summary["n_valid"]
-    n_demuxed  = summary["n_demuxed"]
+    has_split = summary["has_split"]
+    n_denom = summary["n_effective_valid"] if has_split else summary["n_valid"]
+    n_demuxed = summary["n_demuxed"]
     n_ambiguous = summary["n_ambiguous"]
 
     def _pct(n, d):
@@ -615,36 +613,47 @@ def _plot_barcode_assignment(summary, sample_name, tsv_dir=None):
     labels = ["Demuxed", "Ambiguous"]
     colors = ["#72B7B2", "#F58518"]
     counts = [n_demuxed, n_ambiguous]
-    text   = [
+    text = [
         f"{n_demuxed:,}<br>({_pct(n_demuxed, n_denom):.1f}%)",
         f"{n_ambiguous:,}<br>({_pct(n_ambiguous, n_denom):.1f}%)",
     ]
 
-    fig = go.Figure(go.Bar(
-        x=labels, y=counts, text=text,
-        textposition="outside", cliponaxis=False,
-        textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1)),
-        hovertemplate="%{x}: %{y:,}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=counts,
+            text=text,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13),
+            marker=dict(color=colors, line=dict(color="white", width=1)),
+            hovertemplate="%{x}: %{y:,}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(tickfont_size=13),
         yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
-        uniformtext_minsize=13, uniformtext_mode="show",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        uniformtext_minsize=13,
+        uniformtext_mode="show",
     )
 
     denom_label = "effective valid reads (valid + recovered fragments)" if has_split else "valid reads"
-    caption = (
-        f"From {denom_label}, each is assigned to a cell barcode via Levenshtein distance."
-        "\n\n"
-    )
+    caption = f"From {denom_label}, each is assigned to a cell barcode via Levenshtein distance.\n\n"
     title = "Barcode Assignment (effective valid)" if has_split else "Barcode Assignment (valid reads)"
 
-    _write_tsv(tsv_dir, "barcode_assignment.tsv", pl.DataFrame({
-        "category": labels, "count": counts,
-        "percent": [round(100.0 * c / n_denom, 2) if n_denom > 0 else 0.0 for c in counts],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "barcode_assignment.tsv",
+        pl.DataFrame(
+            {
+                "category": labels,
+                "count": counts,
+                "percent": [round(100.0 * c / n_denom, 2) if n_denom > 0 else 0.0 for c in counts],
+            }
+        ),
+    )
 
     return title, fig, caption, -0.14
 
@@ -676,21 +685,17 @@ def _plot_invalid_reasons(invalid_path, tsv_dir=None):
     if df.is_empty():
         return None
 
-    vc = (
-        df.group_by("reason")
-        .agg(pl.len().alias("count"))
-        .sort("count", descending=True)
-    )
+    vc = df.group_by("reason").agg(pl.len().alias("count")).sort("count", descending=True)
     all_reasons = vc["reason"].to_list()
-    all_counts  = vc["count"].to_list()
-    total       = sum(all_counts)
-    n_total     = len(all_reasons)
+    all_counts = vc["count"].to_list()
+    total = sum(all_counts)
+    n_total = len(all_reasons)
 
-    _MAX_LABEL = 60   # truncate long reason strings for display
+    _MAX_LABEL = 60  # truncate long reason strings for display
 
     def _unique_labels(reasons):
         """Truncate long reasons and disambiguate collisions with a counter."""
-        raw = [r if len(r) <= _MAX_LABEL else r[:_MAX_LABEL - 1] + "…" for r in reasons]
+        raw = [r if len(r) <= _MAX_LABEL else r[: _MAX_LABEL - 1] + "…" for r in reasons]
         seen: dict[str, int] = {}
         out = []
         for lbl in raw:
@@ -703,67 +708,81 @@ def _plot_invalid_reasons(invalid_path, tsv_dir=None):
                 out[i] = f"{lbl} (1)"
         return out
 
-    labels  = _unique_labels(all_reasons)
-    pcts    = [100 * c / total if total else 0 for c in all_counts]
+    labels = _unique_labels(all_reasons)
+    pcts = [100 * c / total if total else 0 for c in all_counts]
 
     # Pre-slice for each preset; cap at actual count
     _PRESETS = [5, 10, 15, 20, 50]
-    presets  = [n for n in _PRESETS if n < n_total] + [n_total]
+    presets = [n for n in _PRESETS if n < n_total] + [n_total]
     preset_labels = [f"Top {n}" if n < n_total else "All" for n in presets]
 
     def _slice(n):
-        xs = labels[:n][::-1]       # reverse so largest is at top (horizontal bar)
+        xs = labels[:n][::-1]  # reverse so largest is at top (horizontal bar)
         ys = all_counts[:n][::-1]
         ps = pcts[:n][::-1]
-        hover = [
-            f"<b>{all_reasons[i]}</b><br>Count: {all_counts[i]:,}  ({pcts[i]:.1f}%)"
-            for i in range(n - 1, -1, -1)
-        ]
+        hover = [f"<b>{all_reasons[i]}</b><br>Count: {all_counts[i]:,}  ({pcts[i]:.1f}%)" for i in range(n - 1, -1, -1)]
         return xs, ys, ps, hover
 
     # Build initial trace (first preset)
     x0, y0, _, h0 = _slice(presets[0])
-    fig = go.Figure(go.Bar(
-        x=y0,
-        y=x0,
-        orientation="h",
-        marker=dict(color="#E45756"),
-        hovertext=h0,
-        hoverinfo="text",
-        showlegend=False,
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=y0,
+            y=x0,
+            orientation="h",
+            marker=dict(color="#E45756"),
+            hovertext=h0,
+            hoverinfo="text",
+            showlegend=False,
+        )
+    )
 
     # Dropdown buttons — each updates x/y/hovertext and the y-axis range
     _MENU_STYLE = dict(
-        type="dropdown", direction="down",
-        bgcolor="white", bordercolor="#ccc", borderwidth=1,
+        type="dropdown",
+        direction="down",
+        bgcolor="white",
+        bordercolor="#ccc",
+        borderwidth=1,
         font=dict(size=12),
         showactive=True,
     )
     buttons = []
     for n, lbl in zip(presets, preset_labels):
         xs, ys, _, hs = _slice(n)
-        buttons.append(dict(
-            label=lbl,
-            method="restyle",
-            args=[{"x": [ys], "y": [xs], "hovertext": [hs]}],
-        ))
+        buttons.append(
+            dict(
+                label=lbl,
+                method="restyle",
+                args=[{"x": [ys], "y": [xs], "hovertext": [hs]}],
+            )
+        )
 
     fig.update_layout(
-        updatemenus=[dict(
-            **_MENU_STYLE,
-            x=0.0, xanchor="left",
-            y=1.18, yanchor="top",
-            buttons=buttons,
-            active=0,
-        )],
-        annotations=[dict(
-            text="Show:", x=0.0, xanchor="left",
-            y=1.24, yanchor="top",
-            xref="paper", yref="paper",
-            showarrow=False,
-            font=dict(size=12, color="#444"),
-        )],
+        updatemenus=[
+            dict(
+                **_MENU_STYLE,
+                x=0.0,
+                xanchor="left",
+                y=1.18,
+                yanchor="top",
+                buttons=buttons,
+                active=0,
+            )
+        ],
+        annotations=[
+            dict(
+                text="Show:",
+                x=0.0,
+                xanchor="left",
+                y=1.24,
+                yanchor="top",
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=12, color="#444"),
+            )
+        ],
         xaxis=dict(
             title="Read Count",
             gridcolor="#f0f0f0",
@@ -782,10 +801,17 @@ def _plot_invalid_reasons(invalid_path, tsv_dir=None):
         f"{total:,} invalid reads total). Use the dropdown to adjust how many reasons are shown."
     )
 
-    _write_tsv(tsv_dir, "invalid_reasons.tsv", pl.DataFrame({
-        "reason": all_reasons, "count": all_counts,
-        "percent": [round(p, 2) for p in pcts],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "invalid_reasons.tsv",
+        pl.DataFrame(
+            {
+                "reason": all_reasons,
+                "count": all_counts,
+                "percent": [round(p, 2) for p in pcts],
+            }
+        ),
+    )
 
     return "Invalid Read Reasons", fig, caption, -0.20
 
@@ -810,7 +836,7 @@ def _plot_edit_distances(valid_path, barcode_types, vcols, tsv_dir=None):
         _MAX_DIST = 5
         vc = df[dist_col].cast(pl.Int64).value_counts().sort(dist_col)
         raw_distances = [int(d) for d in vc[dist_col].to_list()]
-        raw_counts    = vc["count"].to_list()
+        raw_counts = vc["count"].to_list()
 
         # Cap: group anything ≥ _MAX_DIST into a single "5+" bucket.
         capped: dict[int, int] = {}
@@ -818,26 +844,29 @@ def _plot_edit_distances(valid_path, barcode_types, vcols, tsv_dir=None):
             key = min(d, _MAX_DIST)
             capped[key] = capped.get(key, 0) + c
         distances = sorted(capped)
-        counts    = [capped[d] for d in distances]
-        total     = sum(counts)
+        counts = [capped[d] for d in distances]
+        total = sum(counts)
 
         x_labels = [f"≥{_MAX_DIST}" if d == _MAX_DIST else str(d) for d in distances]
-        text     = [f"{c:,}<br>({100*c/total:.1f}%)" if total else f"{c:,}" for c in counts]
+        text = [f"{c:,}<br>({100 * c / total:.1f}%)" if total else f"{c:,}" for c in counts]
 
-        fig = go.Figure(go.Bar(
-            x=x_labels,
-            y=counts,
-            text=text,
-            textposition="outside",
-            cliponaxis=False,
-            textfont=dict(size=13),
-            marker=dict(color=_BAR_COLOR, line=dict(color="white", width=1)),
-            hovertemplate="Edit dist %{x}: %{y:,}<extra></extra>",
-        ))
+        fig = go.Figure(
+            go.Bar(
+                x=x_labels,
+                y=counts,
+                text=text,
+                textposition="outside",
+                cliponaxis=False,
+                textfont=dict(size=13),
+                marker=dict(color=_BAR_COLOR, line=dict(color="white", width=1)),
+                hovertemplate="Edit dist %{x}: %{y:,}<extra></extra>",
+            )
+        )
         fig.update_layout(
             xaxis=dict(title="Edit Distance", tickfont_size=13),
             yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-            plot_bgcolor="white", paper_bgcolor="white",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
         )
 
         caption = (
@@ -849,14 +878,237 @@ def _plot_edit_distances(valid_path, barcode_types, vcols, tsv_dir=None):
             "<b>3+</b>: uncorrected; above threshold"
         )
 
-        _write_tsv(tsv_dir, f"edit_distance_{bc}.tsv", pl.DataFrame({
-            "edit_distance": x_labels, "count": counts,
-            "percent": [round(100 * c / total, 2) if total else 0.0 for c in counts],
-        }))
+        _write_tsv(
+            tsv_dir,
+            f"edit_distance_{bc}.tsv",
+            pl.DataFrame(
+                {
+                    "edit_distance": x_labels,
+                    "count": counts,
+                    "percent": [round(100 * c / total, 2) if total else 0.0 for c in counts],
+                }
+            ),
+        )
 
         results.append((f"Edit Distance — {bc}", fig, caption, -0.18))
 
     return results
+
+
+def _plot_edit_distance_boxplots(valid_path, barcode_types, vcols, tsv_dir=None):
+    """
+    Horizontal box plots of edit distance for barcodes and known sequences.
+
+    Barcode distances come from ``corrected_{bc}_min_dist`` (scalar int).
+    Known-sequence distances come from ``{seg}_edit_dist`` (comma-separated str).
+
+    Returns ``(all_valid_plot, demuxed_plot)`` — each is
+    ``(title, fig, caption, caption_y)`` or ``None``.
+    """
+    _KNOWN_SEG_RE = re.compile(r"^(.+)_edit_dist$")
+    _SEG_ORDER = ["5p", "CBC", "UMI", "SLS", "polyT", "cDNA", "polyA", "3p", "random_s", "random_e"]
+
+    # ── collect barcode min-dist columns (scalar int) ───────────────────────
+    bc_dist_cols = {}  # col_name → display label
+    for bc in barcode_types:
+        col = f"corrected_{bc}_min_dist"
+        if col in vcols:
+            bc_dist_cols[col] = bc
+
+    # ── collect known-sequence edit-dist columns (comma-sep str) ────────────
+    known_dist_cols = {}  # col_name → display label
+    for col in vcols:
+        m = _KNOWN_SEG_RE.match(col)
+        if m:
+            known_dist_cols[col] = m.group(1)
+
+    if not bc_dist_cols and not known_dist_cols:
+        return None, None
+
+    # ── determine y-axis order: canonical segment order, extras alphabetical
+    all_labels = set(bc_dist_cols.values()) | set(known_dist_cols.values())
+    ordered_labels = [s for s in _SEG_ORDER if s in all_labels]
+    ordered_labels.extend(sorted(all_labels - set(ordered_labels)))
+
+    # ── load data ───────────────────────────────────────────────────────────
+    cell_col = _first_present(vcols, ["cell_id", "corrected_CBC"])
+    load_cols = list(bc_dist_cols.keys()) + list(known_dist_cols.keys())
+    if cell_col:
+        load_cols.append(cell_col)
+
+    df = _scan_cols(valid_path, load_cols, schema=vcols)
+    if df.is_empty():
+        return None, None
+
+    def _compute_stats(sub_df):
+        stats = {}
+        # Barcode columns — already scalar int
+        for col, label in bc_dist_cols.items():
+            if col not in sub_df.columns:
+                continue
+            s = sub_df[col].drop_nulls().cast(pl.Int64)
+            if s.is_empty():
+                continue
+            q1 = s.quantile(0.25, interpolation="midpoint")
+            q3 = s.quantile(0.75, interpolation="midpoint")
+            stats[label] = dict(
+                n=len(s),
+                min=s.min(),
+                q1=q1,
+                median=s.median(),
+                q3=q3,
+                max=s.max(),
+            )
+        # Known-sequence columns — comma-separated, explode to individual values
+        for col, label in known_dist_cols.items():
+            if col not in sub_df.columns:
+                continue
+            s = (
+                sub_df.select(pl.col(col).cast(pl.Utf8).alias("_raw"))
+                .drop_nulls()
+                .filter(pl.col("_raw") != "")
+                .with_columns(pl.col("_raw").str.split(", ").alias("_parts"))
+                .explode("_parts")
+                .select(pl.col("_parts").cast(pl.Int64).alias("_val"))
+                .drop_nulls()
+            )["_val"]
+            if s.is_empty():
+                continue
+            q1 = s.quantile(0.25, interpolation="midpoint")
+            q3 = s.quantile(0.75, interpolation="midpoint")
+            stats[label] = dict(
+                n=len(s),
+                min=s.min(),
+                q1=q1,
+                median=s.median(),
+                q3=q3,
+                max=s.max(),
+            )
+        return stats
+
+    def _make_box(stats, color, title, label, tsv_filename=None):
+        if not stats:
+            return None
+        fig = go.Figure()
+        n_reads = 0
+        _CAP_H = 0.15
+        # Filter to present segments in canonical order
+        present = [s for s in ordered_labels if s in stats]
+
+        for i, seg in enumerate(present):
+            st = stats[seg]
+            n_reads = max(n_reads, st["n"])
+            iqr = st["q3"] - st["q1"]
+            lower = max(st["min"], st["q1"] - 1.5 * iqr)
+            upper = min(st["max"], st["q3"] + 1.5 * iqr)
+
+            # IQR box (Q1→Q3) — carries hover
+            fig.add_trace(
+                go.Bar(
+                    y=[i],
+                    x=[st["q3"] - st["q1"]],
+                    base=[st["q1"]],
+                    orientation="h",
+                    width=0.5,
+                    marker=dict(color=color, opacity=0.45, line=dict(color=color, width=1.5)),
+                    showlegend=False,
+                    hovertemplate=(
+                        f"<b>{seg}</b><br>"
+                        f"Median: {st['median']:,.1f}<br>"
+                        f"Q1: {st['q1']:,.1f}<br>"
+                        f"Q3: {st['q3']:,.1f}<br>"
+                        f"Lower fence: {lower:,.1f}<br>"
+                        f"Upper fence: {upper:,.1f}<br>"
+                        f"n = {st['n']:,}"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+            # Whisker lines
+            for x0, x1 in [(lower, st["q1"]), (st["q3"], upper)]:
+                fig.add_shape(type="line", x0=x0, x1=x1, y0=i, y1=i, line=dict(color=color, width=1.5))
+            # Whisker caps
+            for xc in [lower, upper]:
+                fig.add_shape(
+                    type="line", x0=xc, x1=xc, y0=i - _CAP_H, y1=i + _CAP_H, line=dict(color=color, width=1.5)
+                )
+            # Median line
+            fig.add_shape(
+                type="line",
+                x0=st["median"],
+                x1=st["median"],
+                y0=i - 0.25,
+                y1=i + 0.25,
+                line=dict(color="black", width=2.5),
+            )
+
+        max_upper = max(
+            (min(st["max"], st["q3"] + 1.5 * (st["q3"] - st["q1"])) for st in (stats[s] for s in present)),
+            default=0,
+        )
+        x_limit = max(10, max_upper + 2)
+        fig.update_layout(
+            xaxis=dict(
+                title="Edit Distance",
+                tickfont_size=13,
+                gridcolor="#f0f0f0",
+                dtick=1,
+                range=[-0.5, x_limit],
+                autorange=False,
+            ),
+            yaxis=dict(tickvals=list(range(len(present))), ticktext=present, tickfont_size=13, gridcolor="#f0f0f0"),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="closest",
+            bargap=0.3,
+        )
+        caption = (
+            f"Levenshtein edit-distance distributions across {n_reads:,} "
+            f"{label} reads for barcodes and known sequences. "
+            "Each box shows the median, IQR, and whiskers (1.5× IQR)."
+        )
+        if tsv_dir is not None and tsv_filename:
+            segs = [s for s in ordered_labels if s in stats]
+            _write_tsv(
+                tsv_dir,
+                tsv_filename,
+                pl.DataFrame(
+                    {
+                        "segment": segs,
+                        "n": [stats[s]["n"] for s in segs],
+                        "min": [stats[s]["min"] for s in segs],
+                        "q1": [stats[s]["q1"] for s in segs],
+                        "median": [stats[s]["median"] for s in segs],
+                        "q3": [stats[s]["q3"] for s in segs],
+                        "max": [stats[s]["max"] for s in segs],
+                    }
+                ),
+            )
+        return title, fig, caption, -0.14
+
+    all_stats = _compute_stats(df)
+    all_plot = _make_box(
+        all_stats,
+        "#2D8E2D",
+        "Edit Distance (All Valid Reads)",
+        "valid",
+        tsv_filename="edit_distance_boxplot_all.tsv",
+    )
+
+    demuxed_plot = None
+    if cell_col and cell_col in df.columns:
+        demux_df = df.filter(_expr_is_demuxed(cell_col))
+        if not demux_df.is_empty():
+            demux_stats = _compute_stats(demux_df)
+            demuxed_plot = _make_box(
+                demux_stats,
+                "#72B7B2",
+                "Edit Distance (Demuxed Reads)",
+                "demuxed",
+                tsv_filename="edit_distance_boxplot_demuxed.tsv",
+            )
+
+    return all_plot, demuxed_plot
 
 
 def _build_multires_histograms(group_dfs, max_len, all_nbins):
@@ -872,10 +1124,11 @@ def _build_multires_histograms(group_dfs, max_len, all_nbins):
 
     def _bin_counts_fine(df):
         return dict(
-            df.with_columns(
-                (pl.col("read_length") // finest_bw * finest_bw).alias("bin")
-            )
-            .group_by("bin").len().sort("bin").rows()
+            df.with_columns((pl.col("read_length") // finest_bw * finest_bw).alias("bin"))
+            .group_by("bin")
+            .len()
+            .sort("bin")
+            .rows()
         )
 
     fine_counts = {nm: _bin_counts_fine(group_dfs[nm]) for nm in group_dfs}
@@ -903,20 +1156,36 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width, tsv_dir=N
         return None
 
     _COLORS = {
-        "Total":              "#888888",
-        "Invalid":            "#E45756",
-        "Valid":              "#54A24B",
+        "Total": "#888888",
+        "Invalid": "#E45756",
+        "Valid": "#54A24B",
         "Valid — from split": "#8BC34A",
-        "Valid — Demuxed":    "#72B7B2",
-        "Valid — Ambiguous":  "#F58518",
+        "Valid — Demuxed": "#72B7B2",
+        "Valid — Ambiguous": "#F58518",
     }
-    _NBIN_PRESETS = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000,
-                     200_000, 300_000, 400_000, 500_000, 1_000_000]
+    _NBIN_PRESETS = [
+        50,
+        100,
+        200,
+        500,
+        1_000,
+        2_000,
+        5_000,
+        10_000,
+        20_000,
+        50_000,
+        100_000,
+        200_000,
+        300_000,
+        400_000,
+        500_000,
+        1_000_000,
+    ]
 
-    cell_col  = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
+    cell_col = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
     load_cols = ["read_length", "ReadName"] + ([cell_col] if cell_col else [])
-    valid_df  = _scan_cols(valid_path,   load_cols, schema=vcols) if valid_path   else pl.DataFrame()
-    inv_df    = _scan_cols(invalid_path, ["read_length"])        if invalid_path else pl.DataFrame()
+    valid_df = _scan_cols(valid_path, load_cols, schema=vcols) if valid_path else pl.DataFrame()
+    inv_df = _scan_cols(invalid_path, ["read_length"]) if invalid_path else pl.DataFrame()
 
     # Ensure read_length is numeric (chunk parquets may store it as str)
     if not valid_df.is_empty() and "read_length" in valid_df.columns:
@@ -954,9 +1223,7 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width, tsv_dir=N
 
     if cell_col and not valid_df.is_empty() and cell_col in valid_df.columns:
         cell_utf8 = pl.col(cell_col).cast(pl.Utf8)
-        vd_df = valid_df.filter(
-            pl.col(cell_col).is_not_null() & (cell_utf8 != "") & (cell_utf8 != "ambiguous")
-        )
+        vd_df = valid_df.filter(pl.col(cell_col).is_not_null() & (cell_utf8 != "") & (cell_utf8 != "ambiguous"))
         if not vd_df.is_empty():
             group_dfs["Valid — Demuxed"] = vd_df.select("read_length")
         va_df = valid_df.filter(cell_utf8 == "ambiguous")
@@ -967,56 +1234,72 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width, tsv_dir=N
         return None
 
     group_names = list(group_dfs.keys())
-    n_groups    = len(group_names)
+    n_groups = len(group_names)
 
     # Total-bins options: only keep presets that give ≥1 bp/bin
     all_nbins = [nb for nb in _NBIN_PRESETS if max_read_len // nb >= 1] or [100]
-    n_bw      = len(all_nbins)
+    n_bw = len(all_nbins)
     # Default: n_bins closest to max_read_len / bin_width
-    target    = max_read_len / bin_width if bin_width > 0 else 200
+    target = max_read_len / bin_width if bin_width > 0 else 200
     default_bw_idx = min(range(n_bw), key=lambda i: abs(all_nbins[i] - target))
 
     # ── add all traces (n_groups × n_bins options); only default visible ──────
     multires = _build_multires_histograms(group_dfs, max_read_len, all_nbins)
     fig = go.Figure()
     for nb_idx, n_bins in enumerate(all_nbins):
-        bw         = max(1, max_read_len // n_bins)
+        bw = max(1, max_read_len // n_bins)
         all_counts = multires[nb_idx]
-        all_bins   = sorted({b for c in all_counts.values() for b in c})
-        visible    = (nb_idx == default_bw_idx)
+        all_bins = sorted({b for c in all_counts.values() for b in c})
+        visible = nb_idx == default_bw_idx
         for name in group_names:
             counts = all_counts[name]
-            fig.add_trace(go.Scatter(
-                x=[int(b) + bw / 2 for b in all_bins],
-                y=[counts.get(b, 0) for b in all_bins],
-                mode="lines",
-                name=name,
-                visible=visible,
-                showlegend=visible,
-                line=dict(color=_COLORS.get(name, "#333"), width=2),
-                hovertemplate=(
-                    f"<b>{name}</b><br>Length: %{{x:,.0f}} bp"
-                    f"<br>Count: %{{y:,}}<extra></extra>"
-                ),
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=[int(b) + bw / 2 for b in all_bins],
+                    y=[counts.get(b, 0) for b in all_bins],
+                    mode="lines",
+                    name=name,
+                    visible=visible,
+                    showlegend=visible,
+                    line=dict(color=_COLORS.get(name, "#333"), width=2),
+                    hovertemplate=(f"<b>{name}</b><br>Length: %{{x:,.0f}} bp<br>Count: %{{y:,}}<extra></extra>"),
+                )
+            )
 
     # ── total-bins dropdown (restyle: toggle visible + showlegend) ────────────
     bw_buttons = []
     for nb_idx, n_bins in enumerate(all_nbins):
-        vis  = [False] * (n_groups * n_bw)
+        vis = [False] * (n_groups * n_bw)
         sleg = [False] * (n_groups * n_bw)
         for j in range(n_groups):
-            vis [nb_idx * n_groups + j] = True
+            vis[nb_idx * n_groups + j] = True
             sleg[nb_idx * n_groups + j] = True
-        bw_buttons.append(dict(
-            method="restyle",
-            label=f"{n_bins:,}",
-            args=[{"visible": vis, "showlegend": sleg}],
-        ))
+        bw_buttons.append(
+            dict(
+                method="restyle",
+                label=f"{n_bins:,}",
+                args=[{"visible": vis, "showlegend": sleg}],
+            )
+        )
 
     # ── x-axis cap dropdown ───────────────────────────────────────────────────
-    _CAP_PRESETS = [500, 1_000, 2_000, 3_000, 5_000, 7_500, 10_000, 15_000,
-                    20_000, 30_000, 50_000, 75_000, 100_000, 200_000, 500_000]
+    _CAP_PRESETS = [
+        500,
+        1_000,
+        2_000,
+        3_000,
+        5_000,
+        7_500,
+        10_000,
+        15_000,
+        20_000,
+        30_000,
+        50_000,
+        75_000,
+        100_000,
+        200_000,
+        500_000,
+    ]
     caps = [p for p in _CAP_PRESETS if p < max_read_len]
     cap_buttons = [
         dict(
@@ -1026,37 +1309,59 @@ def _plot_read_length_dist(valid_path, invalid_path, vcols, bin_width, tsv_dir=N
         )
         for cap in caps
     ]
-    cap_buttons.append(dict(
-        method="relayout",
-        label="All",
-        args=[{"xaxis.autorange": True}],
-    ))
+    cap_buttons.append(
+        dict(
+            method="relayout",
+            label="All",
+            args=[{"xaxis.autorange": True}],
+        )
+    )
 
-    _MENU = dict(type="dropdown", direction="down", font=dict(size=12),
-                 showactive=True, bgcolor="white", bordercolor="#ccc",
-                 y=1.18, yanchor="top")
+    _MENU = dict(
+        type="dropdown",
+        direction="down",
+        font=dict(size=12),
+        showactive=True,
+        bgcolor="white",
+        bordercolor="#ccc",
+        y=1.18,
+        yanchor="top",
+    )
 
     fig.update_layout(
         xaxis=dict(title="Read Length (bp)", tickfont_size=13, gridcolor="#f0f0f0"),
-        yaxis=dict(title="Read Count",       tickfont_size=13, gridcolor="#f0f0f0",
-                   zerolinecolor="#ddd"),
+        yaxis=dict(title="Read Count", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd"),
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
         legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
         updatemenus=[
-            dict(**_MENU, active=default_bw_idx,
-                 x=0.0,  xanchor="left", buttons=bw_buttons),
-            dict(**_MENU, active=len(cap_buttons) - 1,
-                 x=0.12, xanchor="left", buttons=cap_buttons),
+            dict(**_MENU, active=default_bw_idx, x=0.0, xanchor="left", buttons=bw_buttons),
+            dict(**_MENU, active=len(cap_buttons) - 1, x=0.12, xanchor="left", buttons=cap_buttons),
         ],
         annotations=[
-            dict(text="Bins:", x=0.0,  xanchor="left", y=1.24, yanchor="top",
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=12, color="#444")),
-            dict(text="Cap x-axis:", x=0.12, xanchor="left", y=1.24, yanchor="top",
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=12, color="#444")),
+            dict(
+                text="Bins:",
+                x=0.0,
+                xanchor="left",
+                y=1.24,
+                yanchor="top",
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=12, color="#444"),
+            ),
+            dict(
+                text="Cap x-axis:",
+                x=0.12,
+                xanchor="left",
+                y=1.24,
+                yanchor="top",
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=12, color="#444"),
+            ),
         ],
     )
 
@@ -1096,17 +1401,33 @@ def _plot_cdna_length_dist(valid_path, vcols, bin_width, tsv_dir=None):
         return None
 
     _COLORS = {
-        "Valid":              "#54A24B",
+        "Valid": "#54A24B",
         "Valid — from split": "#8BC34A",
-        "Valid — Demuxed":    "#72B7B2",
-        "Valid — Ambiguous":  "#F58518",
+        "Valid — Demuxed": "#72B7B2",
+        "Valid — Ambiguous": "#F58518",
     }
-    _NBIN_PRESETS = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000,
-                     200_000, 300_000, 400_000, 500_000, 1_000_000]
+    _NBIN_PRESETS = [
+        50,
+        100,
+        200,
+        500,
+        1_000,
+        2_000,
+        5_000,
+        10_000,
+        20_000,
+        50_000,
+        100_000,
+        200_000,
+        300_000,
+        400_000,
+        500_000,
+        1_000_000,
+    ]
 
-    cell_col  = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
+    cell_col = _first_present(list(vcols), ["cell_id", "corrected_CBC"])
     load_cols = ["cDNA_Starts", "cDNA_Ends", "ReadName"] + ([cell_col] if cell_col else [])
-    valid_df  = _scan_cols(valid_path, load_cols, schema=vcols) if valid_path else pl.DataFrame()
+    valid_df = _scan_cols(valid_path, load_cols, schema=vcols) if valid_path else pl.DataFrame()
 
     if valid_df.is_empty() or "cDNA_Starts" not in valid_df.columns or "cDNA_Ends" not in valid_df.columns:
         return None
@@ -1132,9 +1453,7 @@ def _plot_cdna_length_dist(valid_path, vcols, bin_width, tsv_dir=None):
 
     if cell_col and cell_col in valid_df.columns:
         cell_utf8 = pl.col(cell_col).cast(pl.Utf8)
-        vd_df = valid_df.filter(
-            pl.col(cell_col).is_not_null() & (cell_utf8 != "") & (cell_utf8 != "ambiguous")
-        )
+        vd_df = valid_df.filter(pl.col(cell_col).is_not_null() & (cell_utf8 != "") & (cell_utf8 != "ambiguous"))
         if not vd_df.is_empty():
             group_dfs["Valid — Demuxed"] = vd_df.select("cDNA_length").rename({"cDNA_length": "read_length"})
         va_df = valid_df.filter(cell_utf8 == "ambiguous")
@@ -1145,51 +1464,67 @@ def _plot_cdna_length_dist(valid_path, vcols, bin_width, tsv_dir=None):
         return None
 
     group_names = list(group_dfs.keys())
-    n_groups    = len(group_names)
+    n_groups = len(group_names)
 
     all_nbins = [nb for nb in _NBIN_PRESETS if max_len // nb >= 1] or [100]
-    n_bw      = len(all_nbins)
-    target    = max_len / bin_width if bin_width > 0 else 200
+    n_bw = len(all_nbins)
+    target = max_len / bin_width if bin_width > 0 else 200
     default_bw_idx = min(range(n_bw), key=lambda i: abs(all_nbins[i] - target))
 
     multires = _build_multires_histograms(group_dfs, max_len, all_nbins)
     fig = go.Figure()
     for nb_idx, n_bins in enumerate(all_nbins):
-        bw         = max(1, max_len // n_bins)
+        bw = max(1, max_len // n_bins)
         all_counts = multires[nb_idx]
-        all_bins   = sorted({b for c in all_counts.values() for b in c})
-        visible    = (nb_idx == default_bw_idx)
+        all_bins = sorted({b for c in all_counts.values() for b in c})
+        visible = nb_idx == default_bw_idx
         for name in group_names:
             counts = all_counts[name]
-            fig.add_trace(go.Scatter(
-                x=[int(b) + bw / 2 for b in all_bins],
-                y=[counts.get(b, 0) for b in all_bins],
-                mode="lines",
-                name=name,
-                visible=visible,
-                showlegend=visible,
-                line=dict(color=_COLORS.get(name, "#333"), width=2),
-                hovertemplate=(
-                    f"<b>{name}</b><br>Length: %{{x:,.0f}} bp"
-                    f"<br>Count: %{{y:,}}<extra></extra>"
-                ),
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=[int(b) + bw / 2 for b in all_bins],
+                    y=[counts.get(b, 0) for b in all_bins],
+                    mode="lines",
+                    name=name,
+                    visible=visible,
+                    showlegend=visible,
+                    line=dict(color=_COLORS.get(name, "#333"), width=2),
+                    hovertemplate=(f"<b>{name}</b><br>Length: %{{x:,.0f}} bp<br>Count: %{{y:,}}<extra></extra>"),
+                )
+            )
 
     bw_buttons = []
     for nb_idx, n_bins in enumerate(all_nbins):
-        vis  = [False] * (n_groups * n_bw)
+        vis = [False] * (n_groups * n_bw)
         sleg = [False] * (n_groups * n_bw)
         for j in range(n_groups):
-            vis [nb_idx * n_groups + j] = True
+            vis[nb_idx * n_groups + j] = True
             sleg[nb_idx * n_groups + j] = True
-        bw_buttons.append(dict(
-            method="restyle",
-            label=f"{n_bins:,}",
-            args=[{"visible": vis, "showlegend": sleg}],
-        ))
+        bw_buttons.append(
+            dict(
+                method="restyle",
+                label=f"{n_bins:,}",
+                args=[{"visible": vis, "showlegend": sleg}],
+            )
+        )
 
-    _CAP_PRESETS = [500, 1_000, 2_000, 3_000, 5_000, 7_500, 10_000, 15_000,
-                    20_000, 30_000, 50_000, 75_000, 100_000, 200_000, 500_000]
+    _CAP_PRESETS = [
+        500,
+        1_000,
+        2_000,
+        3_000,
+        5_000,
+        7_500,
+        10_000,
+        15_000,
+        20_000,
+        30_000,
+        50_000,
+        75_000,
+        100_000,
+        200_000,
+        500_000,
+    ]
     caps = [p for p in _CAP_PRESETS if p < max_len]
     cap_buttons = [
         dict(
@@ -1199,37 +1534,59 @@ def _plot_cdna_length_dist(valid_path, vcols, bin_width, tsv_dir=None):
         )
         for cap in caps
     ]
-    cap_buttons.append(dict(
-        method="relayout",
-        label="All",
-        args=[{"xaxis.autorange": True}],
-    ))
+    cap_buttons.append(
+        dict(
+            method="relayout",
+            label="All",
+            args=[{"xaxis.autorange": True}],
+        )
+    )
 
-    _MENU = dict(type="dropdown", direction="down", font=dict(size=12),
-                 showactive=True, bgcolor="white", bordercolor="#ccc",
-                 y=1.18, yanchor="top")
+    _MENU = dict(
+        type="dropdown",
+        direction="down",
+        font=dict(size=12),
+        showactive=True,
+        bgcolor="white",
+        bordercolor="#ccc",
+        y=1.18,
+        yanchor="top",
+    )
 
     fig.update_layout(
         xaxis=dict(title="cDNA Length (bp)", tickfont_size=13, gridcolor="#f0f0f0"),
-        yaxis=dict(title="Read Count",       tickfont_size=13, gridcolor="#f0f0f0",
-                   zerolinecolor="#ddd"),
+        yaxis=dict(title="Read Count", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd"),
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
         legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
         updatemenus=[
-            dict(**_MENU, active=default_bw_idx,
-                 x=0.0,  xanchor="left", buttons=bw_buttons),
-            dict(**_MENU, active=len(cap_buttons) - 1,
-                 x=0.12, xanchor="left", buttons=cap_buttons),
+            dict(**_MENU, active=default_bw_idx, x=0.0, xanchor="left", buttons=bw_buttons),
+            dict(**_MENU, active=len(cap_buttons) - 1, x=0.12, xanchor="left", buttons=cap_buttons),
         ],
         annotations=[
-            dict(text="Bins:", x=0.0,  xanchor="left", y=1.24, yanchor="top",
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=12, color="#444")),
-            dict(text="Cap x-axis:", x=0.12, xanchor="left", y=1.24, yanchor="top",
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=12, color="#444")),
+            dict(
+                text="Bins:",
+                x=0.0,
+                xanchor="left",
+                y=1.24,
+                yanchor="top",
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=12, color="#444"),
+            ),
+            dict(
+                text="Cap x-axis:",
+                x=0.12,
+                xanchor="left",
+                y=1.24,
+                yanchor="top",
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=12, color="#444"),
+            ),
         ],
     )
 
@@ -1286,35 +1643,35 @@ def _plot_knee(valid_path, vcols, tsv_dir=None):
     if df.is_empty():
         return None
 
-    counts = (
-        df.group_by(bc_col)
-        .agg(pl.len().alias("n"))
-        .sort("n", descending=True)
-    )
+    counts = df.group_by(bc_col).agg(pl.len().alias("n")).sort("n", descending=True)
     ranks = list(range(1, len(counts) + 1))
-    ns    = counts["n"].to_list()
+    ns = counts["n"].to_list()
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=ranks,
-        y=ns,
-        mode="lines",
-        line=dict(color="#54A24B", width=2),
-        name="Reads per barcode",
-        hovertemplate="Rank %{x:,}<br>Reads: %{y:,}<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=ranks,
+            y=ns,
+            mode="lines",
+            line=dict(color="#54A24B", width=2),
+            name="Reads per barcode",
+            hovertemplate="Rank %{x:,}<br>Reads: %{y:,}<extra></extra>",
+        )
+    )
 
     fig.update_layout(
         xaxis=dict(
             title="Barcodes (rank)",
-            type="log", dtick=1,
+            type="log",
+            dtick=1,
             tickfont_size=13,
             gridcolor="#f0f0f0",
             minor=dict(showgrid=False, ticks="", nticks=0),
         ),
         yaxis=dict(
             title="Reads (transcripts proxy)",
-            type="log", dtick=1,
+            type="log",
+            dtick=1,
             tickfont_size=13,
             gridcolor="#f0f0f0",
             zerolinecolor="#ddd",
@@ -1332,11 +1689,17 @@ def _plot_knee(valid_path, vcols, tsv_dir=None):
         "Note: UMI deduplication is applied at the BAM level and is not reflected here."
     )
 
-    _write_tsv(tsv_dir, "reads_per_cell.tsv", pl.DataFrame({
-        "rank": ranks,
-        "barcode": counts[bc_col].to_list(),
-        "read_count": ns,
-    }))
+    _write_tsv(
+        tsv_dir,
+        "reads_per_cell.tsv",
+        pl.DataFrame(
+            {
+                "rank": ranks,
+                "barcode": counts[bc_col].to_list(),
+                "read_count": ns,
+            }
+        ),
+    )
 
     return "Reads per Cell", fig, caption, -0.14
 
@@ -1363,27 +1726,50 @@ def _plot_knee_whitelist_free(metadata_dir, tsv_dir=None):
     n_knee = df.filter(~pl.col("status").str.starts_with("below_knee")).height
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=ranks, y=sorted_counts, mode="lines",
-        line=dict(color="#54A24B", width=2),
-        name="Reads per barcode",
-        hovertemplate="Rank %{x:,}<br>Reads: %{y:,}<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=ranks,
+            y=sorted_counts,
+            mode="lines",
+            line=dict(color="#54A24B", width=2),
+            name="Reads per barcode",
+            hovertemplate="Rank %{x:,}<br>Reads: %{y:,}<extra></extra>",
+        )
+    )
     # Vertical knee threshold line (Scatter trace — add_vline doesn't render on log axes)
     y_min, y_max = sorted_counts[-1], sorted_counts[0]
-    fig.add_trace(go.Scatter(
-        x=[n_knee, n_knee], y=[y_min, y_max], mode="lines",
-        line=dict(color="#E45756", width=1.5, dash="dash"),
-        name=f"Knee ({n_knee:,})", showlegend=True,
-        hovertemplate=f"Knee: {n_knee:,} barcodes<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=[n_knee, n_knee],
+            y=[y_min, y_max],
+            mode="lines",
+            line=dict(color="#E45756", width=1.5, dash="dash"),
+            name=f"Knee ({n_knee:,})",
+            showlegend=True,
+            hovertemplate=f"Knee: {n_knee:,} barcodes<extra></extra>",
+        )
+    )
 
     fig.update_layout(
-        xaxis=dict(title="Barcode rank", type="log", dtick=1, tickfont_size=13, gridcolor="#f0f0f0",
-                   minor=dict(showgrid=False, ticks="", nticks=0)),
-        yaxis=dict(title="Read count", type="log", dtick=1, tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd",
-                   minor=dict(showgrid=False, ticks="", nticks=0)),
-        plot_bgcolor="white", paper_bgcolor="white",
+        xaxis=dict(
+            title="Barcode rank",
+            type="log",
+            dtick=1,
+            tickfont_size=13,
+            gridcolor="#f0f0f0",
+            minor=dict(showgrid=False, ticks="", nticks=0),
+        ),
+        yaxis=dict(
+            title="Read count",
+            type="log",
+            dtick=1,
+            tickfont_size=13,
+            gridcolor="#f0f0f0",
+            zerolinecolor="#ddd",
+            minor=dict(showgrid=False, ticks="", nticks=0),
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
     )
 
     caption = (
@@ -1394,10 +1780,17 @@ def _plot_knee_whitelist_free(metadata_dir, tsv_dir=None):
     )
 
     # Export rank + read_count + above/below knee status (compact; full barcode_counts.tsv lives in metadata)
-    _write_tsv(tsv_dir, "barcode_discovery.tsv", pl.DataFrame({
-        "rank": ranks, "read_count": sorted_counts,
-        "above_knee": [r <= n_knee for r in ranks],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "barcode_discovery.tsv",
+        pl.DataFrame(
+            {
+                "rank": ranks,
+                "read_count": sorted_counts,
+                "above_knee": [r <= n_knee for r in ranks],
+            }
+        ),
+    )
 
     return "Barcode Discovery", fig, caption, -0.14
 
@@ -1434,12 +1827,14 @@ def _plot_read_length_per_cell(valid_path, vcols, tsv_dir=None):
         )
         .filter(pl.col("_cid") != "")
         .group_by("_cid")
-        .agg([
-            pl.col("read_length").quantile(0.25, interpolation="midpoint").alias("q1"),
-            pl.col("read_length").median().alias("median"),
-            pl.col("read_length").quantile(0.75, interpolation="midpoint").alias("q3"),
-            pl.col("read_length").count().alias("n"),
-        ])
+        .agg(
+            [
+                pl.col("read_length").quantile(0.25, interpolation="midpoint").alias("q1"),
+                pl.col("read_length").median().alias("median"),
+                pl.col("read_length").quantile(0.75, interpolation="midpoint").alias("q3"),
+                pl.col("read_length").count().alias("n"),
+            ]
+        )
         .collect()
     )
 
@@ -1449,51 +1844,51 @@ def _plot_read_length_per_cell(valid_path, vcols, tsv_dir=None):
     # Sort by median read length descending; "ambiguous" appended last — done
     # inside polars to avoid slow Python list sort on large cell counts.
     stats = (
-        stats
-        .with_columns((pl.col("_cid") == "ambiguous").alias("_is_ambig"))
+        stats.with_columns((pl.col("_cid") == "ambiguous").alias("_is_ambig"))
         .sort(["_is_ambig", "median"], descending=[False, True])
         .drop("_is_ambig")
     )
     rows = stats.to_dicts()
 
-    x        = [r["_cid"]  for r in rows]
-    medians  = [r["median"] for r in rows]
-    q1s      = [r["q1"]     for r in rows]
-    q3s      = [r["q3"]     for r in rows]
+    x = [r["_cid"] for r in rows]
+    medians = [r["median"] for r in rows]
+    q1s = [r["q1"] for r in rows]
+    q3s = [r["q3"] for r in rows]
 
-    _BAND_COLOR   = "rgba(84,162,75,0.25)"   # green, semi-transparent
+    _BAND_COLOR = "rgba(84,162,75,0.25)"  # green, semi-transparent
     _MEDIAN_COLOR = "#54A24B"
 
     # IQR band: upper boundary then reversed lower boundary (Plotly fill trick)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=x + x[::-1],
-        y=q3s + q1s[::-1],
-        fill="toself",
-        fillcolor=_BAND_COLOR,
-        line=dict(color="rgba(0,0,0,0)"),
-        hoverinfo="skip",
-        showlegend=False,
-    ))
-    fig.add_trace(go.Scatter(
-        x=x,
-        y=medians,
-        mode="lines+markers",
-        line=dict(color=_MEDIAN_COLOR, width=2),
-        marker=dict(size=4, color=_MEDIAN_COLOR),
-        showlegend=False,
-        hovertemplate=(
-            "<b>Cell %{x}</b><br>"
-            "Median: %{y:,.0f} bp<extra></extra>"
-        ),
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=x + x[::-1],
+            y=q3s + q1s[::-1],
+            fill="toself",
+            fillcolor=_BAND_COLOR,
+            line=dict(color="rgba(0,0,0,0)"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=medians,
+            mode="lines+markers",
+            line=dict(color=_MEDIAN_COLOR, width=2),
+            marker=dict(size=4, color=_MEDIAN_COLOR),
+            showlegend=False,
+            hovertemplate=("<b>Cell %{x}</b><br>Median: %{y:,.0f} bp<extra></extra>"),
+        )
+    )
 
     n_cells = len([r for r in rows if r["_cid"] != "ambiguous"])
     fig.update_layout(
         xaxis=dict(
             title=f"Cell ID — sorted by median read length  ({n_cells:,} demuxed + ambiguous)",
             tickfont_size=11,
-            showticklabels=len(x) <= 200,   # hide labels when too crowded
+            showticklabels=len(x) <= 200,  # hide labels when too crowded
             gridcolor="#f0f0f0",
         ),
         yaxis=dict(
@@ -1513,13 +1908,19 @@ def _plot_read_length_per_cell(valid_path, vcols, tsv_dir=None):
         "Cell IDs are sorted by median read length (descending); ambiguous reads are appended last."
     )
 
-    _write_tsv(tsv_dir, "read_length_per_cell.tsv", pl.DataFrame({
-        "cell_id": x,
-        "n": [r["n"] for r in rows],
-        "q1": q1s,
-        "median": medians,
-        "q3": q3s,
-    }))
+    _write_tsv(
+        tsv_dir,
+        "read_length_per_cell.tsv",
+        pl.DataFrame(
+            {
+                "cell_id": x,
+                "n": [r["n"] for r in rows],
+                "q1": q1s,
+                "median": medians,
+                "q3": q3s,
+            }
+        ),
+    )
 
     return "Read Length per Cell", fig, caption, -0.14
 
@@ -1547,12 +1948,14 @@ def _plot_cdna_length_per_cell(valid_path, vcols, tsv_dir=None):
         )
         .filter((pl.col("_cid") != "") & pl.col("cDNA_length").is_not_null() & (pl.col("cDNA_length") > 0))
         .group_by("_cid")
-        .agg([
-            pl.col("cDNA_length").quantile(0.25, interpolation="midpoint").alias("q1"),
-            pl.col("cDNA_length").median().alias("median"),
-            pl.col("cDNA_length").quantile(0.75, interpolation="midpoint").alias("q3"),
-            pl.col("cDNA_length").count().alias("n"),
-        ])
+        .agg(
+            [
+                pl.col("cDNA_length").quantile(0.25, interpolation="midpoint").alias("q1"),
+                pl.col("cDNA_length").median().alias("median"),
+                pl.col("cDNA_length").quantile(0.75, interpolation="midpoint").alias("q3"),
+                pl.col("cDNA_length").count().alias("n"),
+            ]
+        )
         .collect()
     )
 
@@ -1560,43 +1963,43 @@ def _plot_cdna_length_per_cell(valid_path, vcols, tsv_dir=None):
         return None
 
     stats = (
-        stats
-        .with_columns((pl.col("_cid") == "ambiguous").alias("_is_ambig"))
+        stats.with_columns((pl.col("_cid") == "ambiguous").alias("_is_ambig"))
         .sort(["_is_ambig", "median"], descending=[False, True])
         .drop("_is_ambig")
     )
     rows = stats.to_dicts()
 
-    x        = [r["_cid"]   for r in rows]
-    medians  = [r["median"]  for r in rows]
-    q1s      = [r["q1"]      for r in rows]
-    q3s      = [r["q3"]      for r in rows]
+    x = [r["_cid"] for r in rows]
+    medians = [r["median"] for r in rows]
+    q1s = [r["q1"] for r in rows]
+    q3s = [r["q3"] for r in rows]
 
-    _BAND_COLOR   = "rgba(84,162,75,0.25)"   # green, semi-transparent
+    _BAND_COLOR = "rgba(84,162,75,0.25)"  # green, semi-transparent
     _MEDIAN_COLOR = "#54A24B"
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=x + x[::-1],
-        y=q3s + q1s[::-1],
-        fill="toself",
-        fillcolor=_BAND_COLOR,
-        line=dict(color="rgba(0,0,0,0)"),
-        hoverinfo="skip",
-        showlegend=False,
-    ))
-    fig.add_trace(go.Scatter(
-        x=x,
-        y=medians,
-        mode="lines+markers",
-        line=dict(color=_MEDIAN_COLOR, width=2),
-        marker=dict(size=4, color=_MEDIAN_COLOR),
-        showlegend=False,
-        hovertemplate=(
-            "<b>Cell %{x}</b><br>"
-            "Median: %{y:,.0f} bp<extra></extra>"
-        ),
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=x + x[::-1],
+            y=q3s + q1s[::-1],
+            fill="toself",
+            fillcolor=_BAND_COLOR,
+            line=dict(color="rgba(0,0,0,0)"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=medians,
+            mode="lines+markers",
+            line=dict(color=_MEDIAN_COLOR, width=2),
+            marker=dict(size=4, color=_MEDIAN_COLOR),
+            showlegend=False,
+            hovertemplate=("<b>Cell %{x}</b><br>Median: %{y:,.0f} bp<extra></extra>"),
+        )
+    )
 
     n_cells = len([r for r in rows if r["_cid"] != "ambiguous"])
     fig.update_layout(
@@ -1623,13 +2026,19 @@ def _plot_cdna_length_per_cell(valid_path, vcols, tsv_dir=None):
         "Cell IDs are sorted by median cDNA length (descending); ambiguous reads are appended last."
     )
 
-    _write_tsv(tsv_dir, "cdna_length_per_cell.tsv", pl.DataFrame({
-        "cell_id": x,
-        "n": [r["n"] for r in rows],
-        "q1": q1s,
-        "median": medians,
-        "q3": q3s,
-    }))
+    _write_tsv(
+        tsv_dir,
+        "cdna_length_per_cell.tsv",
+        pl.DataFrame(
+            {
+                "cell_id": x,
+                "n": [r["n"] for r in rows],
+                "q1": q1s,
+                "median": medians,
+                "q3": q3s,
+            }
+        ),
+    )
 
     return "cDNA Length per Cell", fig, caption, -0.14
 
@@ -1649,7 +2058,7 @@ def _detect_segments(vcols):
     extra = set()
     for col in vcols:
         if col.endswith("_Starts"):
-            seg = col[:-len("_Starts")]
+            seg = col[: -len("_Starts")]
             if f"{seg}_Ends" in vcols:
                 if seg in _ORDERED:
                     found.append(seg)
@@ -1694,9 +2103,7 @@ def _load_segment_lengths(path, segments, vcols):
             if seg in seq_segments and seq_col in sub_df.columns:
                 try:
                     len_col = (
-                        sub_df.select(
-                            pl.col(seq_col).cast(pl.Utf8).str.len_chars().alias("_len")
-                        )
+                        sub_df.select(pl.col(seq_col).cast(pl.Utf8).str.len_chars().alias("_len"))
                         .drop_nulls()
                         .filter(pl.col("_len") > 0)
                     )
@@ -1708,24 +2115,19 @@ def _load_segment_lengths(path, segments, vcols):
                     continue
                 try:
                     len_col = (
-                        sub_df.select(
-                            (pl.col(ec).cast(pl.Int64) - pl.col(sc).cast(pl.Int64)).alias("_len")
-                        )
+                        sub_df.select((pl.col(ec).cast(pl.Int64) - pl.col(sc).cast(pl.Int64)).alias("_len"))
                         .drop_nulls()
                         .filter(pl.col("_len") >= 0)
                     )
                 except Exception:
                     try:
                         len_col = (
-                            sub_df.select(pl.col(sc).cast(pl.Utf8).alias("_s"),
-                                          pl.col(ec).cast(pl.Utf8).alias("_e"))
+                            sub_df.select(pl.col(sc).cast(pl.Utf8).alias("_s"), pl.col(ec).cast(pl.Utf8).alias("_e"))
                             .with_columns(
                                 pl.col("_s").str.split(", ").list.eval(pl.element().cast(pl.Int64)).alias("_si"),
                                 pl.col("_e").str.split(", ").list.eval(pl.element().cast(pl.Int64)).alias("_ei"),
                             )
-                            .select(
-                                (pl.col("_ei") - pl.col("_si")).list.sum().alias("_len")
-                            )
+                            .select((pl.col("_ei") - pl.col("_si")).list.sum().alias("_len"))
                             .drop_nulls()
                             .filter(pl.col("_len") >= 0)
                         )
@@ -1737,8 +2139,12 @@ def _load_segment_lengths(path, segments, vcols):
             q1 = s.quantile(0.25, interpolation="midpoint")
             q3 = s.quantile(0.75, interpolation="midpoint")
             result[seg] = dict(
-                n=len(s), min=s.min(), q1=q1,
-                median=s.median(), q3=q3, max=s.max(),
+                n=len(s),
+                min=s.min(),
+                q1=q1,
+                median=s.median(),
+                q3=q3,
+                max=s.max(),
             )
         return result
 
@@ -1758,53 +2164,58 @@ def _make_segment_boxplot(seg_stats, color, title, label, tsv_dir=None, tsv_file
     if not seg_stats:
         return None
 
+    segs = list(seg_stats.keys())
     fig = go.Figure()
     n_reads = 0
-    for seg in reversed(list(seg_stats.keys())):
+    _CAP_H = 0.15
+
+    for i, seg in enumerate(segs):
         st = seg_stats[seg]
         n_reads = max(n_reads, st["n"])
         iqr = st["q3"] - st["q1"]
         lower = max(st["min"], st["q1"] - 1.5 * iqr)
         upper = min(st["max"], st["q3"] + 1.5 * iqr)
-        fig.add_trace(go.Box(
-            y=[seg],
-            q1=[st["q1"]],
-            median=[st["median"]],
-            q3=[st["q3"]],
-            lowerfence=[lower],
-            upperfence=[upper],
-            orientation="h",
-            name=seg,
-            marker=dict(color=color, opacity=0.85),
-            line=dict(color=color),
-            fillcolor=color,
-            opacity=0.85,
-            showlegend=False,
-            hoverinfo="skip",
-        ))
-        # Hover marker at median — only fires when pointer is on the box
-        fig.add_trace(go.Scatter(
-            x=[st["median"]],
-            y=[seg],
-            mode="markers",
-            marker=dict(size=12, opacity=0),
-            showlegend=False,
-            hovertemplate=(
-                f"<b>{seg}</b><br>"
-                f"Median: {st['median']:,.0f} bp<br>"
-                f"Q1: {st['q1']:,.0f} bp<br>"
-                f"Q3: {st['q3']:,.0f} bp<br>"
-                f"Lower fence: {lower:,.0f} bp<br>"
-                f"Upper fence: {upper:,.0f} bp<br>"
-                f"n = {st['n']:,}"
-                "<extra></extra>"
-            ),
-        ))
+
+        # IQR box (Q1→Q3) — carries hover
+        fig.add_trace(
+            go.Bar(
+                y=[i],
+                x=[st["q3"] - st["q1"]],
+                base=[st["q1"]],
+                orientation="h",
+                width=0.5,
+                marker=dict(color=color, opacity=0.45, line=dict(color=color, width=1.5)),
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{seg}</b><br>"
+                    f"Median: {st['median']:,.0f} bp<br>"
+                    f"Q1: {st['q1']:,.0f} bp<br>"
+                    f"Q3: {st['q3']:,.0f} bp<br>"
+                    f"Lower fence: {lower:,.0f} bp<br>"
+                    f"Upper fence: {upper:,.0f} bp<br>"
+                    f"n = {st['n']:,}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+        # Whisker lines
+        for x0, x1 in [(lower, st["q1"]), (st["q3"], upper)]:
+            fig.add_shape(type="line", x0=x0, x1=x1, y0=i, y1=i, line=dict(color=color, width=1.5))
+        # Whisker caps
+        for xc in [lower, upper]:
+            fig.add_shape(type="line", x0=xc, x1=xc, y0=i - _CAP_H, y1=i + _CAP_H, line=dict(color=color, width=1.5))
+        # Median line
+        fig.add_shape(
+            type="line", x0=st["median"], x1=st["median"], y0=i - 0.25, y1=i + 0.25, line=dict(color="black", width=2.5)
+        )
 
     fig.update_layout(
         xaxis=dict(title="Length (bp)", tickfont_size=13, gridcolor="#f0f0f0"),
-        yaxis=dict(tickfont_size=13, gridcolor="#f0f0f0"),
-        plot_bgcolor="white", paper_bgcolor="white",
+        yaxis=dict(tickvals=list(range(len(segs))), ticktext=segs, tickfont_size=13, gridcolor="#f0f0f0"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        hovermode="closest",
+        bargap=0.3,
     )
 
     caption = (
@@ -1814,15 +2225,21 @@ def _make_segment_boxplot(seg_stats, color, title, label, tsv_dir=None, tsv_file
 
     if tsv_dir is not None and tsv_filename:
         segs = list(seg_stats.keys())
-        _write_tsv(tsv_dir, tsv_filename, pl.DataFrame({
-            "segment": segs,
-            "n": [seg_stats[s]["n"] for s in segs],
-            "min": [seg_stats[s]["min"] for s in segs],
-            "q1": [seg_stats[s]["q1"] for s in segs],
-            "median": [seg_stats[s]["median"] for s in segs],
-            "q3": [seg_stats[s]["q3"] for s in segs],
-            "max": [seg_stats[s]["max"] for s in segs],
-        }))
+        _write_tsv(
+            tsv_dir,
+            tsv_filename,
+            pl.DataFrame(
+                {
+                    "segment": segs,
+                    "n": [seg_stats[s]["n"] for s in segs],
+                    "min": [seg_stats[s]["min"] for s in segs],
+                    "q1": [seg_stats[s]["q1"] for s in segs],
+                    "median": [seg_stats[s]["median"] for s in segs],
+                    "q3": [seg_stats[s]["q3"] for s in segs],
+                    "max": [seg_stats[s]["max"] for s in segs],
+                }
+            ),
+        )
 
     return title, fig, caption, -0.14
 
@@ -1842,12 +2259,25 @@ def _plot_segment_lengths(valid_path, vcols, tsv_dir=None):
     all_lengths, demuxed_lengths = _load_segment_lengths(valid_path, segments, vcols)
 
     all_plot = _make_segment_boxplot(
-        all_lengths, "#2D8E2D", "Segment Lengths (All Valid Reads)", "valid",
-        tsv_dir=tsv_dir, tsv_filename="segment_lengths_all.tsv")
-    demux_plot = _make_segment_boxplot(
-        demuxed_lengths, "#72B7B2", "Segment Lengths (Demuxed Reads)", "demuxed",
-        tsv_dir=tsv_dir, tsv_filename="segment_lengths_demuxed.tsv",
-    ) if demuxed_lengths else None
+        all_lengths,
+        "#2D8E2D",
+        "Segment Lengths (All Valid Reads)",
+        "valid",
+        tsv_dir=tsv_dir,
+        tsv_filename="segment_lengths_all.tsv",
+    )
+    demux_plot = (
+        _make_segment_boxplot(
+            demuxed_lengths,
+            "#72B7B2",
+            "Segment Lengths (Demuxed Reads)",
+            "demuxed",
+            tsv_dir=tsv_dir,
+            tsv_filename="segment_lengths_demuxed.tsv",
+        )
+        if demuxed_lengths
+        else None
+    )
 
     return all_plot, demux_plot
 
@@ -1864,7 +2294,7 @@ def _bam_awk_prog():
         "{"
         '  cb=""; ub=""; dt="";'
         "  for(i=12;i<=NF;i++){"
-        '    t=substr($i,1,5);'
+        "    t=substr($i,1,5);"
         '    if(t=="CB:Z:") cb=substr($i,6);'
         '    else if(t=="UB:Z:") ub=substr($i,6);'
         '    else if(t=="DT:Z:") dt=substr($i,6)'
@@ -1901,20 +2331,16 @@ def _scan_bam_regions(bam_path, regions, sam_threads=1):
 
     if regions:
         region_str = " ".join(shlex.quote(r) for r in regions)
-        cmd = (
-            f"samtools view -@ {sam_threads} {bam_quoted} {region_str}"
-            f" | awk -F'\\t' '{awk_prog}'"
-        )
+        cmd = f"samtools view -@ {sam_threads} {bam_quoted} {region_str} | awk -F'\\t' '{awk_prog}'"
     else:
         # unmapped reads only
-        cmd = (
-            f"samtools view -@ {sam_threads} -f 4 {bam_quoted}"
-            f" | awk -F'\\t' '{awk_prog}'"
-        )
+        cmd = f"samtools view -@ {sam_threads} -f 4 {bam_quoted} | awk -F'\\t' '{awk_prog}'"
 
     proc = subprocess.Popen(
-        cmd, shell=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     try:
         df = pl.read_csv(
@@ -1926,9 +2352,7 @@ def _scan_bam_regions(bam_path, regions, sam_threads=1):
             null_values=[""],
         )
     except pl.exceptions.NoDataError:
-        df = pl.DataFrame(
-            schema={"qname": pl.Utf8, "flag": pl.UInt16, "cb": pl.Utf8, "umi": pl.Utf8, "dt": pl.Utf8}
-        )
+        df = pl.DataFrame(schema={"qname": pl.Utf8, "flag": pl.UInt16, "cb": pl.Utf8, "umi": pl.Utf8, "dt": pl.Utf8})
     stderr_out = proc.stderr.read()
     if proc.wait() != 0:
         raise RuntimeError(f"samtools/awk failed on regions {regions}: {stderr_out.decode()}")
@@ -1946,11 +2370,14 @@ def _partition_references(bam_path, n_buckets):
         Each inner list is a group of reference names for one worker.
         A final empty list ``[]`` is appended for unmapped reads.
     """
-    import subprocess, shlex
+    import subprocess
+    import shlex
 
     result = subprocess.run(
         f"samtools idxstats {shlex.quote(str(bam_path))}",
-        shell=True, capture_output=True, text=True,
+        shell=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"samtools idxstats failed: {result.stderr}")
@@ -2011,23 +2438,16 @@ def _collect_bam_per_cell_stats(bam_path, threads=4):
 
     # ── Step 1: Extract 5 fields per alignment ───────────────────────────
     bam_p = Path(bam_path)
-    has_index = (bam_p.with_suffix(".bam.bai").exists()
-                 or bam_p.with_name(bam_p.stem + ".bai").exists())
+    has_index = bam_p.with_suffix(".bam.bai").exists() or bam_p.with_name(bam_p.stem + ".bai").exists()
 
     if threads > 1 and has_index:
         # --- parallel region-based scan ---
         # Cap workers: too many concurrent samtools processes thrash disk I/O
         n_workers = min(threads, 8)
         partitions = _partition_references(bam_path, n_workers)
-        logger.info(
-            f"  Parallel BAM scan: {len(partitions)} region groups "
-            f"across {n_workers} workers"
-        )
+        logger.info(f"  Parallel BAM scan: {len(partitions)} region groups across {n_workers} workers")
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futures = [
-                pool.submit(_scan_bam_regions, str(bam_path), regions, 1)
-                for regions in partitions
-            ]
+            futures = [pool.submit(_scan_bam_regions, str(bam_path), regions, 1) for regions in partitions]
             dfs = [f.result() for f in futures]
         df = pl.concat([d for d in dfs if d.height > 0], how="vertical")
     else:
@@ -2036,13 +2456,12 @@ def _collect_bam_per_cell_stats(bam_path, threads=4):
             logger.info("  BAM index not found; falling back to single-pipe scan")
         awk_prog = _bam_awk_prog()
         sam_threads = max(1, threads - 1)
-        cmd = (
-            f"samtools view -@ {sam_threads} {shlex.quote(str(bam_path))}"
-            f" | awk -F'\\t' '{awk_prog}'"
-        )
+        cmd = f"samtools view -@ {sam_threads} {shlex.quote(str(bam_path))} | awk -F'\\t' '{awk_prog}'"
         proc = subprocess.Popen(
-            cmd, shell=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         df = pl.read_csv(
             proc.stdout,
@@ -2065,50 +2484,43 @@ def _collect_bam_per_cell_stats(bam_path, threads=4):
     FLAG_UNMAP = 0x4
     FLAG_DUP = 0x400
 
-    sec_qnames = (
-        df.filter((pl.col("flag") & FLAG_SEC) > 0)
-        .select("qname").unique()
-    )
+    sec_qnames = df.filter((pl.col("flag") & FLAG_SEC) > 0).select("qname").unique()
     supp_only_qnames = (
-        df.filter((pl.col("flag") & FLAG_SUPP) > 0)
-        .select("qname").unique()
-        .join(sec_qnames, on="qname", how="anti")
+        df.filter((pl.col("flag") & FLAG_SUPP) > 0).select("qname").unique().join(sec_qnames, on="qname", how="anti")
     )
 
-    primary = df.filter(
-        ((pl.col("flag") & (FLAG_SEC | FLAG_SUPP)) == 0)
-        & pl.col("cb").is_not_null()
-    )
+    primary = df.filter(((pl.col("flag") & (FLAG_SEC | FLAG_SUPP)) == 0) & pl.col("cb").is_not_null())
     del df
 
     # ── Step 4: Classify each primary alignment ──────────────────────────
     has_dedup = primary.filter(pl.col("dt").is_not_null()).height > 0
 
     primary = (
-        primary
-        .join(
+        primary.join(
             sec_qnames.with_columns(pl.lit(True).alias("_sec")),
-            on="qname", how="left",
+            on="qname",
+            how="left",
         )
         .join(
             supp_only_qnames.with_columns(pl.lit(True).alias("_supp")),
-            on="qname", how="left",
+            on="qname",
+            how="left",
         )
         .with_columns(
             pl.col("_sec").fill_null(False),
             pl.col("_supp").fill_null(False),
             ((pl.col("flag") & FLAG_UNMAP) > 0).alias("is_unmapped"),
-            (
-                (pl.col("dt") == "Yes")
-                | ((pl.col("flag") & FLAG_DUP) > 0)
-            ).alias("is_dup"),
+            ((pl.col("dt") == "Yes") | ((pl.col("flag") & FLAG_DUP) > 0)).alias("is_dup"),
         )
         .with_columns(
-            pl.when(pl.col("is_unmapped")).then(pl.lit("unmapped"))
-              .when(pl.col("_sec")).then(pl.lit("has_secondary"))
-              .when(pl.col("_supp")).then(pl.lit("has_supplementary"))
-              .otherwise(pl.lit("uniquely_mapped"))
-              .alias("aln_class"),
+            pl.when(pl.col("is_unmapped"))
+            .then(pl.lit("unmapped"))
+            .when(pl.col("_sec"))
+            .then(pl.lit("has_secondary"))
+            .when(pl.col("_supp"))
+            .then(pl.lit("has_supplementary"))
+            .otherwise(pl.lit("uniquely_mapped"))
+            .alias("aln_class"),
         )
     )
     del sec_qnames, supp_only_qnames
@@ -2121,18 +2533,13 @@ def _collect_bam_per_cell_stats(bam_path, threads=4):
         (pl.col("aln_class") == "has_supplementary").sum().alias("has_supplementary"),
         (pl.col("aln_class") == "unmapped").sum().alias("unmapped"),
         pl.col("is_dup").sum().alias("dup_reads"),
-        pl.col("umi")
-          .filter(~pl.col("is_dup") & pl.col("umi").is_not_null())
-          .n_unique()
-          .alias("unique_umis"),
+        pl.col("umi").filter(~pl.col("is_dup") & pl.col("umi").is_not_null()).n_unique().alias("unique_umis"),
     )
 
     # ── Step 6: umi_pairs DataFrame for saturation curve ─────────────────
     # Include duplicates so the saturation metric can be computed as
     # 1 - (unique_pairs / total_reads) at each subsample fraction.
-    umi_pairs_df = primary.filter(
-        pl.col("umi").is_not_null()
-    ).select("cb", "umi")
+    umi_pairs_df = primary.filter(pl.col("umi").is_not_null()).select("cb", "umi")
 
     logger.info(
         f"  {per_cell_df.height:,} cells, "
@@ -2174,23 +2581,30 @@ def _plot_saturation_curve(umi_pairs_df, n_subsamples=10, seed=42, tsv_dir=None)
         sat = (1 - n_unique / k) * 100 if k > 0 else 0.0
         saturations.append(round(sat, 2))
         mean_reads.append(round(k / n_cells, 1))
-        logger.info(f"  Saturation curve: {frac*100:.0f}% ({k:,} reads)")
+        logger.info(f"  Saturation curve: {frac * 100:.0f}% ({k:,} reads)")
 
-    fig = go.Figure(go.Scatter(
-        x=mean_reads,
-        y=saturations,
-        mode="lines+markers",
-        showlegend=False,
-        line=dict(color="#72B7B2", width=2),
-        marker=dict(size=6, color="#72B7B2"),
-        hovertemplate="Mean reads/cell: %{x:,.0f}<br>Saturation: %{y:.1f}%<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Scatter(
+            x=mean_reads,
+            y=saturations,
+            mode="lines+markers",
+            showlegend=False,
+            line=dict(color="#72B7B2", width=2),
+            marker=dict(size=6, color="#72B7B2"),
+            hovertemplate="Mean reads/cell: %{x:,.0f}<br>Saturation: %{y:.1f}%<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Mean Reads per Cell", tickfont_size=13, gridcolor="#f0f0f0"),
-        yaxis=dict(title="Sequencing Saturation (%)", tickfont_size=13,
-                   gridcolor="#f0f0f0", zerolinecolor="#ddd",
-                   range=[0, 100]),
-        plot_bgcolor="white", paper_bgcolor="white",
+        yaxis=dict(
+            title="Sequencing Saturation (%)",
+            tickfont_size=13,
+            gridcolor="#f0f0f0",
+            zerolinecolor="#ddd",
+            range=[0, 100],
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         showlegend=False,
     )
 
@@ -2205,10 +2619,16 @@ def _plot_saturation_curve(umi_pairs_df, n_subsamples=10, seed=42, tsv_dir=None)
         "a low, rising curve suggests additional sequencing would discover new molecules."
     )
 
-    _write_tsv(tsv_dir, "saturation_curve.tsv", pl.DataFrame({
-        "mean_reads_per_cell": mean_reads,
-        "sequencing_saturation_pct": saturations,
-    }))
+    _write_tsv(
+        tsv_dir,
+        "saturation_curve.tsv",
+        pl.DataFrame(
+            {
+                "mean_reads_per_cell": mean_reads,
+                "sequencing_saturation_pct": saturations,
+            }
+        ),
+    )
 
     return "Sequencing Saturation", fig, caption, -0.14
 
@@ -2251,18 +2671,25 @@ def _plot_alignment_stats(per_cell_df, tsv_dir=None):
         f"{g_unmap:,}<br>({_pct(g_unmap)})",
     ]
 
-    fig = go.Figure(go.Bar(
-        x=labels, y=counts, text=text,
-        textposition="outside", cliponaxis=False,
-        textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1)),
-        hovertemplate="%{x}: %{y:,}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=counts,
+            text=text,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13),
+            marker=dict(color=colors, line=dict(color="white", width=1)),
+            hovertemplate="%{x}: %{y:,}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(tickfont_size=13),
         yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
-        uniformtext_minsize=13, uniformtext_mode="show",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        uniformtext_minsize=13,
+        uniformtext_mode="show",
     )
 
     caption = (
@@ -2275,10 +2702,17 @@ def _plot_alignment_stats(per_cell_df, tsv_dir=None):
         "Reads with secondary alignments may also have supplementary alignments."
     )
 
-    _write_tsv(tsv_dir, "alignment_stats.tsv", pl.DataFrame({
-        "category": labels, "count": counts,
-        "percent": [round(100 * c / g_total, 2) if g_total > 0 else 0.0 for c in counts],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "alignment_stats.tsv",
+        pl.DataFrame(
+            {
+                "category": labels,
+                "count": counts,
+                "percent": [round(100 * c / g_total, 2) if g_total > 0 else 0.0 for c in counts],
+            }
+        ),
+    )
 
     return "Alignment Statistics", fig, caption, -0.14
 
@@ -2322,30 +2756,40 @@ def _plot_global_dup_stats(bam_path, tsv_dir=None):
         f"{dups:,}<br>({_pct(dups)})",
     ]
 
-    fig = go.Figure(go.Bar(
-        x=labels, y=counts, text=text,
-        textposition="outside", cliponaxis=False,
-        textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1)),
-        hovertemplate="%{x}: %{y:,}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=counts,
+            text=text,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13),
+            marker=dict(color=colors, line=dict(color="white", width=1)),
+            hovertemplate="%{x}: %{y:,}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(tickfont_size=13),
         yaxis=dict(title="Read Count", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
-        uniformtext_minsize=13, uniformtext_mode="show",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        uniformtext_minsize=13,
+        uniformtext_mode="show",
     )
 
-    caption = (
-        f"{total:,} total reads. "
-        f"{_pct(uniq)} unique ({uniq:,}), "
-        f"{_pct(dups)} duplicates ({dups:,})."
-    )
+    caption = f"{total:,} total reads. {_pct(uniq)} unique ({uniq:,}), {_pct(dups)} duplicates ({dups:,})."
 
-    _write_tsv(tsv_dir, "duplication_stats.tsv", pl.DataFrame({
-        "category": labels, "count": counts,
-        "percent": [round(100 * c / total, 2) if total > 0 else 0.0 for c in counts],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "duplication_stats.tsv",
+        pl.DataFrame(
+            {
+                "category": labels,
+                "count": counts,
+                "percent": [round(100 * c / total, 2) if total > 0 else 0.0 for c in counts],
+            }
+        ),
+    )
 
     return "Duplication Statistics", fig, caption, -0.14
 
@@ -2396,22 +2840,26 @@ def _plot_mapping_rate_per_cell(per_cell_df, tsv_dir=None):
         ("W/ supplementary", _frac(supp, totals)),
         ("Unmapped", _frac(unmap, totals)),
     ]:
-        fig.add_trace(go.Scatter(
-            x=x, y=vals,
-            mode="lines",
-            name=name,
-            stackgroup="one",
-            line=dict(width=0.5, color=_COLORS[name]),
-            fillcolor=_COLORS[name],
-            hovertemplate=f"<b>{name}</b><br>Cell rank: %{{x:,}}<br>Fraction: %{{y:.2%}}<extra></extra>",
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=vals,
+                mode="lines",
+                name=name,
+                stackgroup="one",
+                line=dict(width=0.5, color=_COLORS[name]),
+                fillcolor=_COLORS[name],
+                hovertemplate=f"<b>{name}</b><br>Cell rank: %{{x:,}}<br>Fraction: %{{y:.2%}}<extra></extra>",
+            )
+        )
 
     fig.update_layout(
-        xaxis=dict(title=f"Cells (ranked by total reads, n={n_cells:,})",
-                   tickfont_size=13, gridcolor="#f0f0f0"),
-        yaxis=dict(title="Fraction of Reads", tickfont_size=13, gridcolor="#f0f0f0",
-                   zerolinecolor="#ddd", range=[0, 1]),
-        plot_bgcolor="white", paper_bgcolor="white",
+        xaxis=dict(title=f"Cells (ranked by total reads, n={n_cells:,})", tickfont_size=13, gridcolor="#f0f0f0"),
+        yaxis=dict(
+            title="Fraction of Reads", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd", range=[0, 1]
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         showlegend=True,
         legend=dict(font_size=12, bgcolor="rgba(255,255,255,0.8)"),
     )
@@ -2435,15 +2883,21 @@ def _plot_mapping_rate_per_cell(per_cell_df, tsv_dir=None):
         "Cells are sorted by total read count (descending)."
     )
 
-    _write_tsv(tsv_dir, "mapping_rate_per_cell.tsv", pl.DataFrame({
-        "cell_rank": x,
-        "cb": df["cb"].to_list(),
-        "total_reads": totals,
-        "uniquely_mapped": unique,
-        "has_secondary": sec,
-        "has_supplementary": supp,
-        "unmapped": unmap,
-    }))
+    _write_tsv(
+        tsv_dir,
+        "mapping_rate_per_cell.tsv",
+        pl.DataFrame(
+            {
+                "cell_rank": x,
+                "cb": df["cb"].to_list(),
+                "total_reads": totals,
+                "uniquely_mapped": unique,
+                "has_secondary": sec,
+                "has_supplementary": supp,
+                "unmapped": unmap,
+            }
+        ),
+    )
 
     return "Mapping Rate per Cell", fig, caption, -0.14
 
@@ -2472,19 +2926,24 @@ def _plot_dup_rate_per_cell(per_cell_df, has_dedup, tsv_dir=None):
     y = [(d / t) if t > 0 else 0 for d, t in zip(df["dup_reads"].to_list(), x)]
     cbs = df["cb"].to_list()
 
-    fig = go.Figure(go.Scatter(
-        x=x, y=y,
-        mode="markers",
-        showlegend=False,
-        marker=dict(size=5, color="#72B7B2", opacity=0.6),
-        text=cbs,
-        hovertemplate="<b>Cell %{text}</b><br>Reads: %{x:,}<br>Dup rate: %{y:.1%}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="markers",
+            showlegend=False,
+            marker=dict(size=5, color="#72B7B2", opacity=0.6),
+            text=cbs,
+            hovertemplate="<b>Cell %{text}</b><br>Reads: %{x:,}<br>Dup rate: %{y:.1%}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Total Reads per Cell", type="log", tickfont_size=13, gridcolor="#f0f0f0"),
-        yaxis=dict(title="Duplicate Fraction", tickfont_size=13, gridcolor="#f0f0f0",
-                   zerolinecolor="#ddd", range=[0, 1]),
-        plot_bgcolor="white", paper_bgcolor="white",
+        yaxis=dict(
+            title="Duplicate Fraction", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd", range=[0, 1]
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         showlegend=False,
     )
 
@@ -2500,12 +2959,18 @@ def _plot_dup_rate_per_cell(per_cell_df, has_dedup, tsv_dir=None):
         "X-axis is log-scaled."
     )
 
-    _write_tsv(tsv_dir, "dup_rate_per_cell.tsv", pl.DataFrame({
-        "cb": cbs,
-        "total_reads": x,
-        "dup_reads": df["dup_reads"].to_list(),
-        "dup_fraction": [round(v, 4) for v in y],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "dup_rate_per_cell.tsv",
+        pl.DataFrame(
+            {
+                "cb": cbs,
+                "total_reads": x,
+                "dup_reads": df["dup_reads"].to_list(),
+                "dup_fraction": [round(v, 4) for v in y],
+            }
+        ),
+    )
 
     return "Duplicate Rate per Cell", fig, caption, -0.14
 
@@ -2618,14 +3083,16 @@ def _compute_cell_metrics(counts_df, gene_ids, cell_ids, gene_info_df):
             0.0,
         )
 
-    return pl.DataFrame({
-        "cell_id": cell_ids,
-        "total_counts": total_arr,
-        "n_genes": n_genes_arr,
-        "mito_pct": mito_pct,
-        "ribo_pct": ribo_pct,
-        "complexity": complexity,
-    })
+    return pl.DataFrame(
+        {
+            "cell_id": cell_ids,
+            "total_counts": total_arr,
+            "n_genes": n_genes_arr,
+            "mito_pct": mito_pct,
+            "ribo_pct": ribo_pct,
+            "complexity": complexity,
+        }
+    )
 
 
 def _parse_featurecounts_summaries(counts_matrix_path):
@@ -2710,22 +3177,29 @@ def _plot_genes_vs_umis_mito(cell_metrics_df, tsv_dir=None):
     above_10 = sum(1 for v in mito if v > 10)
     above_20 = sum(1 for v in mito if v > 20)
 
-    fig = go.Figure(go.Scatter(
-        x=x, y=y,
-        mode="markers",
-        showlegend=False,
-        marker=dict(
-            size=4, color=mito, colorscale="Viridis",
-            cmin=0, cmax=cmax,
-            showscale=False,
-            opacity=0.7,
-        ),
-        hovertemplate="Assigned UMIs: %{x:,}<br>Genes: %{y:,}<br>Mito: %{marker.color:.1f}%<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="markers",
+            showlegend=False,
+            marker=dict(
+                size=4,
+                color=mito,
+                colorscale="Viridis",
+                cmin=0,
+                cmax=cmax,
+                showscale=False,
+                opacity=0.7,
+            ),
+            hovertemplate="Assigned UMIs: %{x:,}<br>Genes: %{y:,}<br>Mito: %{marker.color:.1f}%<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Assigned Counts (UMIs)", tickfont_size=13, gridcolor="#f0f0f0"),
         yaxis=dict(title="Detected Genes", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         showlegend=False,
     )
 
@@ -2763,22 +3237,29 @@ def _plot_genes_vs_umis_ribo(cell_metrics_df):
     cmax = max(max(mito), max(ribo))
     med_ribo = np.median(ribo)
 
-    fig = go.Figure(go.Scatter(
-        x=x, y=y,
-        mode="markers",
-        showlegend=False,
-        marker=dict(
-            size=4, color=ribo, colorscale="Viridis",
-            cmin=0, cmax=cmax,
-            colorbar=dict(title="Percent", thickness=10, len=0.5, yanchor="middle", y=0.5),
-            opacity=0.7,
-        ),
-        hovertemplate="Assigned UMIs: %{x:,}<br>Genes: %{y:,}<br>Ribo: %{marker.color:.1f}%<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="markers",
+            showlegend=False,
+            marker=dict(
+                size=4,
+                color=ribo,
+                colorscale="Viridis",
+                cmin=0,
+                cmax=cmax,
+                colorbar=dict(title="Percent", thickness=10, len=0.5, yanchor="middle", y=0.5),
+                opacity=0.7,
+            ),
+            hovertemplate="Assigned UMIs: %{x:,}<br>Genes: %{y:,}<br>Ribo: %{marker.color:.1f}%<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Assigned Counts (UMIs)", tickfont_size=13, gridcolor="#f0f0f0"),
         yaxis=dict(title="Detected Genes", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         showlegend=False,
     )
 
@@ -2806,16 +3287,19 @@ def _plot_complexity(cell_metrics_df):
         return None
     med = np.median(vals)
 
-    fig = go.Figure(go.Histogram(
-        x=vals,
-        showlegend=False,
-        marker=dict(color="#72B7B2", line=dict(color="white", width=0.5)),
-        hovertemplate="Complexity: %{x:.3f}<br>Count: %{y}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Histogram(
+            x=vals,
+            showlegend=False,
+            marker=dict(color="#72B7B2", line=dict(color="white", width=0.5)),
+            hovertemplate="Complexity: %{x:.3f}<br>Count: %{y}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Complexity (log10 genes / log10 assigned UMIs)", tickfont_size=13, gridcolor="#f0f0f0"),
         yaxis=dict(title="Number of Cells", tickfont_size=13, gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
     )
 
     caption = (
@@ -2858,21 +3342,28 @@ def _plot_fc_global_assignment(fc_summary_df, tsv_dir=None):
         "Unassigned_Unmapped": "#72B7B2",
         "Unassigned_MultiMapping": "#72B7B2",
     }
-    colors = [colors_map.get(l, "#999") for l in labels]
+    colors = [colors_map.get(label, "#999") for label in labels]
     text = [f"{c:,}<br>({_pct(c)})" for c in counts]
 
-    fig = go.Figure(go.Bar(
-        x=labels, y=counts, text=text,
-        textposition="outside", cliponaxis=False,
-        textfont=dict(size=13),
-        marker=dict(color=colors, line=dict(color="white", width=1)),
-        hovertemplate="%{x}: %{y:,}<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=counts,
+            text=text,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13),
+            marker=dict(color=colors, line=dict(color="white", width=1)),
+            hovertemplate="%{x}: %{y:,}<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(tickfont_size=12, tickangle=-30),
         yaxis=dict(title="Total Reads", gridcolor="#f0f0f0", zerolinecolor="#ddd"),
-        plot_bgcolor="white", paper_bgcolor="white",
-        uniformtext_minsize=13, uniformtext_mode="show",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        uniformtext_minsize=13,
+        uniformtext_mode="show",
         margin=dict(b=80),
     )
 
@@ -2884,10 +3375,17 @@ def _plot_fc_global_assignment(fc_summary_df, tsv_dir=None):
         f"{_pct(no_feat)} no features ({no_feat:,})."
     )
 
-    _write_tsv(tsv_dir, "featurecounts_assignment.tsv", pl.DataFrame({
-        "category": labels, "count": counts,
-        "percent": [round(100 * c / grand, 2) if grand > 0 else 0.0 for c in counts],
-    }))
+    _write_tsv(
+        tsv_dir,
+        "featurecounts_assignment.tsv",
+        pl.DataFrame(
+            {
+                "category": labels,
+                "count": counts,
+                "percent": [round(100 * c / grand, 2) if grand > 0 else 0.0 for c in counts],
+            }
+        ),
+    )
 
     return "featureCounts Assignment", fig, caption, -0.30
 
@@ -2906,36 +3404,45 @@ def _plot_top_expressed_genes(counts_df, gene_ids, gene_info_df, n_top=20, tsv_d
 
     # Build a DF with gene IDs and totals, join to get names
     stripped = gene_ids.map_elements(_strip_gene_version, return_dtype=pl.Utf8)
-    top_df = pl.DataFrame({
-        "gene_id": stripped,
-        "total": gene_totals,
-    }).sort("total", descending=True).head(n_top)
+    top_df = (
+        pl.DataFrame(
+            {
+                "gene_id": stripped,
+                "total": gene_totals,
+            }
+        )
+        .sort("total", descending=True)
+        .head(n_top)
+    )
 
     top_df = top_df.join(
         gene_info_df.select("gene_id", "gene_name").unique(subset=["gene_id"], keep="first"),
-        on="gene_id", how="left",
+        on="gene_id",
+        how="left",
     ).with_columns(
-        pl.when(pl.col("gene_name").is_null())
-        .then(pl.col("gene_id"))
-        .otherwise(pl.col("gene_name"))
-        .alias("label")
+        pl.when(pl.col("gene_name").is_null()).then(pl.col("gene_id")).otherwise(pl.col("gene_name")).alias("label")
     )
 
     labels = top_df["label"].to_list()[::-1]
     totals = top_df["total"].to_list()[::-1]
 
-    fig = go.Figure(go.Bar(
-        x=totals, y=labels,
-        orientation="h",
-        marker=dict(color="#72B7B2", line=dict(color="white", width=0.5)),
-        text=[f"{t:,}" for t in totals],
-        textposition="outside", cliponaxis=False,
-        hovertemplate="%{y}: %{x:,} counts<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=totals,
+            y=labels,
+            orientation="h",
+            marker=dict(color="#72B7B2", line=dict(color="white", width=0.5)),
+            text=[f"{t:,}" for t in totals],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}: %{x:,} counts<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Total Counts", tickfont_size=13, gridcolor="#f0f0f0"),
         yaxis=dict(tickfont_size=12),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         margin=dict(l=120),
     )
 
@@ -2944,10 +3451,16 @@ def _plot_top_expressed_genes(counts_df, gene_ids, gene_info_df, n_top=20, tsv_d
         "High dominance by a single gene may indicate ambient RNA contamination."
     )
 
-    _write_tsv(tsv_dir, "top_expressed_genes.tsv", top_df.select(
-        pl.int_range(1, pl.len() + 1).alias("rank"),
-        pl.col("gene_id"), pl.col("label").alias("gene_name"), pl.col("total").alias("total_counts"),
-    ))
+    _write_tsv(
+        tsv_dir,
+        "top_expressed_genes.tsv",
+        top_df.select(
+            pl.int_range(1, pl.len() + 1).alias("rank"),
+            pl.col("gene_id"),
+            pl.col("label").alias("gene_name"),
+            pl.col("total").alias("total_counts"),
+        ),
+    )
 
     return "Top Expressed Genes", fig, caption, -0.14
 
@@ -2966,22 +3479,21 @@ def _plot_genes_per_biotype(counts_df, gene_ids, gene_info_df, tsv_dir=None):
     detected_mask = counts_df.select(cell_cols).sum_horizontal().gt(0)
 
     stripped = gene_ids.map_elements(_strip_gene_version, return_dtype=pl.Utf8)
-    det_df = pl.DataFrame({
-        "gene_id": stripped,
-        "detected": detected_mask,
-    }).filter(pl.col("detected"))
+    det_df = pl.DataFrame(
+        {
+            "gene_id": stripped,
+            "detected": detected_mask,
+        }
+    ).filter(pl.col("detected"))
 
     det_df = det_df.join(
         gene_info_df.select("gene_id", "biotype").unique(subset=["gene_id"], keep="first"),
-        on="gene_id", how="left",
+        on="gene_id",
+        how="left",
     )
     det_df = det_df.with_columns(pl.col("biotype").fill_null("unknown"))
 
-    bio_counts = (
-        det_df.group_by("biotype")
-        .agg(pl.len().cast(pl.Int64).alias("n"))
-        .sort("n", descending=True)
-    )
+    bio_counts = det_df.group_by("biotype").agg(pl.len().cast(pl.Int64).alias("n")).sort("n", descending=True)
 
     if bio_counts.is_empty():
         return None
@@ -2997,18 +3509,23 @@ def _plot_genes_per_biotype(counts_df, gene_ids, gene_info_df, tsv_dir=None):
     labels = bio_counts["biotype"].to_list()[::-1]
     counts = bio_counts["n"].to_list()[::-1]
 
-    fig = go.Figure(go.Bar(
-        x=counts, y=labels,
-        orientation="h",
-        marker=dict(color="#72B7B2", line=dict(color="white", width=0.5)),
-        text=[f"{c:,}" for c in counts],
-        textposition="outside", cliponaxis=False,
-        hovertemplate="%{y}: %{x:,} genes<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=counts,
+            y=labels,
+            orientation="h",
+            marker=dict(color="#72B7B2", line=dict(color="white", width=0.5)),
+            text=[f"{c:,}" for c in counts],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}: %{x:,} genes<extra></extra>",
+        )
+    )
     fig.update_layout(
         xaxis=dict(title="Detected Genes", tickfont_size=13, gridcolor="#f0f0f0"),
         yaxis=dict(tickfont_size=12),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         margin=dict(l=150),
     )
 
@@ -3054,21 +3571,24 @@ def _parse_gtf_gene_coords(gtf_path):
                 ids.append(_strip_gene_version(m_id.group(1)))
                 chroms.append(parts[0])
                 starts.append(int(parts[3]) - 1)  # GTF 1-based → 0-based
-                ends.append(int(parts[4]))         # GTF end is inclusive, but +1-1 cancels
+                ends.append(int(parts[4]))  # GTF end is inclusive, but +1-1 cancels
                 strands.append(parts[6])
 
-    return pl.DataFrame({
-        "gene_id": ids,
-        "chrom": chroms,
-        "start": starts,
-        "end": ends,
-        "strand": strands,
-    })
+    return pl.DataFrame(
+        {
+            "gene_id": ids,
+            "chrom": chroms,
+            "start": starts,
+            "end": ends,
+            "strand": strands,
+        }
+    )
 
 
 def _make_gaos_stranded():
     """Factory for picklable stranded GenomicArrayOfSets."""
     import HTSeq
+
     return HTSeq.GenomicArrayOfSets("auto", stranded=True)
 
 
@@ -3268,10 +3788,7 @@ def _compute_gene_body_coverage(bam_path, gtf_path, n_bins=100, threads=4):
 
     logger.info(f"  Processing {len(genes_by_chrom)} chromosomes ...")
     n_workers = min(threads, len(genes_by_chrom))
-    args = [
-        (chrom, bam_path, gene_list)
-        for chrom, gene_list in genes_by_chrom.items()
-    ]
+    args = [(chrom, bam_path, gene_list) for chrom, gene_list in genes_by_chrom.items()]
 
     with Pool(n_workers) as pool:
         per_chrom = pool.map(_process_chromosome_pileup, args)
@@ -3309,14 +3826,16 @@ def _plot_gene_body_coverage(bam_path, gtf_path, n_bins=100, tsv_dir=None, threa
     percentiles = np.linspace(0, 100, len(agg), endpoint=False).tolist()
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=percentiles,
-        y=agg.tolist(),
-        mode="lines",
-        line=dict(color="#72B7B2", width=2),
-        showlegend=False,
-        hovertemplate="Gene body: %{x:.0f}%<br>Coverage: %{y:,.0f}<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=percentiles,
+            y=agg.tolist(),
+            mode="lines",
+            line=dict(color="#72B7B2", width=2),
+            showlegend=False,
+            hovertemplate="Gene body: %{x:.0f}%<br>Coverage: %{y:,.0f}<extra></extra>",
+        )
+    )
 
     fig.update_layout(
         xaxis=dict(
@@ -3335,10 +3854,12 @@ def _plot_gene_body_coverage(bam_path, gtf_path, n_bins=100, tsv_dir=None, threa
     )
 
     # ── TSV export ──────────────────────────────────────────────────────────
-    tsv_df = pl.DataFrame({
-        "gene_body_percentile": percentiles,
-        "coverage": [round(v, 4) for v in agg.tolist()],
-    })
+    tsv_df = pl.DataFrame(
+        {
+            "gene_body_percentile": percentiles,
+            "coverage": [round(v, 4) for v in agg.tolist()],
+        }
+    )
     _write_tsv(tsv_dir, "gene_body_coverage.tsv", tsv_df)
 
     # ── caption ─────────────────────────────────────────────────────────────

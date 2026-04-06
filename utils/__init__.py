@@ -6,10 +6,12 @@ def get_version() -> str:
     """Retrieve the tranquillyzer package version."""
     try:
         from importlib.metadata import version as _pkg_version
+
         return _pkg_version("tranquillyzer")
     except Exception:
         try:
             from tranquillyzer import __version__
+
             return __version__
         except Exception:
             return "unknown"

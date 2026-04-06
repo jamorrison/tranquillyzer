@@ -174,9 +174,11 @@ def _transform_pattern(pattern, from_state, to_state):
         # RC'd → fwd → reverse: complement only (undo reverse, keep complement undone... )
         # Actually: RC = reverse + complement. To go from RC to reverse-only,
         # we need to undo the complement: apply complement without reversing.
-        return "".join(_RC_COMPLEMENT.get(b, b) for b in pattern) if not (
-            pattern in ("A", "T") or re.match(r"N\d+", pattern) or pattern in ("NN", "RN")
-        ) else pattern
+        return (
+            "".join(_RC_COMPLEMENT.get(b, b) for b in pattern)
+            if not (pattern in ("A", "T") or re.match(r"N\d+", pattern) or pattern in ("NN", "RN"))
+            else pattern
+        )
     elif from_state == "reverse" and to_state == "fwd":
         return _reverse_single_pattern(pattern)  # reverse is self-inverse
     elif from_state == "reverse" and to_state == "rev":
@@ -211,9 +213,7 @@ def _build_fragment(order, patterns, fragment_orientation, rc_elements):
         override = rc_elements.get(name)
         if override is None:
             continue
-        frag_patterns[i] = _transform_pattern(
-            frag_patterns[i], fragment_orientation, override
-        )
+        frag_patterns[i] = _transform_pattern(frag_patterns[i], fragment_orientation, override)
 
     return frag_order, frag_patterns
 
@@ -232,16 +232,12 @@ def _build_structure_order_and_patterns(struct):
         full_order = ["cDNA"]
         full_patterns = ["RN"]
         for i in range(repeat):
-            frag_order, frag_patterns = _build_fragment(
-                order, patterns, rc_pattern[i], rc_elements
-            )
+            frag_order, frag_patterns = _build_fragment(order, patterns, rc_pattern[i], rc_elements)
             full_order.extend(frag_order + ["cDNA"])
             full_patterns.extend(frag_patterns + ["RN"])
     else:
         # Single structure flanked with random cDNA
-        frag_order, frag_patterns = _build_fragment(
-            order, patterns, rc_pattern[0], rc_elements
-        )
+        frag_order, frag_patterns = _build_fragment(order, patterns, rc_pattern[0], rc_elements)
         full_order = ["cDNA"] + frag_order + ["cDNA"]
         full_patterns = ["RN"] + frag_patterns + ["RN"]
 
@@ -288,7 +284,9 @@ def simulate_dynamic_batch_complete(
         full_order, full_patterns = _build_structure_order_and_patterns(struct)
 
         struct_length_range = struct.get("length_range", length_range)
-        sequence, label = generate_valid_read(full_order, full_patterns, struct_length_range, transcriptome_records, spacer_range=(min_spacer, max_spacer))
+        sequence, label = generate_valid_read(
+            full_order, full_patterns, struct_length_range, transcriptome_records, spacer_range=(min_spacer, max_spacer)
+        )
 
         sequence, label = _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p)
 
@@ -327,9 +325,22 @@ def simulate_and_write_fasta(args):
     """
     *sim_args, fasta_path, start_idx = args
 
-    (num_reads, length_range, mismatch_rate, insertion_rate, deletion_rate,
-     polyT_error_rate, max_insertions, training_structures, transcriptome_records,
-     rc, max_trunc_5p, max_trunc_3p, min_spacer, max_spacer) = sim_args
+    (
+        num_reads,
+        length_range,
+        mismatch_rate,
+        insertion_rate,
+        deletion_rate,
+        polyT_error_rate,
+        max_insertions,
+        training_structures,
+        transcriptome_records,
+        rc,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
+    ) = sim_args
 
     labels, expected_fragments, structure_names = [], [], []
     weights = [s["proportion"] for s in training_structures]
@@ -344,7 +355,10 @@ def simulate_and_write_fasta(args):
 
             struct_length_range = struct.get("length_range", length_range)
             sequence, label = generate_valid_read(
-                full_order, full_patterns, struct_length_range, transcriptome_records,
+                full_order,
+                full_patterns,
+                struct_length_range,
+                transcriptome_records,
                 spacer_range=(min_spacer, max_spacer),
             )
             sequence, label = _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p)
@@ -357,8 +371,13 @@ def simulate_and_write_fasta(args):
 
             for seq, lbl in read_pairs:
                 seq_err, lbl_err = introduce_errors_with_labels_context(
-                    seq, lbl, mismatch_rate, insertion_rate, deletion_rate,
-                    polyT_error_rate, max_insertions,
+                    seq,
+                    lbl,
+                    mismatch_rate,
+                    insertion_rate,
+                    deletion_rate,
+                    polyT_error_rate,
+                    max_insertions,
                 )
                 fh.write(f">assess_{read_idx}\n{seq_err}\n")
                 labels.append(lbl_err)

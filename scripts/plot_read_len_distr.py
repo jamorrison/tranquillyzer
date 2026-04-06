@@ -59,6 +59,7 @@ def plot_read_len_distr(parquet_dir, output_dir):
     # Save the plot to the output directory
     plot_file = os.path.join(output_dir, "read_length_distribution.png")
     from utils import get_version
+
     plt.savefig(plot_file, metadata={"Software": f"tranquillyzer v{get_version()}"})
     plt.close()
 

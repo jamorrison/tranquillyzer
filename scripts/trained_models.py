@@ -50,8 +50,7 @@ def _resolve_model(config, model):
     if lib_name not in libraries:
         available_libs = list(libraries.keys())
         raise ValueError(
-            f"Library '{lib_name}' referenced by model '{model}' not found. "
-            f"Available libraries: {available_libs}"
+            f"Library '{lib_name}' referenced by model '{model}' not found. Available libraries: {available_libs}"
         )
 
     resolved = copy.deepcopy(libraries[lib_name])
@@ -129,12 +128,14 @@ def get_training_structures(file_path, model):
     ts = entry.get("training_structures", None)
 
     if ts is None:
-        return [{
-            "order": [s["name"] for s in entry["segments"]],
-            "patterns": [s["pattern"] for s in entry["segments"]],
-            "repeat": 1,
-            "proportion": 1.0,
-        }]
+        return [
+            {
+                "order": [s["name"] for s in entry["segments"]],
+                "patterns": [s["pattern"] for s in entry["segments"]],
+                "repeat": 1,
+                "proportion": 1.0,
+            }
+        ]
 
     # Convert from named dict (new format) or list (legacy format)
     if isinstance(ts, dict):
@@ -145,9 +146,7 @@ def get_training_structures(file_path, model):
     # Validate proportions sum
     total = sum(s.get("proportion", 0) for s in structs)
     if abs(total - 1.0) > 0.01:
-        logger.warning(
-            f"Training structure proportions for model '{model}' sum to {total:.4f}, expected ~1.0"
-        )
+        logger.warning(f"Training structure proportions for model '{model}' sum to {total:.4f}, expected ~1.0")
 
     pattern_map = {s["name"]: s["pattern"] for s in entry["segments"]}
     result = []
@@ -176,23 +175,23 @@ def get_training_structures(file_path, model):
         rc_pattern = s.get("rc_pattern", ["fwd"] * repeat)
         if len(rc_pattern) != repeat:
             raise ValueError(
-                f"rc_pattern length ({len(rc_pattern)}) must match repeat ({repeat}) "
-                f"in training structure: {s}"
+                f"rc_pattern length ({len(rc_pattern)}) must match repeat ({repeat}) in training structure: {s}"
             )
         for val in rc_pattern:
             if val not in ("fwd", "rev", "reverse"):
                 raise ValueError(
-                    f"rc_pattern values must be 'fwd', 'rev', or 'reverse', got '{val}' "
-                    f"in training structure: {s}"
+                    f"rc_pattern values must be 'fwd', 'rev', or 'reverse', got '{val}' in training structure: {s}"
                 )
-        result.append({
-            "order": order,
-            "patterns": patterns,
-            "repeat": repeat,
-            "rc_elements": rc_elements,
-            "rc_pattern": rc_pattern,
-            "proportion": s["proportion"],
-        })
+        result.append(
+            {
+                "order": order,
+                "patterns": patterns,
+                "repeat": repeat,
+                "rc_elements": rc_elements,
+                "rc_pattern": rc_pattern,
+                "proportion": s["proportion"],
+            }
+        )
     return result
 
 
@@ -208,13 +207,15 @@ def get_assessment_structures(file_path, model):
     ts = entry.get("assessment_structures", None)
 
     if ts is None:
-        return [{
-            "name": "default",
-            "order": [s["name"] for s in entry["segments"]],
-            "patterns": [s["pattern"] for s in entry["segments"]],
-            "repeat": 1,
-            "proportion": 1.0,
-        }]
+        return [
+            {
+                "name": "default",
+                "order": [s["name"] for s in entry["segments"]],
+                "patterns": [s["pattern"] for s in entry["segments"]],
+                "repeat": 1,
+                "proportion": 1.0,
+            }
+        ]
 
     if isinstance(ts, dict):
         struct_names = list(ts.keys())
@@ -225,9 +226,7 @@ def get_assessment_structures(file_path, model):
 
     total = sum(s.get("proportion", 0) for s in structs)
     if abs(total - 1.0) > 0.01:
-        logger.warning(
-            f"Assessment structure proportions for model '{model}' sum to {total:.4f}, expected ~1.0"
-        )
+        logger.warning(f"Assessment structure proportions for model '{model}' sum to {total:.4f}, expected ~1.0")
 
     pattern_map = {s["name"]: s["pattern"] for s in entry["segments"]}
     result = []
@@ -255,24 +254,24 @@ def get_assessment_structures(file_path, model):
         rc_pattern = s.get("rc_pattern", ["fwd"] * repeat)
         if len(rc_pattern) != repeat:
             raise ValueError(
-                f"rc_pattern length ({len(rc_pattern)}) must match repeat ({repeat}) "
-                f"in assessment structure: {s}"
+                f"rc_pattern length ({len(rc_pattern)}) must match repeat ({repeat}) in assessment structure: {s}"
             )
         for val in rc_pattern:
             if val not in ("fwd", "rev", "reverse"):
                 raise ValueError(
-                    f"rc_pattern values must be 'fwd', 'rev', or 'reverse', got '{val}' "
-                    f"in assessment structure: {s}"
+                    f"rc_pattern values must be 'fwd', 'rev', or 'reverse', got '{val}' in assessment structure: {s}"
                 )
-        result.append({
-            "name": sname,
-            "order": order,
-            "patterns": patterns,
-            "repeat": repeat,
-            "rc_elements": rc_elements,
-            "rc_pattern": rc_pattern,
-            "proportion": s["proportion"],
-        })
+        result.append(
+            {
+                "name": sname,
+                "order": order,
+                "patterns": patterns,
+                "repeat": repeat,
+                "rc_elements": rc_elements,
+                "rc_pattern": rc_pattern,
+                "proportion": s["proportion"],
+            }
+        )
     return result
 
 
@@ -322,9 +321,7 @@ def trained_models():
         for file_name in os.listdir(models_dir):
             if file_name.endswith(".h5"):
                 try:
-                    seq_order, sequences, barcodes, UMIs, orientation = seq_orders(
-                        seq_orders_file, file_name[:-3]
-                    )
+                    seq_order, sequences, barcodes, UMIs, orientation = seq_orders(seq_orders_file, file_name[:-3])
 
                     longest = max([len(x) for x in seq_order])
 

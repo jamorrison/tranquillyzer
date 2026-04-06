@@ -1,0 +1,69 @@
+---
+title: Preprocessing
+page-navigation: true
+---
+
+Preprocessing is the first step in the _Tranquillyzer_ pipeline. It organizes raw reads into length-binned Parquet
+files, setting up the data for efficient GPU-based annotation.
+
+# Motivation
+
+The deep learning model that annotates reads requires **fixed-length input** within each batch i.e. all reads in a batch
+must be padded to the same length. Without any organization, a 200 bp read could end up in the same batch as a
+50,000 bp read, forcing the short read to be padded to 50,000 positions. This wastes over 99% of the GPU memory and
+compute spent on that read.
+
+Preprocessing solves this by **grouping reads of similar lengths into bins** (e.g., 0-499 bp, 500-999 bp, ...). During
+annotation, reads within each bin are padded only to the bin's upper bound. So, a 200 bp read in the 0-499 bp bin is
+padded to ~500 positions instead of 50,000. This dramatically reduces wasted memory, allows larger batch sizes, and
+directly improves annotation throughput.
+
+The bin width (`--bin-size`, default 500 bp) controls this tradeoff. Narrower bins mean less padding waste and larger
+batches, but more bins to process. For datasets with skewed read-length distributions (where many reads cluster in a
+narrow range), decreasing the bin size can significantly improve throughput. For more uniform distributions, the default
+is usually sufficient.
+
+# Processing Overview
+
+The `preprocess` command scans your input directory for FASTA/FASTQ files, reads all sequences, and distributes them
+into Parquet files grouped by read length. Each input file is processed on its own CPU thread, so providing many small
+input files (as ONT typically produces) maximizes parallelism.
+
+The resulting bin structure is also used by _Tranquillyzer_'s
+[dynamic chunk sizing and batch sizing](../resource_requirements.qmd#grouping-reads-by-length) during annotation —
+shorter bins get larger chunks and batches, while longer bins get smaller ones.
+
+# Usage
+
+```bash
+tranquillyzer preprocess \
+    --threads 12 \
+    DATA_DIR \
+    OUTPUT_DIR
+```
+
+# Command Line Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `DATA_DIR` | required | Path to raw FASTA/FASTQ directory | |
+| `OUTPUT_DIR` | required | Path to output directory | |
+| `--output-base-qual` / `--no-output-base-qual` | `--no-output-base-qual` | Include base quality scores (from FASTQ) | Enable if you plan to export FASTQ with qualities later |
+| `--chunk-size` | 100,000 | Base chunk size for processing | Rarely needs changing |
+| `--bin-size` | 500 | Bin width (bp) for length-binning reads < 10,000 bp | Decrease for datasets with skewed read-length distributions. Narrower bins reduce padding waste and allow larger batch sizes, improving throughput. Increase for more uniform distributions to reduce the number of bins. |
+| `--threads` | 12 | Number of CPU threads | Match your available cores |
+
+# Output
+
+Preprocessed files are written to `OUTPUT_DIR/full_length_pp_fa/`:
+
+- **Length-binned Parquet files**:one per bin (e.g., `0_499bp.parquet`, `500_999bp.parquet`)
+- **`read_index.parquet`**:index mapping read names to their bin files
+
+# Recommendations
+
+- Preprocessing can run on a CPU-only machine (no GPU needed).
+- Preprocessing must complete before running `annotate-reads`.
+- To maximize parallelism, keep your input as many small files rather than one large file.
+- If you plan to export FASTQ output from `demux-reads` or `annotate-reads`, enable `--output-base-qual` during
+  preprocessing so quality scores are preserved through the pipeline.
