@@ -1026,20 +1026,38 @@ def _plot_edit_distance_boxplots(valid_path, barcode_types, vcols, tsv_dir=None)
             )
             # Whisker lines
             for x0, x1 in [(lower, st["q1"]), (st["q3"], upper)]:
-                fig.add_shape(type="line", x0=x0, x1=x1, y0=i, y1=i, line=dict(color=color, width=1.5))
+                fig.add_trace(
+                    go.Scatter(
+                        x=[x0, x1],
+                        y=[i, i],
+                        mode="lines",
+                        line=dict(color=color, width=1.5),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
+                )
             # Whisker caps
             for xc in [lower, upper]:
-                fig.add_shape(
-                    type="line", x0=xc, x1=xc, y0=i - _CAP_H, y1=i + _CAP_H, line=dict(color=color, width=1.5)
+                fig.add_trace(
+                    go.Scatter(
+                        x=[xc, xc],
+                        y=[i - _CAP_H, i + _CAP_H],
+                        mode="lines",
+                        line=dict(color=color, width=1.5),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
                 )
             # Median line
-            fig.add_shape(
-                type="line",
-                x0=st["median"],
-                x1=st["median"],
-                y0=i - 0.25,
-                y1=i + 0.25,
-                line=dict(color="black", width=2.5),
+            fig.add_trace(
+                go.Scatter(
+                    x=[st["median"], st["median"]],
+                    y=[i - 0.25, i + 0.25],
+                    mode="lines",
+                    line=dict(color="black", width=2.5),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
             )
 
         max_upper = max(
@@ -2200,13 +2218,38 @@ def _make_segment_boxplot(seg_stats, color, title, label, tsv_dir=None, tsv_file
         )
         # Whisker lines
         for x0, x1 in [(lower, st["q1"]), (st["q3"], upper)]:
-            fig.add_shape(type="line", x0=x0, x1=x1, y0=i, y1=i, line=dict(color=color, width=1.5))
+            fig.add_trace(
+                go.Scatter(
+                    x=[x0, x1],
+                    y=[i, i],
+                    mode="lines",
+                    line=dict(color=color, width=1.5),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
         # Whisker caps
         for xc in [lower, upper]:
-            fig.add_shape(type="line", x0=xc, x1=xc, y0=i - _CAP_H, y1=i + _CAP_H, line=dict(color=color, width=1.5))
+            fig.add_trace(
+                go.Scatter(
+                    x=[xc, xc],
+                    y=[i - _CAP_H, i + _CAP_H],
+                    mode="lines",
+                    line=dict(color=color, width=1.5),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
         # Median line
-        fig.add_shape(
-            type="line", x0=st["median"], x1=st["median"], y0=i - 0.25, y1=i + 0.25, line=dict(color="black", width=2.5)
+        fig.add_trace(
+            go.Scatter(
+                x=[st["median"], st["median"]],
+                y=[i - 0.25, i + 0.25],
+                mode="lines",
+                line=dict(color="black", width=2.5),
+                showlegend=False,
+                hoverinfo="skip",
+            )
         )
 
     fig.update_layout(

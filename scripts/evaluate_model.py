@@ -293,11 +293,13 @@ def _plot_architecture_accuracy(expected_fragments, structure_names, valid_df, i
     n_cols = has_single + has_concat
     subtitles = []
     if has_single:
-        subtitles.append("Structural Filtering Accuracy (Single-Fragment)")
+        subtitles.append("<b>Structural Filtering Accuracy (Single-Fragment)</b>")
     if has_concat:
-        subtitles.append("Sub-Fragment Recovery Rate (Concatenated)")
+        subtitles.append("<b>Sub-Fragment Recovery Rate (Concatenated)</b>")
 
     fig = make_subplots(rows=1, cols=max(1, n_cols), subplot_titles=subtitles)
+    for ann in fig.layout.annotations:
+        ann.font = dict(size=15, color="#1a1a2e", family="Arial")
 
     col = 1
     if has_single:
@@ -517,13 +519,15 @@ def evaluate_model(
         for ann in fig_edit.layout.annotations:
             ann.font = dict(size=15, color="#1a1a2e", family="Arial")
 
-        for seg in reversed(segments):
+        ticktext = list(reversed(segments))
+        _CAP_H = 0.15
+        for i, seg in enumerate(ticktext):
             seg_data = df_edit[df_edit["segment"] == seg]
             if seg_data.empty:
                 continue
-            for col_idx, value_col, x_label in [
-                (1, "raw_edit_distance", "Edit Distance (bp)"),
-                (2, "normalized_edit_distance", "Normalized Edit Distance"),
+            for col_idx, value_col, unit_fmt in [
+                (1, "raw_edit_distance", ("{:,.0f} bp", "{:,.0f} bp")),
+                (2, "normalized_edit_distance", ("{:,.3f}", "{:,.3f}")),
             ]:
                 vals = seg_data[value_col].dropna()
                 if vals.empty:
@@ -536,41 +540,71 @@ def evaluate_model(
                 iqr = q3 - q1
                 lower = max(mn, q1 - 1.5 * iqr)
                 upper = min(mx, q3 + 1.5 * iqr)
+                vfmt = unit_fmt[0]
 
                 fig_edit.add_trace(
-                    go.Box(
-                        y=[seg],
-                        q1=[q1],
-                        median=[median],
-                        q3=[q3],
-                        lowerfence=[lower],
-                        upperfence=[upper],
+                    go.Bar(
+                        y=[i],
+                        x=[q3 - q1],
+                        base=[q1],
                         orientation="h",
-                        name=seg,
-                        marker=dict(color=_PLOT_COLOR, opacity=0.85),
-                        line=dict(color=_PLOT_COLOR),
-                        fillcolor=_PLOT_COLOR,
-                        opacity=0.85,
+                        width=0.5,
+                        marker=dict(
+                            color=_PLOT_COLOR,
+                            opacity=0.45,
+                            line=dict(color=_PLOT_COLOR, width=1.5),
+                        ),
                         showlegend=False,
-                        hoverinfo="skip",
+                        hovertemplate=(
+                            f"<b>{seg}</b><br>"
+                            f"Median: {vfmt.format(median)}<br>"
+                            f"Q1: {vfmt.format(q1)}<br>"
+                            f"Q3: {vfmt.format(q3)}<br>"
+                            f"Lower fence: {vfmt.format(lower)}<br>"
+                            f"Upper fence: {vfmt.format(upper)}<br>"
+                            f"n = {n:,}<extra></extra>"
+                        ),
                     ),
                     row=1,
                     col=col_idx,
                 )
+                # Whisker lines
+                for x0, x1 in [(lower, q1), (q3, upper)]:
+                    fig_edit.add_trace(
+                        go.Scatter(
+                            x=[x0, x1],
+                            y=[i, i],
+                            mode="lines",
+                            line=dict(color=_PLOT_COLOR, width=1.5),
+                            showlegend=False,
+                            hoverinfo="skip",
+                        ),
+                        row=1,
+                        col=col_idx,
+                    )
+                # Whisker caps
+                for xc in [lower, upper]:
+                    fig_edit.add_trace(
+                        go.Scatter(
+                            x=[xc, xc],
+                            y=[i - _CAP_H, i + _CAP_H],
+                            mode="lines",
+                            line=dict(color=_PLOT_COLOR, width=1.5),
+                            showlegend=False,
+                            hoverinfo="skip",
+                        ),
+                        row=1,
+                        col=col_idx,
+                    )
+                # Median line
                 fig_edit.add_trace(
                     go.Scatter(
-                        x=[median],
-                        y=[seg],
-                        mode="markers",
-                        marker=dict(size=12, opacity=0),
+                        x=[median, median],
+                        y=[i - 0.25, i + 0.25],
+                        mode="lines",
+                        line=dict(color="black", width=2.5),
                         showlegend=False,
-                        hovertemplate=(
-                            f"<b>{seg}</b><br>"
-                            f"Median: {median:,.2f}<br>"
-                            f"Q1: {q1:,.2f}<br>Q3: {q3:,.2f}<br>"
-                            f"Lower fence: {lower:,.2f}<br>Upper fence: {upper:,.2f}<br>"
-                            f"n = {n:,}<extra></extra>"
-                        ),
+                        hoverinfo="skip",
                     ),
                     row=1,
                     col=col_idx,
@@ -580,9 +614,22 @@ def evaluate_model(
             height=max(350, 50 * len(segments) + 100),
             plot_bgcolor="white",
             paper_bgcolor="white",
+            hovermode="closest",
+            bargap=0.3,
         )
-        fig_edit.update_xaxes(tickfont_size=13, gridcolor="#f0f0f0")
-        fig_edit.update_yaxes(tickfont_size=13, gridcolor="#f0f0f0")
+        fig_edit.update_xaxes(title_text="Edit Distance (bp)", tickfont_size=13, gridcolor="#f0f0f0", row=1, col=1)
+        fig_edit.update_xaxes(
+            title_text="Normalized Edit Distance", tickfont_size=13, gridcolor="#f0f0f0", row=1, col=2
+        )
+        for c in (1, 2):
+            fig_edit.update_yaxes(
+                tickvals=list(range(len(ticktext))),
+                ticktext=ticktext,
+                tickfont_size=13,
+                gridcolor="#f0f0f0",
+                row=1,
+                col=c,
+            )
 
         edit_caption = (
             f"Levenshtein edit distance between the model's predicted segment sequences and the "
