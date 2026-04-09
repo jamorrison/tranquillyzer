@@ -249,7 +249,7 @@ def visualize(
         "full_read_annots",
         help="Output PDF base name (extension [cyan].pdf[/cyan] is added automatically).",
     ),
-    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
+    model_name: str = typer.Option("10x3p_sc_ont_012", help=_HELP_MODEL_NAME),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
@@ -317,7 +317,7 @@ def visualize(
 def annotate_reads(
     output_dir: str,
     preprocess_dir: str = typer.Option(None, "--preprocess-dir", help=_HELP_PREPROCESS_DIR, rich_help_panel="General"),
-    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME, rich_help_panel="Model"),
+    model_name: str = typer.Option("10x3p_sc_ont_012", help=_HELP_MODEL_NAME, rich_help_panel="Model"),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
     models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR, rich_help_panel="Model"),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM, rich_help_panel="GPU & Batching")] = None,
@@ -542,7 +542,7 @@ def barcode_correct(
     ),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
     model_name: str = typer.Option(
-        "10x3p_sc_ont_011",
+        "10x3p_sc_ont_012",
         help="Model name used to resolve barcode column order from seq_orders.yaml.",
         rich_help_panel="Model",
     ),
@@ -630,7 +630,7 @@ def generate_whitelist(
         ...,
         help="Annotation output directory (containing annotation_chunks/ or annotation_metadata/).",
     ),
-    model_name: str = typer.Option("10x3p_sc_ont_011", help=_HELP_MODEL_NAME),
+    model_name: str = typer.Option("10x3p_sc_ont_012", help=_HELP_MODEL_NAME),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     input_file: str = typer.Option(
         None,
@@ -643,7 +643,9 @@ def generate_whitelist(
         None,
         help=(
             "Comma-separated barcode column names (e.g. [cyan]CBC[/cyan] or [cyan]CBC1,CBC2[/cyan]).\n\n"
-            "Overrides model-based column resolution. Sequence columns are derived as [cyan]{col}_Sequences[/cyan]."
+            "If not provided, barcode columns are resolved from the [cyan]--model-name[/cyan] entry in "
+            "[cyan]utils/seq_orders.yaml[/cyan]. When provided, overrides model-based resolution and "
+            "sequence columns are derived as [cyan]{col}_Sequences[/cyan]."
         ),
     ),
     expected_cells: int = typer.Option(
@@ -1037,6 +1039,76 @@ def split_bam(
 
 
 # ===========================
+# featureCounts (containerized)
+# ===========================
+
+
+@app.command(no_args_is_help=True)
+def featurecounts(
+    bam_dir: str = typer.Argument(..., help="Directory containing per-cell BAMs (output of [cyan]split-bam[/cyan])."),
+    gtf: str = typer.Argument(..., help="GTF annotation file passed to featureCounts (-a)."),
+    out_dir: str = typer.Argument(..., help="Output directory for batch results and merged matrix."),
+    container_runtime: str = typer.Option(
+        "auto",
+        "--container-runtime",
+        help="Container runtime: [cyan]auto[/cyan], [cyan]apptainer[/cyan], [cyan]singularity[/cyan], [cyan]docker[/cyan], or [cyan]native[/cyan].",
+    ),
+    container_image: Optional[str] = typer.Option(
+        None,
+        "--container-image",
+        help="Container image. Defaults to [cyan]varishenlab/featurecounts:subread2.0.6_py3.10.12[/cyan] (Docker Hub).",
+    ),
+    image_cache: Optional[str] = typer.Option(
+        None,
+        "--image-cache",
+        help="Directory to cache pulled SIF images. Defaults to [cyan]<package_dir>/container_images/[/cyan].",
+    ),
+    bind: Optional[str] = typer.Option(
+        None,
+        "--bind",
+        help="Comma-separated extra bind paths for the container (e.g. [cyan]/scratch,/data[/cyan]). "
+        "Bind paths for [cyan]bam_dir[/cyan], [cyan]gtf[/cyan], and [cyan]out_dir[/cyan] are inferred automatically.",
+    ),
+    batch_size: int = typer.Option(200, "--batch-size", help="Number of BAMs per featureCounts call."),
+    threads: int = typer.Option(8, "--threads", "-t", help="Total threads (split across workers)."),
+    workers: int = typer.Option(1, "--workers", help="Parallel featureCounts batches."),
+    extra: str = typer.Option(
+        "-t exon -g gene_id -O",
+        "--extra",
+        help="Extra args passed to featureCounts. Add [cyan]-s 1[/cyan] / [cyan]-s 2[/cyan] for stranded libraries.",
+    ),
+    matrix_name: str = typer.Option("counts_matrix.tsv", "--matrix-name", help="Filename for merged counts matrix."),
+    no_run: bool = typer.Option(
+        False, "--no-run", help="Skip running featureCounts; merge existing batch outputs only."
+    ),
+):
+    """
+    Run featureCounts on per-cell BAMs (containerized) and emit a gene × cell counts matrix.
+
+    Auto-detects [cyan]apptainer[/cyan] / [cyan]singularity[/cyan] / [cyan]docker[/cyan] (in that order)
+    and pulls the image on first use. Use [cyan]--container-runtime native[/cyan] to run a host-installed
+    [cyan]featureCounts[/cyan] binary instead.
+    """
+    from wrappers.featurecounts_wrap import featurecounts_wrap
+
+    featurecounts_wrap(
+        bam_dir=bam_dir,
+        gtf=gtf,
+        out_dir=out_dir,
+        container_runtime=container_runtime,
+        container_image=container_image,
+        image_cache=image_cache,
+        extra_binds=bind,
+        batch_size=batch_size,
+        threads=threads,
+        workers=workers,
+        extra=extra,
+        matrix_name=matrix_name,
+        no_run=no_run,
+    )
+
+
+# ===========================
 # Simulate training dataset
 # ===========================
 
@@ -1247,11 +1319,13 @@ def train_model(
         gpu_mem / target_tokens / vram_headroom / min_batch_size / max_batch_size:
             Parameters to guide validation inference batch sizing (plot stage).
 
-    Outputs (per variant `<model_name>_<idx>`):
-        - `*.h5` or SavedModel
-        - `<model_name>_<idx>_lbl_bin.pkl`
-        - `<model_name>_<idx>_history.tsv`
-        - `<model_name>_<idx>_val_viz.pdf`
+    Outputs (per variant, in `<output_dir>/<model_name>` for a single config or
+    `<output_dir>/<model_name>_<idx>` for grid runs):
+        - `<model_name>.h5`              # weights (CRF) or full model (REG)
+        - `<model_name>_params.yaml`     # resolved hyperparameters + version stamp
+        - `<model_name>_lbl_bin.pkl`     # fitted LabelBinarizer
+        - `<model_name>_history.tsv`     # per-epoch Keras history
+        - `<model_name>_val_viz.pdf`     # validation annotation plots
 
     Raises:
         FileNotFoundError: If `training_params.yaml` missing or `model_name` not present.

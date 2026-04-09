@@ -106,10 +106,6 @@ def annotate_reads_wrap(
             pass
         return models
 
-    model_path = f"{models_dir}/{model_name}.h5"
-    with open(f"{models_dir}/{model_name}_lbl_bin.pkl", "rb") as f:
-        label_binarizer = pickle.load(f)
-
     try:
         seq_order, sequences, barcodes, UMIs, strand = seq_orders(seq_order_file, model_name)
     except Exception as e:
@@ -120,6 +116,10 @@ def annotate_reads_wrap(
         available = _available_models(seq_order_file)
         suffix = f" Available models: {', '.join(available)}" if available else " No models found in seq_orders file."
         raise ValueError(f"Model '{model_name}' not found in seq_orders file: {seq_order_file}.{suffix}")
+
+    model_path = f"{models_dir}/{model_name}.h5"
+    with open(f"{models_dir}/{model_name}_lbl_bin.pkl", "rb") as f:
+        label_binarizer = pickle.load(f)
     valid_structs = get_valid_structures(seq_order_file, model_name)
 
     # Build known_patterns for segments with literal adapter sequences

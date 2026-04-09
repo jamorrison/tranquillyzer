@@ -23,7 +23,11 @@ util_2
 util_2/*
 utils2
 utils2/*
+
+
 # Ignore references and analysis files
+container_images
+container_images/*
 
 tests/references/
 tests/10x3p/*

@@ -201,12 +201,19 @@ def _correct_and_demux_row(
                 f"{bq_suffix}"
             )
             demux_record = f"{header}\n{seq_out}\n+\n{qual}\n"
+            correction["demux_header"] = header
+            correction["demux_sequence"] = seq_out
+            correction["demux_quality"] = qual
         else:
             header = (
                 f">{read_name}_{cell_id_str}{umi_name} "
                 f"cell_id:{cell_id_str}|Barcodes:{bc_str}{umi_field}|orientation:{orientation}"
             )
             demux_record = f"{header}\n{seq_out}\n"
+            correction["demux_header"] = header
+            correction["demux_sequence"] = seq_out
+            correction["demux_quality"] = None
+        correction["demux_bucket"] = "ambiguous" if is_ambiguous else cell_id_str
 
     return correction, demux_record, is_ambiguous
 

@@ -1,6 +1,6 @@
 import pytest
 
-from wrappers.annotate_reads_wrap import _load_checkpoint, _save_checkpoint
+from scripts.annotate_reads import _load_checkpoint, _save_checkpoint
 
 
 def test_checkpoint_roundtrip_persists_chunk_size(tmp_path):

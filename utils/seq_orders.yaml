@@ -87,6 +87,58 @@
 # ─── Libraries ───
 
 libraries:
+  template:
+    strand: rev
+    barcodes: [CBC]
+    umis: [UMI]
+    segments:
+      - name: 5p
+        pattern: CTACACGACGCTCTTCCGATCT
+      - name: CBC
+        pattern: N16
+      - name: UMI
+        pattern: N12
+      - name: polyT
+        pattern: T
+      - name: cDNA
+        pattern: NN
+      - name: 3p
+        pattern: CCCATGTACTCTGCGTTGATACCACTGCTT
+    valid_structures:
+      - [5p, CBC, UMI, polyT, cDNA, 3p]
+      - [5p, CBC, UMI, cDNA, 3p]
+    training_structures:
+      full_read:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        proportion: 0.50
+      concat_fwd_rev:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, rev]
+        proportion: 0.25
+      concat_fwd_reverse:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, reverse]
+        proportion: 0.25
+    assessment_structures:
+      single_fwd:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        proportion: 0.25
+      single_rev:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        rc_pattern: [rev]
+        proportion: 0.25
+      concat_fwd_rev:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, rev]
+        proportion: 0.25
+      concat_fwd_reverse:
+        order: [5p, CBC, UMI, polyT, cDNA, 3p]
+        repeat: 2
+        rc_pattern: [fwd, reverse]
+        proportion: 0.25
 
   10x5p_sc_ont:
     strand: fwd
@@ -254,5 +306,5 @@ models:
   10x3p_sc_ont_012:
     library: 10x3p_sc_ont
 
-  10x3p_sc_ont_013:
-    library: 10x3p_sc_ont
+  template_model:
+    library: template
