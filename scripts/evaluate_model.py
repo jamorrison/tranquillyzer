@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from rapidfuzz.distance import Levenshtein
@@ -445,8 +446,16 @@ def evaluate_model(
     __version__ = get_version()
 
     # Load annotation parquets
-    valid_df = pd.read_parquet(valid_parquet_path) if os.path.exists(valid_parquet_path) else pd.DataFrame()
-    invalid_df = pd.read_parquet(invalid_parquet_path) if os.path.exists(invalid_parquet_path) else pd.DataFrame()
+    valid_df = (
+        pd.DataFrame(pl.read_parquet(valid_parquet_path).to_dict(as_series=False))
+        if os.path.exists(valid_parquet_path)
+        else pd.DataFrame()
+    )
+    invalid_df = (
+        pd.DataFrame(pl.read_parquet(invalid_parquet_path).to_dict(as_series=False))
+        if os.path.exists(invalid_parquet_path)
+        else pd.DataFrame()
+    )
 
     panels = []  # list of (fig, title, caption) for HTML report
 

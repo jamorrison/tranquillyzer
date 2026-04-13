@@ -13,22 +13,28 @@ from filelock import FileLock  # Import the FileLock library
 logger = logging.getLogger(__name__)
 
 
-def determine_bin(length, bin_size=500):
-    """Assign a read to a length bin based on configurable bin width."""
-    if length < 10000:
-        bin_size = bin_size
+def determine_bin(length, bin_size=500, adaptive_bin_threshold=10000):
+    """Assign a read to a length bin based on configurable bin width.
+
+    Below *adaptive_bin_threshold*, the user-supplied *bin_size* is used.
+    Above it, fixed coarse tiers apply (5 000 / 10 000 / 25 000 bp).
+    """
+    if length < adaptive_bin_threshold:
+        effective = bin_size
     elif length < 50000:
-        bin_size = 5000
+        effective = 5000
     elif length < 100000:
-        bin_size = 10000
+        effective = 10000
     else:
-        bin_size = 25000
-    bin_start = (length // bin_size) * bin_size
-    bin_end = bin_start + bin_size - 1
+        effective = 25000
+    bin_start = (length // effective) * effective
+    bin_end = bin_start + effective - 1
     return f"{bin_start}_{bin_end}bp"
 
 
-def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual, bin_size=500):
+def extract_and_bin_reads(
+    file_path, batch_size, output_dir, output_base_qual, bin_size=500, adaptive_bin_threshold=10000
+):
     """Read sequences from a FASTA/FASTQ file and bin them by length."""
     reads_by_bin = {}
     file_format = "fasta" if file_path.endswith((".fa", ".fasta", ".fa.gz", ".fasta.gz")) else "fastq"
@@ -36,7 +42,7 @@ def extract_and_bin_reads(file_path, batch_size, output_dir, output_base_qual, b
     with gzip.open(file_path, "rt") if file_path.endswith(".gz") else open(file_path, "r") as handle:
         for record in SeqIO.parse(handle, file_format):
             read_length = len(record.seq)
-            bin_name = determine_bin(read_length, bin_size)
+            bin_name = determine_bin(read_length, bin_size, adaptive_bin_threshold)
 
             # Ensure that the bin is initialized with all required keys
             if output_base_qual:
@@ -103,7 +109,17 @@ def dump_bin_data(output_dir, output_base_qual, bin_name, data):
         logger.error(f"Error writing {tsv_filename}: {e}")
 
 
-def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual, bin_size=500, num_workers=4):
+def parallel_preprocess_data(
+    file_list,
+    output_dir,
+    batch_size,
+    output_base_qual,
+    bin_size=500,
+    adaptive_bin_threshold=10000,
+    min_reads_per_bin=0,
+    max_padding_fraction=0.20,
+    num_workers=4,
+):
     """Preprocess reads from a sequence file in parallel using multiple threads."""
     total_files = len(file_list)
 
@@ -115,12 +131,29 @@ def parallel_preprocess_data(file_list, output_dir, batch_size, output_base_qual
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         for file_path in file_list:
-            executor.submit(extract_and_bin_reads, file_path, batch_size, output_dir, output_base_qual, bin_size)
+            executor.submit(
+                extract_and_bin_reads,
+                file_path,
+                batch_size,
+                output_dir,
+                output_base_qual,
+                bin_size,
+                adaptive_bin_threshold,
+            )
 
     end_time = time.time()
     logger.info(f"Processed {total_files} files in {end_time - start_time:.2f} seconds.")
 
     os.system("rm " + output_dir + "/*.lock")
+
+    if min_reads_per_bin > 0:
+        merge_sparse_bins(
+            output_dir,
+            min_bin_width=bin_size,
+            min_reads_per_bin=min_reads_per_bin,
+            max_padding_fraction=max_padding_fraction,
+        )
+
     convert_tsv_to_parquet(output_dir, row_group_size=1000000)
 
 
@@ -198,6 +231,94 @@ def convert_tsv_to_parquet(tsv_dir, row_group_size=1000000):
         index_df = index_df.with_columns(pl.lit(get_version()).alias("tranquillyzer_version"))
         index_df.write_parquet(index_parquet_file)
         logger.info(f"Index file saved at {index_parquet_file}")
+
+
+def _count_lines(filepath):
+    """Fast line count using buffered binary reads."""
+    count = 0
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            count += chunk.count(b"\n")
+    return count
+
+
+def _parse_bin_name(bin_name):
+    """Extract (start, end) integers from a bin name like '500_549bp'."""
+    parts = bin_name.replace("bp", "").split("_")
+    return int(parts[0]), int(parts[1])
+
+
+def merge_sparse_bins(tsv_dir, min_bin_width=50, min_reads_per_bin=50000, max_padding_fraction=0.20):
+    """Merge adjacent sparse length bins to reduce per-bin overhead during annotation.
+
+    Walks bins in ascending order. When a bin has fewer than *min_reads_per_bin*
+    reads, it is merged with subsequent adjacent bins until the threshold is met
+    or the merged width would exceed ``max(min_bin_width, bin_start * max_padding_fraction)``.
+
+    Operates on TSV files in-place (concatenation + rename) before parquet conversion.
+    """
+    tsv_files = sorted(
+        glob.glob(os.path.join(tsv_dir, "*.tsv")),
+        key=lambda f: _parse_bin_name(os.path.basename(f).replace(".tsv", ""))[0],
+    )
+    if not tsv_files:
+        return
+
+    # Collect bin metadata: (start, end, read_count, filepath)
+    bin_info = []
+    for f in tsv_files:
+        bin_name = os.path.basename(f).replace(".tsv", "")
+        start, end = _parse_bin_name(bin_name)
+        n_reads = max(0, _count_lines(f) - 1)  # subtract header
+        bin_info.append((start, end, n_reads, f))
+
+    merged_groups = []  # list of (merged_start, merged_end, total_reads, [filepaths])
+    i = 0
+    while i < len(bin_info):
+        grp_start = bin_info[i][0]
+        grp_end = bin_info[i][1]
+        grp_count = bin_info[i][2]
+        grp_files = [bin_info[i][3]]
+
+        max_width = max(min_bin_width, int(max(grp_start, 1) * max_padding_fraction))
+
+        j = i + 1
+        while j < len(bin_info) and grp_count < min_reads_per_bin:
+            candidate_end = bin_info[j][1]
+            if (candidate_end - grp_start + 1) > max_width:
+                break
+            grp_end = candidate_end
+            grp_count += bin_info[j][2]
+            grp_files.append(bin_info[j][3])
+            j += 1
+
+        merged_groups.append((grp_start, grp_end, grp_count, grp_files))
+        i = j
+
+    # Execute merges
+    n_merged = 0
+    for grp_start, grp_end, grp_count, grp_files in merged_groups:
+        if len(grp_files) == 1:
+            # Possibly rename if bin boundaries changed (shouldn't happen for single file)
+            continue
+
+        merged_name = f"{grp_start}_{grp_end}bp"
+        merged_path = os.path.join(tsv_dir, f"{merged_name}.tsv")
+        n_merged += len(grp_files)
+
+        with open(merged_path, "w") as out:
+            for k, src in enumerate(grp_files):
+                with open(src) as inp:
+                    for line_idx, line in enumerate(inp):
+                        if k > 0 and line_idx == 0:
+                            continue  # skip header of non-first files
+                        out.write(line)
+                os.remove(src)
+
+    if n_merged:
+        orig = len(bin_info)
+        final = len(merged_groups)
+        logger.info(f"Adaptive bin merging: {orig} bins -> {final} bins ({orig - final} sparse bins merged)")
 
 
 def find_sequence_files(directory):

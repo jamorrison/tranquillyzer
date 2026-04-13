@@ -175,6 +175,28 @@ def preprocess(
         100000, help="Base chunk size; effective size scales with the read-length distribution."
     ),
     bin_size: int = typer.Option(500, help="Bin width (bp) for length-binning reads with length < 10 000 bp."),
+    adaptive_bin_threshold: int = typer.Option(
+        10000,
+        help="Read length (bp) above which fixed coarse bin widths are used instead of --bin-size. "
+        "Increase for datasets with many long reads (e.g., direct RNA).",
+    ),
+    min_reads_per_bin: int = typer.Option(
+        0,
+        help="Adaptive binning: merge adjacent sparse bins until each has at least this many reads. "
+        "Set to 0 to disable. Recommended value: 50000. "
+        "Example: with --bin-size 50 and --min-reads-per-bin 50000, bins in dense regions (e.g., 500-1000 bp) "
+        "stay at 50 bp width, while sparse bins (e.g., 5000-6000 bp with only a few hundred reads each) "
+        "are merged into wider bins. The maximum merged width is controlled by --max-padding-fraction.",
+    ),
+    max_padding_fraction: float = typer.Option(
+        0.20,
+        help="Maximum merged bin width as a fraction of the bin's start position. "
+        "Limits padding overhead when --min-reads-per-bin merges sparse bins. "
+        "Example: at 0.20, a bin starting at 5000 bp can be at most 1000 bp wide (5000 × 0.20), "
+        "so reads are padded by up to 20 percent of their length. "
+        "Lower values produce narrower (more) bins with less padding waste; "
+        "higher values allow wider (fewer) bins with more padding waste.",
+    ),
     threads: int = typer.Option(12, help="Number of CPU threads."),
 ):
     """
@@ -206,7 +228,17 @@ def preprocess(
     """
     from wrappers.preprocess_wrap import preprocess_wrap
 
-    preprocess_wrap(fasta_dir, output_dir, output_base_qual, chunk_size, bin_size, threads)
+    preprocess_wrap(
+        fasta_dir,
+        output_dir,
+        output_base_qual,
+        chunk_size,
+        bin_size,
+        threads,
+        adaptive_bin_threshold,
+        min_reads_per_bin,
+        max_padding_fraction,
+    )
 
 
 # ==============================

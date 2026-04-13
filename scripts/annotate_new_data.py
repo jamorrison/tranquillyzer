@@ -288,7 +288,7 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1, 
 
     if available_gpus.n_gpus() == 0:
         cpu_bs = min(32, max(1, len(new_encoded_data)))  # small & predictable for tests/CI
-        return model.predict(new_encoded_data, batch_size=cpu_bs, verbose=0), model
+        return model.predict(new_encoded_data, batch_size=cpu_bs, verbose=0), cpu_bs, model
 
     def build_ds(bs: int):
         return (
@@ -297,8 +297,8 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1, 
             .prefetch(tf.data.AUTOTUNE)
         )
 
-    preds, _, model = predict_with_backoff(model, build_ds, global_bs, min_batch, rebuild_model_fn)
-    return preds, model
+    preds, final_bs, model = predict_with_backoff(model, build_ds, global_bs, min_batch, rebuild_model_fn)
+    return preds, final_bs, model
 
 
 def load_model_params(model_path):
@@ -488,7 +488,7 @@ def model_predictions(
             if not using_strategy and strategy is not None:
                 model = build_model(model_path, conv_filters, num_labels, strategy=strategy)
                 using_strategy = True
-            chunk_predictions, model = annotate_new_data_parallel(
+            chunk_predictions, global_bs, model = annotate_new_data_parallel(
                 X_new_padded,
                 model,
                 global_bs,

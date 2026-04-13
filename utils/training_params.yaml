@@ -58,3 +58,22 @@ template_model:
   regularization: 0.01
   learning_rate: 0.001
   epochs: 5
+
+10x3p_sc_ont_013:
+  batch_size: 128
+  train_fraction: 0.8
+  vocab_size: 5
+  embedding_dim: 128
+  conv_layers: 3
+  conv_filters: [128, 128, 128]
+  conv_kernel_sizes: [25, 25, 25]
+  dilation_rates: [1, 3, 5]
+  lstm_layers: 0
+  lstm_units: []
+  bidirectional: true
+  crf_layer: true
+  attention_heads: 0
+  dropout_rate: 0.35
+  regularization: 0.01
+  learning_rate: 0.001
+  epochs: 5
