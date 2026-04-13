@@ -66,8 +66,13 @@ The sections below explain each step in more detail.
 
 ### Length bins
 
-During preprocessing, reads are sorted into **length bins** (e.g., 0-499 bp, 500-999 bp, ...). Within each bin, all
-reads are padded to the same length so they can be processed together as a batch. The padded length is:
+During preprocessing, reads are sorted into **length bins** (e.g., 0-499 bp, 500-999 bp, ...). Bin widths are not
+uniform across the full length range: below `--adaptive-bin-threshold` (default 10,000 bp), the user-specified
+`--bin-size` determines bin width; above it, fixed coarse tiers apply (5,000 / 10,000 / 25,000 bp for the 10k–50k,
+50k–100k, and 100k+ ranges respectively). Additionally, when `--min-reads-per-bin` is enabled during preprocessing,
+adjacent sparsely populated bins are merged, so actual bin boundaries at annotation time may be wider than the nominal
+widths. Within each bin, all reads are padded to the same length so they can be processed together as a batch. The
+padded length is:
 
 $$
 L = B + 1 + P_{\text{conv}}

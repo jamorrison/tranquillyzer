@@ -59,6 +59,13 @@ Optional Arguments
   `--no-output-base-qual`)
 - `--chunk-size INTEGER`: Starting chunk size for processing, dynamically adjusted based on increasing read length
   (default: 100000)
+- `--bin-size INTEGER`: Bin width (bp) for length-binning reads below `--adaptive-bin-threshold` (default: 500)
+- `--adaptive-bin-threshold INTEGER`: Read length (bp) above which fixed coarse bin widths (5,000 / 10,000 / 25,000 bp)
+  are used instead of `--bin-size` (default: 10000)
+- `--min-reads-per-bin INTEGER`: Merge adjacent sparse bins until each has at least this many reads; set to 0 to disable
+  (default: 0)
+- `--max-padding-fraction FLOAT`: Maximum merged bin width as a fraction of the bin's start position; controls padding
+  overhead when `--min-reads-per-bin` merges sparse bins (default: 0.20)
 - `--threads INTEGER`: Number of CPU threads (default: 12)
 - `--help`: Print help message and exit
 

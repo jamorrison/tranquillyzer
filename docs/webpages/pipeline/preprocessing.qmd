@@ -23,6 +23,57 @@ batches, but more bins to process. For datasets with skewed read-length distribu
 narrow range), decreasing the bin size can significantly improve throughput. For more uniform distributions, the default
 is usually sufficient.
 
+## Adaptive Bin Widths for Long Reads
+
+The `--bin-size` setting works well for the bulk of reads in a typical dataset, but applying it uniformly across all
+read lengths creates a practical problem. Consider a dataset with reads ranging from 0 to 40,000 bp and `--bin-size`
+set to 500. This would create 80 bins, but most of the reads in a typical ONT run cluster below 5,000 bp. The bins
+above 10,000 bp might each contain only a handful of reads, yet each bin still requires its own annotation pass — model
+loading, padding, and GPU invocation. The result is that the pipeline spends a disproportionate amount of time
+processing nearly empty bins.
+
+To address this, reads above `--adaptive-bin-threshold` (default 10,000 bp) are automatically assigned to wider bins:
+
+| Read Length Range | Bin Width |
+|---|:--:|
+| Below `--adaptive-bin-threshold` | `--bin-size` (default 500 bp) |
+| 10,000 – 50,000 bp | 5,000 bp |
+| 50,000 – 100,000 bp | 10,000 bp |
+| Above 100,000 bp | 25,000 bp |
+
+The wider bins consolidate the sparse long-read tail into fewer, better-populated groups. The tradeoff is more padding
+per read (a 12,000 bp read in a 10,000–14,999 bp bin is padded to ~15,000 rather than ~12,500), but this is
+outweighed by eliminating dozens of near-empty annotation passes.
+
+For datasets dominated by long reads (e.g., direct RNA sequencing), the default 10,000 bp threshold may be too
+aggressive — raising `--adaptive-bin-threshold` extends fine-grained binning further into the length distribution.
+
+## Sparse Bin Merging
+
+Even with adaptive tiering, the read-length distribution can leave some bins sparsely populated. For example, setting
+`--bin-size 50` for fine-grained binning in a dense region (say, 500–1,500 bp) works well where each 50 bp bin
+contains tens of thousands of reads. But the same 50 bp width applied to a less dense region (say, 3,000–5,000 bp)
+might produce 40 bins with only a few hundred reads each — again creating many near-empty annotation passes.
+
+When `--min-reads-per-bin` is set (default 0 = disabled; recommended value ~50,000), _Tranquillyzer_ walks the bins
+in ascending order and merges adjacent underpopulated bins until each meets the read-count threshold. For example, if
+bins `3000_3049bp` through `3450_3499bp` each contain ~5,000 reads, they would be merged into a single
+`3000_3499bp` bin with ~50,000 reads.
+
+To prevent merged bins from becoming excessively wide (which would increase padding waste), the merged width is capped.
+The cap is the larger of `--bin-size` and `bin_start × --max-padding-fraction`. At the default
+`--max-padding-fraction` of 0.20:
+
+- A bin starting at **1,000 bp** can grow to at most **500 bp** wide (governed by `--bin-size`, since
+  1,000 × 0.20 = 200 < 500).
+- A bin starting at **5,000 bp** can grow to at most **1,000 bp** wide (5,000 × 0.20 = 1,000 > 500).
+- A bin starting at **8,000 bp** can grow to at most **1,600 bp** wide (8,000 × 0.20 = 1,600 > 500).
+
+The effect is that bins in denser, shorter-read regions stay narrow (preserving the benefit of fine-grained binning),
+while bins in sparser, longer-read regions are allowed to widen proportionally. Lower `--max-padding-fraction` values
+produce narrower merged bins with less padding waste but more total bins; higher values allow wider merged bins with
+fewer total bins.
+
 # Processing Overview
 
 The `preprocess` command scans your input directory for FASTA/FASTQ files, reads all sequences, and distributes them
@@ -50,7 +101,10 @@ tranquillyzer preprocess \
 | `OUTPUT_DIR` | required | Path to output directory | |
 | `--output-base-qual` / `--no-output-base-qual` | `--no-output-base-qual` | Include base quality scores (from FASTQ) | Enable if you plan to export FASTQ with qualities later |
 | `--chunk-size` | 100,000 | Base chunk size for processing | Rarely needs changing |
-| `--bin-size` | 500 | Bin width (bp) for length-binning reads < 10,000 bp | Decrease for datasets with skewed read-length distributions. Narrower bins reduce padding waste and allow larger batch sizes, improving throughput. Increase for more uniform distributions to reduce the number of bins. |
+| `--bin-size` | 500 | Bin width (bp) for length-binning reads below `--adaptive-bin-threshold` | Decrease for datasets with skewed read-length distributions. Narrower bins reduce padding waste and allow larger batch sizes, improving throughput. Increase for more uniform distributions to reduce the number of bins. |
+| `--adaptive-bin-threshold` | 10,000 | Read length (bp) above which fixed coarse bin widths replace `--bin-size` | Increase for datasets with many long reads (e.g., direct RNA) to extend fine-grained binning |
+| `--min-reads-per-bin` | 0 (disabled) | Merge adjacent sparse bins until each has at least this many reads | Set to ~50,000 for datasets where many bins are sparsely populated |
+| `--max-padding-fraction` | 0.20 | Maximum merged bin width as a fraction of the bin's start position | Lower to reduce padding waste from merged bins; raise to allow fewer, wider bins |
 | `--threads` | 12 | Number of CPU threads | Match your available cores |
 
 # Output
