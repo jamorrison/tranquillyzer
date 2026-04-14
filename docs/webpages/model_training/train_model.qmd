@@ -17,8 +17,10 @@ The model processes a read through a series of layers, each building on the prev
 patterns:
 
 ```
-Input tokens → Embedding → Conv layers → BiLSTM → Dense → CRF → Per-base labels
+Input tokens → Embedding → Conv layers → [BiLSTM] → Dense → CRF → Per-base labels
 ```
+
+Brackets around `BiLSTM` indicate that it is an optional component — see [When the BiLSTM can be dropped](#when-the-bilstm-can-be-dropped) below.
 
 At a high level:
 
@@ -113,6 +115,25 @@ right-to-left. This allows each position to be interpreted using context from bo
   standard protocols.
 - **`bidirectional`** (default: True): reading in both directions is typically beneficial for boundary labeling. Setting
   this to False is uncommon for this task.
+
+### When the BiLSTM can be dropped
+
+For typical segmentation tasks — short motif-like adapters, barcodes, and UMIs flanked by known structure — the
+**Conv + CRF** backbone alone is often sufficient. Convolutional layers capture the local motifs, and the CRF enforces
+globally consistent label sequences, which together cover most of what the BiLSTM contributes for well-behaved library
+designs.
+
+Dropping or shrinking the BiLSTM (e.g., setting `lstm_layers = 0`) can yield accuracy comparable to the default
+CNN-BiLSTM-CRF model while noticeably reducing training and inference time and GPU memory footprint. Because the BiLSTM
+is sequential and memory-heavy, removing it also allows larger batch sizes and makes processing very long reads more
+tractable.
+
+The BiLSTM is more likely to help when long-range dependencies actually matter — for example, ambiguous motifs whose
+identity depends on distant context, or non-standard library structures with repeated or overlapping adapter patterns.
+
+**Practical recommendation:** start with the default CNN-BiLSTM-CRF. If inference is memory-bound or reads are very
+long, train a Conv + CRF variant (`lstm_layers = 0`) and compare per-segment accuracy on a held-out validation set
+before committing to it.
 
 ## Multi-Head Self-Attention (Experimental)
 

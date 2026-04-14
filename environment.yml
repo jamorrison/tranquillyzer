@@ -20,6 +20,7 @@ dependencies:
   - python-Levenshtein=0.27.1
   - minimap2=2.30
   - samtools=1.22.1
+  - subread=2.0.6
   - htseq=2.1.2
   - pip
 

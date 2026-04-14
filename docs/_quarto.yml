@@ -50,6 +50,8 @@ website:
           href: webpages/pipeline/align_dedup.qmd
         - text: "BAM Splitting"
           href: webpages/pipeline/split_bam.qmd
+        - text: "Gene Quantification"
+          href: webpages/pipeline/featurecounts.qmd
         - text: "QC Metrics"
           href: webpages/pipeline/qc_metrics.qmd
         - text: "Visualization"

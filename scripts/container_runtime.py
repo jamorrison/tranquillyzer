@@ -22,10 +22,12 @@ DEFAULT_FEATURECOUNTS_IMAGE = "varishenlab/featurecounts:subread2.0.6_py3.10.12"
 _AUTO_ORDER = ("apptainer", "singularity", "docker")
 
 
-def detect_runtime(preferred: str = "auto") -> str:
+def detect_runtime(preferred: str = "auto", tool: str = "") -> str:
     """Return one of 'apptainer', 'singularity', 'docker', 'native'.
 
     'native' means run the tool directly from $PATH (no container).
+    When *preferred* is ``"auto"`` and *tool* is already on ``$PATH``,
+    ``"native"`` is returned immediately — no container overhead.
     """
     preferred = (preferred or "auto").lower()
     if preferred == "native":
@@ -34,6 +36,9 @@ def detect_runtime(preferred: str = "auto") -> str:
         if shutil.which(preferred) is None:
             raise FileNotFoundError(f"Requested container runtime '{preferred}' not found in PATH")
         return preferred
+    # Prefer native when the tool binary is already available
+    if tool and shutil.which(tool) is not None:
+        return "native"
     for rt in _AUTO_ORDER:
         if shutil.which(rt) is not None:
             return rt
@@ -149,6 +154,6 @@ def resolve(
 
     Returns (runtime, invocation_string).
     """
-    rt = detect_runtime(runtime)
+    rt = detect_runtime(runtime, tool=tool)
     image_ref = ensure_image(rt, image, image_cache=image_cache)
     return rt, build_invocation(rt, image_ref, tool, bind_paths=bind_paths)

@@ -292,6 +292,48 @@ Optional Arguments
 - `--threads INTEGER`: Number of CPU threads (default: 12)
 - `--help`: Show this message and exit
 
+# Gene Quantification (featureCounts)
+
+## Overview
+
+The `featurecounts` subcommand runs featureCounts over per-cell BAM files and merges results into a gene-by-cell counts
+matrix. Its primary purpose is to provide a quick, lightweight QC on relevant gene-level metrics — the output feeds
+directly into `qc-metrics --counts-matrix`.
+
+## Usage
+
+```bash
+tranquillyzer featurecounts \
+    [OPTIONS] \
+    BAM_DIR \
+    GTF \
+    OUT_DIR
+```
+
+## Command Line Arguments
+
+Required Arguments
+
+- `BAM_DIR`: Directory containing per-cell BAMs (output of `split-bam`)
+- `GTF`: GTF annotation file passed to featureCounts (`-a`)
+- `OUT_DIR`: Output directory for batch results and merged matrix
+
+Optional Arguments
+
+- `--container-runtime TEXT`: Container runtime: `auto`, `apptainer`, `singularity`, `docker`, or `native`. When set to
+  `auto`, uses the bundled native binary if available, otherwise falls back to a container (default: `auto`)
+- `--container-image TEXT`: Container image, used only when running via a container runtime
+  (default: `varishenlab/featurecounts:subread2.0.6_py3.10.12`)
+- `--image-cache TEXT`: Directory to cache pulled SIF images (default: `<package_dir>/container_images/`)
+- `--bind TEXT`: Comma-separated extra bind paths for the container (default: None)
+- `--batch-size INTEGER`: Number of BAMs per featureCounts call (default: 200)
+- `--threads INTEGER`: Total threads, split across workers (default: 8)
+- `--workers INTEGER`: Parallel featureCounts batches (default: 1)
+- `--extra TEXT`: Extra arguments passed to featureCounts (default: `-t exon -g gene_id -O`)
+- `--matrix-name TEXT`: Filename for the merged counts matrix (default: `counts_matrix.tsv`)
+- `--no-run`: Skip running featureCounts; merge existing batch outputs only (default: off)
+- `--help`: Show this message and exit
+
 # Read Visualization
 
 ## Overview
