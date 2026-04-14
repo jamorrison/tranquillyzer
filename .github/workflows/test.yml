@@ -2,9 +2,9 @@ name: Run Pytest
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev, annot_demux_refactor]
   pull_request:
-    branches: [main]
+    branches: [main, dev, annot_demux_refactor]
 
 jobs:
   test:
