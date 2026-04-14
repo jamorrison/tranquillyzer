@@ -281,7 +281,7 @@ def visualize(
         "full_read_annots",
         help="Output PDF base name (extension [cyan].pdf[/cyan] is added automatically).",
     ),
-    model_name: str = typer.Option("10x3p_sc_ont_012", help=_HELP_MODEL_NAME),
+    model_name: str = typer.Option("10x3p_sc_ont_013", help=_HELP_MODEL_NAME),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM)] = None,
@@ -349,7 +349,7 @@ def visualize(
 def annotate_reads(
     output_dir: str,
     preprocess_dir: str = typer.Option(None, "--preprocess-dir", help=_HELP_PREPROCESS_DIR, rich_help_panel="General"),
-    model_name: str = typer.Option("10x3p_sc_ont_012", help=_HELP_MODEL_NAME, rich_help_panel="Model"),
+    model_name: str = typer.Option("10x3p_sc_ont_013", help=_HELP_MODEL_NAME, rich_help_panel="Model"),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
     models_dir: str = typer.Option(None, "--models-dir", help=_HELP_MODELS_DIR, rich_help_panel="Model"),
     gpu_mem: Annotated[str, typer.Option(help=_HELP_GPU_MEM, rich_help_panel="GPU & Batching")] = None,
@@ -574,7 +574,7 @@ def barcode_correct(
     ),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE, rich_help_panel="Model"),
     model_name: str = typer.Option(
-        "10x3p_sc_ont_012",
+        "10x3p_sc_ont_013",
         help="Model name used to resolve barcode column order from seq_orders.yaml.",
         rich_help_panel="Model",
     ),
@@ -662,7 +662,7 @@ def generate_whitelist(
         ...,
         help="Annotation output directory (containing annotation_chunks/ or annotation_metadata/).",
     ),
-    model_name: str = typer.Option("10x3p_sc_ont_012", help=_HELP_MODEL_NAME),
+    model_name: str = typer.Option("10x3p_sc_ont_013", help=_HELP_MODEL_NAME),
     seq_order_file: str = typer.Option(None, help=_HELP_SEQ_ORDER_FILE),
     input_file: str = typer.Option(
         None,

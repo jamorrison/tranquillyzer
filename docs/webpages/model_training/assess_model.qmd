@@ -162,7 +162,7 @@ pannable plots with hover tooltips. This is the primary artifact for reviewing m
 
 ```bash
 tranquillyzer assess-model \
-    10x3p_sc_ont_012 \
+    10x3p_sc_ont_013 \
     models/ \
     assessment_output/ \
     --num-reads 500 \
