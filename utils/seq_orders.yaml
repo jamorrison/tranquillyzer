@@ -140,40 +140,6 @@ libraries:
         rc_pattern: [fwd, reverse]
         proportion: 0.25
 
-  tranquil:
-    strand: fwd
-    barcodes: [i7,i5,CBC]
-    umis: [UMI]
-    segments:
-      - name: p7
-        pattern: CAAGCAGAAGACGGCATACGAGAT
-      - name: i7
-        pattern: N8
-      - name: RP2
-        pattern: GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT
-      - name: UMI
-        pattern: N8
-      - name: ACC
-        pattern: ACC
-      - name: cDNA
-        pattern: NN
-      - name: polyA
-        pattern: A
-      - name: CBC
-        pattern: N6
-      - name: RP1
-        pattern: AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT
-      - name: i5
-        pattern: N8
-      - name: p5
-        pattern: GTGTAGATCTCGGTGGTCGCCGTATCATT
-    valid_structures:
-      - [p7,i7,RP2,UMI,ACC,cDNA,polyA,CBC,RP1,i5,p5]
-      - [p7,i7,RP2,UMI,ACC,cDNA,CBC,RP1,i5,p5]
-      - [p7,i7,RP2,UMI,cDNA,polyA,CBC,RP1,i5,p5]
-      - [p7,i7,RP2,UMI,cDNA,CBC,RP1,i5,p5]
-
-
   10x5p_sc_ont:
     strand: fwd
     barcodes: [CBC]
@@ -345,6 +311,3 @@ models:
 
   template_model:
     library: template
-
-  tranquil_010:
-    library: tranquil
