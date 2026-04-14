@@ -73,7 +73,7 @@ tranquillyzer barcode-correct \
 | `INPUT_DIR` | required | Directory containing annotation_metadata/ | |
 | `WHITELIST_FILE` | required | TSV with barcode columns | |
 | `--output-dir` | `INPUT_DIR` | Where to write corrected output | Set if you want separate output |
-| `--model-name` | `10x3p_sc_ont_012` | Model for barcode column resolution | Match your annotation model |
+| `--model-name` | `10x3p_sc_ont_013` | Model for barcode column resolution | Match your annotation model |
 | `--bc-lv-threshold` | 2 | Max Levenshtein distance for fuzzy matching | Increase for noisier barcodes |
 | `--run-demux` | off | Demultiplex concurrently | Enable to get FASTA/FASTQ output |
 | `--output-fmt` | `fasta` | Demux format | Use `fastq` if quality scores available |
@@ -92,7 +92,7 @@ using count-based knee-point detection.
 
 ```bash
 tranquillyzer annotate-reads \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     OUTPUT_DIR
 ```
@@ -101,7 +101,7 @@ tranquillyzer annotate-reads \
 
 ```bash
 tranquillyzer generate-whitelist \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --expected-cells 5000 \
     OUTPUT_DIR
 ```
@@ -126,7 +126,7 @@ tranquillyzer generate-whitelist \
 | Option | Default | Description | When to change |
 |---|:--:|---|---|
 | `OUTPUT_DIR` | required | Annotation output directory | |
-| `--model-name` | `10x3p_sc_ont_012` | Model for barcode column resolution | Match your annotation model |
+| `--model-name` | `10x3p_sc_ont_013` | Model for barcode column resolution | Match your annotation model |
 | `--expected-cells` | None (auto) | Hint for expected number of cells | Provide if known for better knee detection |
 | `--min-cell-ratio` | 0.50 | Knee threshold as fraction of cliff-top count | Lower to include more cells; raise for stricter filtering |
 | `--min-reads-per-barcode` | 3 | Minimum reads for a barcode to be considered | Increase for noisier data |

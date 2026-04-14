@@ -20,14 +20,14 @@ without annotation.
 # Visualize N random reads
 tranquillyzer visualize \
     --num-reads 10 \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     OUTPUT_DIR
 
 # Visualize specific reads by name
 tranquillyzer visualize \
     --read-names read_001,read_002,read_003 \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     OUTPUT_DIR
 ```
@@ -40,7 +40,7 @@ Either `--num-reads` or `--read-names` must be provided.
 |---|:--:|---|
 | `OUTPUT_DIR` | required | Directory with preprocessed reads (writes to `plots/`) |
 | `--output-file` | `full_read_annots` | PDF filename prefix |
-| `--model-name` | `10x3p_sc_ont_012` | Model for inference |
+| `--model-name` | `10x3p_sc_ont_013` | Model for inference |
 | `--num-reads` | None | Number of random reads to visualize per Parquet file |
 | `--read-names` | None | Comma-separated list of specific read names |
 | `--gpu-mem` | 12 GB | GPU memory budget |

@@ -26,7 +26,7 @@ whitelist-free workflow):
 
 ```bash
 tranquillyzer annotate-reads \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     --threads 12 \
     OUTPUT_DIR
@@ -38,7 +38,7 @@ Use this when you have a whitelist and want the fastest path to demultiplexed re
 
 ```bash
 tranquillyzer annotate-reads \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     --threads 12 \
     --run-barcode-correction \
@@ -69,7 +69,7 @@ automatically pick up from the last completed chunk. Progress is tracked in a ch
 |---|:--:|---|---|
 | `OUTPUT_DIR` | required | Base output directory | |
 | `WHITELIST_FILE` | optional | Barcode whitelist TSV | Required if using `--run-barcode-correction` |
-| `--model-name` | `10x3p_sc_ont_012` | Model to use for inference | Set to match your protocol |
+| `--model-name` | `10x3p_sc_ont_013` | Model to use for inference | Set to match your protocol |
 | `--seq-order-file` | `utils/seq_orders.yaml` | Library definition file | Only if using a custom file |
 | `--gpu-mem` | 12 GB | GPU memory budget | Always set to your actual VRAM |
 | `--target-tokens` | 1,200,000 | Token budget per GPU | See [Resource Requirements](resource_requirements.qmd) |

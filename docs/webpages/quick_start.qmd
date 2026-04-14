@@ -51,7 +51,7 @@ tranquillyzer preprocess \
 
 # 2. Annotate reads + correct barcodes + demultiplex (single pass)
 tranquillyzer annotate-reads \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     --threads 12 \
     --run-barcode-correction \
@@ -92,14 +92,14 @@ tranquillyzer preprocess \
 
 # 2. Annotate reads (no whitelist)
 tranquillyzer annotate-reads \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --gpu-mem 48 \
     --threads 12 \
     /path/to/output
 
 # 3. Discover cell barcodes via knee-point detection
 tranquillyzer generate-whitelist \
-    --model-name 10x3p_sc_ont_012 \
+    --model-name 10x3p_sc_ont_013 \
     --expected-cells 5000 \
     /path/to/output
 
