@@ -1,33 +1,267 @@
 ---
-title: "Stage 1: Read Structure Simulation"
+title: "Read Simulation"
 page-navigation: true
 ---
 
-# Segment-based Read Construction
+The `simulate-data` command generates synthetic labeled reads for model training. This process has two stages: first,
+reads are assembled from a defined library structure with known ground-truth labels; then, realistic sequencing errors
+are introduced so the model learns to handle noisy data.
 
-Synthetic reads are generated as ordered concatenations of library-specific segments (e.g., random bases, ONT adapters,
-protocol adapters, barcodes, UMIs, cDNA, polyA/polyT). The segment order and any fixed sequence motifs are specified for
-each `model_name` input in the library definition file: `seq_orders.yaml`. During concatenation, the simulator emits both
-the nucleotide sequence and a per-base label vector identifying the originating segment.
+# Stage 1: Read Structure Simulation
 
-# cDNA Generation and Transcriptome Conditioning
+## Segment-Based Read Construction
 
-The cDNA segment is generated either by sampling fragments from a user-provided transcriptome FASTA (`--transcriptome`)
-or, if unspecified, by generating synthetic transcripts of random bases. It is recommended to provide a transcriptome
-FASTA because it exposes the model to realistic intra-transcript sequence properties, including internal polyA/polyT
-runs and low-complexity regions. This is important because internal homopolymers can be confused with polyA/polyT tails
-introduced by the protocol. Training with transcriptome-derived cDNA teaches the model to resolve polyA/polyT
-contextually using segment boundaries rather than homopolymer presence alone.
+Synthetic reads are assembled by concatenating library-specific segments in a defined order — adapters, barcodes, UMIs,
+cDNA, polyA/T tails, and any other structural elements specified by the protocol. Think of it as building a read from a
+template: each segment is generated according to its type, and the segments are joined together to form a complete read.
 
-# cDNA Length as a Controlled Trade-off
+The segment order and any fixed sequence motifs (e.g., adapter sequences) are specified in the library definition file
+(`seq_orders.yaml`). During assembly, the simulator records both the nucleotide sequence and a **per-base label** that
+identifies which segment each base belongs to. These labels are the ground-truth annotations used for training.
 
-cDNA length is sampled uniformly within `[min_cDNA, max_cDNA]`. This range is a deliberate balance:
+## Defining Your Library Structure
 
-- Shorter cDNA increases the relative proportion of fixed motifs (i.e., adapters/barcodes/UMIs), making boundary
-  learning easier but reducing exposure to long-range sequence context.
-- Longer cDNA increases length variability and generalization, but can dilute boundary signal during optimization (i.e.,
-  the model spends more capacity modeling cDNA interior), which may reduce accuracy at segment boundaries if the lengths
-  become excessively long relative to fixed segments.
+Each library protocol is defined in `seq_orders.yaml` with the following information:
 
-Therefore, cDNA length parameters should be tuned accordingly to match expected read structures while preserving
-sufficient emphasis on boundary regions.
+- **Segment names and order** — the structural elements in the order they appear in a read (e.g., `p5`, `i5`, `CBC`,
+  `UMI`, `cDNA`, `polyA`, `p7`)
+- **Segment patterns** — the sequence or pattern for each segment:
+  - A literal DNA string (e.g., `CTACACGACGCTCTTCCGATCT`) for fixed adapter/primer sequences
+  - `NX` (e.g., `N16`) for a fixed-length unknown sequence (barcodes, UMIs)
+  - `NN` for a variable-length unknown sequence (cDNA)
+  - `A` or `T` for polyA or polyT tails of random length
+- **Barcodes and UMIs** — which segments define a cell and which define a molecule
+- **Valid structures** — the acceptable segment orderings that the model should recognize during inference
+- **Training structures** — the segment orderings used for training, including proportions and optional artifact modes
+
+## Writing Your Own `seq_orders.yaml`
+
+The `seq_orders.yaml` file has a two-level structure: **libraries** define the sequencing chemistry, and **models**
+reference a library (optionally overriding specific fields). This separation means you define your protocol once as a
+library and then create multiple model variants from it without duplicating configuration.
+
+### Step 1: Define a Library
+
+A library captures everything about your sequencing protocol's read structure. Here is a minimal example for a
+hypothetical single-cell protocol with a 5' adapter, a 16 bp cell barcode, a 12 bp UMI, cDNA, a polyA tail, and a
+3' adapter:
+
+```yaml
+libraries:
+  my_protocol:
+    strand: fwd
+    barcodes: [CBC]
+    umis: [UMI]
+    segments:
+      - name: adapter_5p
+        pattern: AGATCGGAAGAGC
+      - name: CBC
+        pattern: N16
+      - name: UMI
+        pattern: N12
+      - name: cDNA
+        pattern: NN
+      - name: polyA
+        pattern: A
+      - name: adapter_3p
+        pattern: GTACTCTGCGTTG
+```
+
+Key points:
+
+- **`strand`**: set to `fwd` or `rev` depending on which orientation the cDNA is expected to be in relative to the
+  reference transcriptome.
+- **`barcodes`** and **`umis`**: list the segment names that define a cell and a molecule, respectively. These names
+  must match entries in the `segments` list.
+- **`segments`**: an ordered list defining each structural element. The `name` field is the label the model will learn
+  to predict. The `pattern` field specifies how to generate that segment:
+
+| Pattern | Meaning | Example use |
+|:--:|---|---|
+| Literal string | Fixed known sequence | Adapter/primer sequences |
+| `NX` | Random sequence of exactly X bases | Barcodes (`N16`), UMIs (`N12`) |
+| `NN` | Random sequence of variable length | cDNA |
+| `A` | PolyA tail (random length) | 3' polyA |
+| `T` | PolyT tail (random length) | 5' polyT |
+
+### Step 2: Define Valid Structures
+
+Valid structures tell _Tranquillyzer_ which segment orderings to accept as correctly annotated during inference. A read
+matching **any** of the listed structures is considered valid. Typically, you define one structure for the full-length
+read and optionally others for known truncation variants:
+
+```yaml
+    valid_structures:
+      - [adapter_5p, CBC, UMI, cDNA, polyA, adapter_3p]    # full-length read
+      - [adapter_5p, CBC, UMI, cDNA, adapter_3p]            # missing polyA (still valid)
+```
+
+### Step 3: Define Training Structures
+
+Training structures control which read layouts are generated during simulation and in what proportions. This is where
+you teach the model to handle both well-formed reads and common artifacts.
+
+Each training structure has:
+
+- **`order`**: the sequence of segment names
+- **`proportion`**: the fraction of training reads generated with this layout (all proportions should sum to 1.0)
+- **`repeat`** (optional): number of times to concatenate the read (simulates read concatenation artifacts)
+- **`rc_pattern`** (optional): a list of orientations for each repeated fragment — `fwd` (forward), `rev`
+  (reverse complement), or `reverse` (reversed without complementing)
+
+```yaml
+    training_structures:
+      # 50% full-length, well-formed reads
+      full_read:
+        order: [adapter_5p, CBC, UMI, cDNA, polyA, adapter_3p]
+        proportion: 0.50
+
+      # 10% concatenated reads (fwd + rev-comp) — a common nanopore artifact
+      concat_fwd_rev:
+        order: [adapter_5p, CBC, UMI, cDNA, polyA, adapter_3p]
+        repeat: 2
+        rc_pattern: [fwd, rev]
+        proportion: 0.10
+
+      # 10% truncated at 5' end (missing adapter)
+      truncated_no_5p:
+        order: [CBC, UMI, cDNA, polyA, adapter_3p]
+        proportion: 0.10
+
+      # 10% truncated at 3' end (missing adapter)
+      truncated_no_3p:
+        order: [adapter_5p, CBC, UMI, cDNA, polyA]
+        proportion: 0.10
+
+      # 10% reads with stuttered/repeated barcode blocks
+      stutter_cbc:
+        order: [adapter_5p, CBC, CBC, CBC, UMI, cDNA, polyA, adapter_3p]
+        proportion: 0.10
+
+      # 10% reads with repeated 3' adapter
+      stutter_3p:
+        order: [adapter_5p, CBC, UMI, cDNA, polyA, adapter_3p, adapter_3p, adapter_3p]
+        proportion: 0.10
+```
+
+You can also override the orientation of individual elements within a structure using `:fwd`, `:rev`, or `:reverse`
+suffixes. For example, a hairpin-like structure where the second half is reversed:
+
+```yaml
+      hairpin:
+        order: [adapter_5p, CBC, UMI, polyT, cDNA, polyT:rev, UMI, CBC, adapter_5p:rev]
+        proportion: 0.05
+```
+
+### Step 4: Create a Model Entry
+
+Once your library is defined, create a model entry that references it. The simplest case inherits everything from the
+library without overrides:
+
+```yaml
+models:
+  my_protocol_001:
+    library: my_protocol
+```
+
+If you want to adjust specific fields for a particular model variant (e.g., change training structure proportions or add
+a new structure), you can override them in the model entry. Overrides use **shallow merging** for training structures —
+new keys are added, existing keys are updated, and keys set to `null` are removed:
+
+```yaml
+models:
+  my_protocol_002:
+    library: my_protocol
+    training_structures:
+      truncated_no_5p: null         # remove this structure
+      full_read:
+        proportion: 0.70           # increase proportion of full reads
+      new_artifact:                 # add a new structure
+        order: [adapter_5p, CBC, UMI, cDNA, polyA, adapter_3p]
+        repeat: 3
+        rc_pattern: [fwd, rev, fwd]
+        proportion: 0.10
+```
+
+## cDNA Generation
+
+The cDNA segment can be generated in two ways:
+
+- **From a transcriptome FASTA** (`--transcriptome`): fragments are sampled from real transcript sequences. This is the
+  recommended approach because it exposes the model to realistic cDNA properties, including internal polyA/T runs and
+  low-complexity regions. These internal homopolymers can be confused with the protocol-introduced polyA/T tails, so
+  training with real cDNA teaches the model to resolve polyA/T boundaries using surrounding context rather than
+  homopolymer presence alone.
+- **Random sequences** (default): if no transcriptome is provided, cDNA is generated as random DNA. This works for
+  initial testing but may produce a model that struggles with internal homopolymers in real data.
+
+## cDNA Length Considerations
+
+cDNA length is sampled uniformly within the range `[--min-cdna, --max-cdna]`. This range affects how well the model
+learns segment boundaries:
+
+- **Shorter cDNA** means the fixed-length elements (adapters, barcodes, UMIs) make up a larger fraction of each read.
+  This gives the model more boundary examples per read, making it easier to learn transitions — but the model sees less
+  long-range sequence context.
+- **Longer cDNA** increases the variety of read lengths and improves generalization. However, if reads become very long
+  relative to the fixed segments, the model spends most of its capacity on cDNA interior and may become less precise at
+  segment boundaries.
+
+As a general guideline, choose a cDNA length range that reflects the expected read lengths in your real data, while
+keeping it short enough that boundary regions remain well-represented in training.
+
+# Stage 2: Sequencing Error Modeling
+
+## Simulating Sequencing Errors
+
+Real sequencing data contains errors — bases are substituted, inserted, or deleted during the sequencing process. If the
+model were trained only on clean, error-free reads, it would struggle with real data. The simulator addresses this by
+introducing realistic errors into the synthetic reads before training, so the model learns to annotate reads correctly
+despite noise.
+
+## Error Types
+
+Three types of base-level errors are applied:
+
+- **Mismatches** (`--mismatch-rate`): a base is replaced with a different base. Default: 0.05 (5%).
+- **Insertions** (`--insertion-rate`): extra bases are added after a position, up to a maximum of `--max-insertions` per
+  position. Default: 0.05 (5%), max 1 insertion per position.
+- **Deletions** (`--deletion-rate`): a base is removed from the sequence. Default: 0.06 (6%).
+
+These rates are applied per base position. When an insertion or deletion occurs, the per-base label vector is updated
+accordingly (labels are inserted or removed to stay aligned with the modified sequence).
+
+## Segment-Aware Error Rates
+
+Not all segments receive the same error treatment. PolyA/T tails use a separate, typically lower error rate
+(`--polyt-error-rate`, default 0.02) that reflects the distinct noise characteristics of homopolymer regions in
+nanopore sequencing. Other segments use the global rates listed above.
+
+**When to adjust error rates:** Match the error rates to your sequencing platform and chemistry. For example, if you are
+using a newer ONT chemistry with lower error rates, you may want to reduce `--mismatch-rate` and `--insertion-rate`
+accordingly. If your data has particularly noisy homopolymer regions, increase `--polyt-error-rate`.
+
+## Strand Orientation Augmentation
+
+Reads can come from either DNA strand. By default (`--rc`), the simulator generates the reverse complement of each read
+(with labels reversed accordingly), doubling the training set size. This teaches the model to handle both orientations
+and is particularly useful for datasets where strand assignment is uncertain or mixed.
+
+If your protocol always produces reads in a known orientation, you can disable this with `--no-rc`, though keeping it
+enabled generally improves robustness.
+
+## Artifact Simulation
+
+Real sequencing datasets inevitably contain malformed or artifactual reads — concatenated reads, truncated reads, reads
+with repeated adapter blocks, and other structural anomalies. If the model only sees well-formed reads during training,
+it may confidently mislabel these artifacts instead of flagging them as invalid.
+
+To address this, the simulator generates a configurable fraction of structurally invalid reads (`--invalid-fraction`,
+default 0.30). Supported artifact modes include:
+
+- Read concatenation (two reads joined together)
+- Repeated adapter blocks at the 5' or 3' end
+- Truncations from either end
+
+Training on a mix of valid and invalid reads improves the model's ability to recognize and flag malformed inputs during
+inference.

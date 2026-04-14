@@ -20,6 +20,7 @@ def _write_yaml(tmp_path, config):
 
 # ── Fixtures ──
 
+
 @pytest.fixture
 def two_level_config():
     """Minimal two-level config for testing."""
@@ -74,6 +75,7 @@ def legacy_config():
 
 
 # ── _resolve_model tests ──
+
 
 class TestResolveModel:
     def test_basic_inheritance(self, two_level_config):
@@ -173,6 +175,7 @@ class TestResolveModel:
 
 # ── Public function tests with new format ──
 
+
 class TestPublicFunctionsNewFormat:
     def test_seq_orders(self, tmp_path, two_level_config):
         path = _write_yaml(tmp_path, two_level_config)
@@ -228,6 +231,7 @@ class TestPublicFunctionsNewFormat:
 
 
 # ── Legacy format backward compatibility ──
+
 
 class TestLegacyBackwardCompat:
     def test_seq_orders_legacy(self, tmp_path, legacy_config):

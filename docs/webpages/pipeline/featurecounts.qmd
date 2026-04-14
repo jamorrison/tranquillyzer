@@ -1,0 +1,69 @@
+---
+title: Gene Quantification
+page-navigation: true
+---
+
+The `featurecounts` command runs [featureCounts](http://subread.sourceforge.net/) (from the Subread package) over
+per-cell BAM files produced by `split-bam` and merges the results into a single gene-by-cell counts matrix. Its primary
+purpose is to provide a quick, lightweight QC on relevant metrics — the counts matrix feeds directly into
+[`qc-metrics`](qc_metrics.qmd) for per-cell gene detection counts, mitochondrial/ribosomal fractions, library
+complexity plots, and featureCounts assignment summaries, without requiring a separate quantification pipeline.
+
+# featureCounts Availability
+
+featureCounts (Subread v2.0.6) is bundled with _Tranquillyzer_ — no additional installation or container setup is
+needed. This version is pinned because certain other featureCounts releases exhibit unexpected behavior during
+quantification.
+
+When _Tranquillyzer_ detects that `featureCounts` is already available on `$PATH` (as it will be in both conda-based
+and container-based installations), it runs the binary directly without any container overhead. If `featureCounts` is
+not found on `$PATH`, _Tranquillyzer_ falls back to pulling a container image
+(`varishenlab/featurecounts:subread2.0.6_py3.10.12` from
+[Docker Hub](https://hub.docker.com/r/varishenlab/featurecounts)) via the first available container runtime (Apptainer,
+Singularity, or Docker). This fallback exists for edge cases where Subread was not installed alongside _Tranquillyzer_.
+
+For advanced use cases requiring a different featureCounts version, the `--container-runtime` and `--container-image`
+options allow running an alternative image explicitly.
+
+# Batched Execution
+
+Large single-cell experiments can produce thousands of per-cell BAM files. Running featureCounts on all of them in a
+single invocation can fail or become unwieldy, so _Tranquillyzer_ splits the BAMs into batches (default 200 BAMs per
+batch, configurable with `--batch-size`). If a batch fails, it is automatically bisected and retried with progressively
+smaller groups until the failing BAMs are isolated. After all batches complete, the per-batch count tables are merged
+into a single gene-by-cell counts matrix.
+
+# Usage
+
+```bash
+tranquillyzer featurecounts \
+    --threads 8 \
+    SPLIT_BAM_DIR \
+    ANNOTATION.gtf \
+    OUTPUT_DIR
+```
+
+# Command Line Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `BAM_DIR` | required | Directory containing per-cell BAMs (output of `split-bam`) | |
+| `GTF` | required | GTF annotation file passed to featureCounts (`-a`) | |
+| `OUT_DIR` | required | Output directory for batch results and merged matrix | |
+| `--container-runtime` | `auto` | Container runtime: `auto`, `apptainer`, `singularity`, `docker`, or `native` | Normally not needed — auto-detects the bundled binary. Set to force a specific runtime. |
+| `--container-image` | `varishenlab/featurecounts:subread2.0.6_py3.10.12` | Container image (used only when running via a container runtime) | Override to use a different featureCounts version |
+| `--image-cache` | `<package_dir>/container_images/` | Directory to cache pulled SIF images | Set to a writable path if the default location is read-only |
+| `--bind` | None | Comma-separated extra bind paths for the container | Add paths the container needs beyond the input/output directories |
+| `--batch-size` | 200 | Number of BAMs per featureCounts call | Decrease if featureCounts runs out of memory |
+| `--threads` | 8 | Total threads (split across workers) | Match your available cores |
+| `--workers` | 1 | Parallel featureCounts batches | Increase to run multiple batches concurrently |
+| `--extra` | `-t exon -g gene_id -O` | Extra arguments passed to featureCounts | Add `-s 1` or `-s 2` for stranded libraries |
+| `--matrix-name` | `counts_matrix.tsv` | Filename for the merged counts matrix | |
+| `--no-run` | off | Skip running featureCounts; merge existing batch outputs only | Use to re-merge after manual batch fixes |
+
+# Output
+
+- **`<OUT_DIR>/counts_matrix.tsv`**: merged gene-by-cell counts matrix (rows = genes, columns = cells)
+- **`<OUT_DIR>/batches/featurecounts_batch*.txt`**: individual batch outputs from featureCounts
+
+The counts matrix can be passed directly to [`qc-metrics --counts-matrix`](qc_metrics.qmd) for gene-level QC plots.

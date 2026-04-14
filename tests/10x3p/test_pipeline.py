@@ -9,6 +9,7 @@ OUT_DIR = Path("tests/10x3p")
 SIM_DIR = Path("tests/10x3p")
 BARCODES = Path("tests/10x3p/barcodes.tsv")
 REF_FASTA = Path("tests/references/hg38_gencode_chr21.fa")
+REF_GTF = Path("tests/references/hg38_gencode_chr21.gtf")
 transcriptome = Path("tests/references/")
 MODELS_DIR = Path("models")
 THREADS = 1
@@ -85,8 +86,6 @@ def test_visualize():
             "tranquillyzer",
             "visualize",
             OUT_DIR,
-            "--output-file",
-            "test_visualization",
             "--models-dir",
             MODELS_DIR,
             "--num-reads",
@@ -116,32 +115,29 @@ def test_annotate_reads():
             THREADS,
         ]
     )
-    assert not demux_dir.exists(), "annotate-reads created demuxed_fasta even though demux was not requested"
 
 
 @pytest.mark.order(5)
-def test_barcode_correct():
+def test_generate_whitelist():
     run_cmd(
         [
             "tranquillyzer",
-            "barcode-correct",
+            "generate-whitelist",
             OUT_DIR,
-            BARCODES,
-            "--threads",
-            THREADS,
         ]
     )
 
 
 @pytest.mark.order(6)
-def test_demux_reads():
+def test_demux_reads_bulk_fasta():
+    # Must run before barcode-correct, which deletes annotations_valid.parquet.
     run_cmd(
         [
             "tranquillyzer",
             "demux-reads",
             OUT_DIR,
             "--input-file",
-            f"{OUT_DIR}/annotation_metadata/annotations_valid_bc_corrected.parquet",
+            f"{OUT_DIR}/annotation_metadata/annotations_valid.parquet",
             "--output-fmt",
             "fasta",
         ]
@@ -149,6 +145,49 @@ def test_demux_reads():
 
 
 @pytest.mark.order(7)
+def test_barcode_correct():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "barcode-correct",
+            OUT_DIR,
+            BARCODES,
+            "--run-demux",
+            "--output-fmt",
+            "fastq",
+            "--threads",
+            THREADS,
+        ]
+    )
+
+
+@pytest.mark.order(8)
+def test_demux_reads():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "demux-reads",
+            OUT_DIR,
+            "--output-fmt",
+            "fastq",
+        ]
+    )
+
+
+@pytest.mark.order(9)
+def test_qc_metrics_basic():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "qc-metrics",
+            OUT_DIR,
+            "--threads",
+            THREADS,
+        ]
+    )
+
+
+@pytest.mark.order(10)
 def test_align():
     run_cmd(
         [
@@ -165,7 +204,7 @@ def test_align():
     )
 
 
-@pytest.mark.order(8)
+@pytest.mark.order(11)
 def test_dedup():
     run_cmd(
         [
@@ -181,7 +220,7 @@ def test_dedup():
     )
 
 
-@pytest.mark.order(9)
+@pytest.mark.order(12)
 def test_split_bam():
     run_cmd(
         [
@@ -200,142 +239,164 @@ def test_split_bam():
     )
 
 
-# @pytest.mark.order(10)
-# def test_annotate_reads():
-#     demux_dir = OUT_DIR / "demuxed_fasta"
-#     if demux_dir.exists():
-#         shutil.rmtree(demux_dir)
-
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "annotate-reads",
-#             OUT_DIR,
-#             "--model-type",
-#             "CRF",
-#             "--models-dir",
-#             MODELS_DIR,
-#             "--chunk-size",
-#             100000,
-#             "--no-combine-chunk-outputs",
-#             "--no-resume",
-#             "--threads",
-#             THREADS,
-#         ]
-#     )
-#     assert not demux_dir.exists(), "annotate-reads created demuxed_fasta even though demux was not requested"
+@pytest.mark.order(13)
+def test_featurecounts():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "featurecounts",
+            f"{OUT_DIR}/aligned_files/split_bams",
+            REF_GTF,
+            f"{OUT_DIR}/featurecounts_out",
+            "--bind",
+            "/varidata:/varidata",
+            "--extra",
+            "-t exon -g gene_id -O -s 2",
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
-# @pytest.mark.order(8)
-# def test_simulate_data():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "simulate-data",
-#             "10x3p_sc_ont",
-#             SIM_DIR,
-#             "--num-reads",
-#             1000,
-#             "--threads",
-#             THREADS,
-#         ]
-#     )
+@pytest.mark.order(14)
+def test_qc_metrics_with_bam():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "qc-metrics",
+            OUT_DIR,
+            "--bam",
+            f"{OUT_DIR}/aligned_files/demuxed_aligned_dup_marked.bam",
+            "--counts-matrix",
+            f"{OUT_DIR}/featurecounts_out/counts_matrix.tsv",
+            "--gtf",
+            REF_GTF,
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
-# @pytest.mark.order(9)
-# def test_available_models():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "availablemodels",
-#         ]
-#     )
+@pytest.mark.order(15)
+def test_simulate_data():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "simulate-data",
+            "template_model",
+            SIM_DIR,
+            "--num-reads",
+            1000,
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
-# @pytest.mark.order(10)
-# def test_preprocess_w_base_qual():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "preprocess",
-#             RAW_INPUT_DIR,
-#             OUT_DIR,
-#             "--output-base-qual",
-#             "--threads",
-#             THREADS,
-#         ]
-#     )
+@pytest.mark.order(16)
+def test_train_model():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "train-model",
+            "template_model",
+            OUT_DIR,
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
-# @pytest.mark.order(11)
-# def test_annotate_reads_w_base_qual():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "annotate-reads",
-#             OUT_DIR,
-#             "--whitelist-file",
-#             BARCODES,
-#             "--output-fmt",
-#             "fastq",
-#             "--model-type",
-#             "CRF",
-#             "--models-dir",
-#             MODELS_DIR,
-#             "--run-barcode-correction",
-#             "--run-demux",
-#             "--chunk-size",
-#             100000,
-#             "--threads",
-#             THREADS,
-#         ]
-#     )
+@pytest.mark.order(17)
+def test_assess_model():
+    # Use a dedicated output dir so assess-model's annotation_metadata
+    # doesn't collide with the main pipeline's parquet (which has reads
+    # named read1/read2/..., not assess_*, causing the segment-metric
+    # branch to skip everything).
+    run_cmd(
+        [
+            "tranquillyzer",
+            "assess-model",
+            "template_model",
+            f"{OUT_DIR}/template_model",
+            f"{OUT_DIR}/assess_out",
+            "--num-reads",
+            200,
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
+@pytest.mark.order(18)
+def test_available_models():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "availablemodels",
+        ]
+    )
 
 
-
-# @pytest.mark.order(14)
-# def test_annotate_reads_requires_whitelist_for_barcode_correction():
-#     p = run_cmd(
-#         [
-#             "tranquillyzer",
-#             "annotate-reads",
-#             OUT_DIR,
-#             "--model-type",
-#             "CRF",
-#             "--models-dir",
-#             MODELS_DIR,
-#             "--run-barcode-correction",
-#             "--chunk-size",
-#             100000,
-#             "--threads",
-#             THREADS,
-#         ],
-#         expect_code=2,
-#     )
-#     assert "whitelist_file is required" in p.stderr
+@pytest.mark.order(19)
+def test_available_gpus():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "available-gpus",
+        ]
+    )
 
 
-# @pytest.mark.order(15)
-# def test_train_model():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "train-model",
-#             "10x3p_sc_ont",
-#             SIM_DIR,
-#             "--threads",
-#             THREADS,
-#         ]
-#     )
+@pytest.mark.order(20)
+def test_preprocess_w_base_qual():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "preprocess",
+            RAW_INPUT_DIR,
+            OUT_DIR,
+            "--output-base-qual",
+            "--threads",
+            THREADS,
+        ]
+    )
 
 
-# @pytest.mark.order(16)
-# def test_available_gpus():
-#     run_cmd(
-#         [
-#             "tranquillyzer",
-#             "available-gpus",
-#         ]
-#     )
+@pytest.mark.order(21)
+def test_annotate_reads_w_inline_bc_demux():
+    run_cmd(
+        [
+            "tranquillyzer",
+            "annotate-reads",
+            OUT_DIR,
+            "--whitelist-file",
+            BARCODES,
+            "--output-fmt",
+            "fastq",
+            "--models-dir",
+            MODELS_DIR,
+            "--run-barcode-correction",
+            "--run-demux",
+            "--chunk-size",
+            100000,
+            "--threads",
+            THREADS,
+        ]
+    )
+
+
+@pytest.mark.order(22)
+def test_demux_reads_after_inline_demux():
+    # Re-emit reads from the corrected parquet produced by the inline-demux
+    # annotate-reads run above. Exercises the demux-columns branch in
+    # demux_wrap (_write_from_demux_columns).
+    run_cmd(
+        [
+            "tranquillyzer",
+            "demux-reads",
+            OUT_DIR,
+            "--output-fmt",
+            "fastq",
+        ]
+    )

@@ -175,10 +175,7 @@ def detect_knee_point(counts, expected_cells=None, min_reads=3, min_cell_ratio=0
         cliff_top = int(np.argmax(distances))
         cliff_top_count = counts_array[cliff_top]
 
-        logger.info(
-            f"Kneedle cliff top: rank {cliff_top + 1}, "
-            f"count={cliff_top_count:.0f}"
-        )
+        logger.info(f"Kneedle cliff top: rank {cliff_top + 1}, count={cliff_top_count:.0f}")
 
     # Step 2: threshold = fraction of cliff-top count
     threshold = max(min_reads, cliff_top_count * min_cell_ratio)
@@ -215,8 +212,8 @@ def _deletion_keys_for_tuple(bc_tuple):
     keys = []
     for comp_idx, component in enumerate(bc_tuple):
         for char_idx in range(len(component)):
-            deleted = component[:char_idx] + component[char_idx + 1:]
-            key = bc_tuple[:comp_idx] + (deleted,) + bc_tuple[comp_idx + 1:]
+            deleted = component[:char_idx] + component[char_idx + 1 :]
+            key = bc_tuple[:comp_idx] + (deleted,) + bc_tuple[comp_idx + 1 :]
             keys.append(key)
     return keys
 
@@ -343,7 +340,9 @@ def save_discovered_whitelist(whitelist_df, output_path):
     output_path : str
         Path to write the TSV file.
     """
-    whitelist_df.to_csv(output_path, sep="\t", index=False)
+    from utils import write_tsv_with_version
+
+    write_tsv_with_version(output_path, whitelist_df.to_csv(sep="\t", index=False))
     logger.info(f"Saved discovered whitelist ({len(whitelist_df)} barcodes) to {output_path}")
 
 
@@ -364,7 +363,10 @@ def save_discovery_stats(output_path, barcode_columns, tuple_counts, canonical_t
         Variant-to-canonical tuple mappings.
     """
     n_canonical = len(set(merged_mapping.values())) if merged_mapping else len(canonical_tuples)
+    from utils import get_version
+
     stats = {
+        "tranquillyzer_version": get_version(),
         "barcode_columns": barcode_columns,
         "unique_barcode_tuples_observed": len(tuple_counts),
         "total_reads_with_barcodes": sum(tuple_counts.values()),
@@ -412,7 +414,9 @@ def plot_barcode_rank(counts, n_knee, output_path):
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    from utils import get_version
+
+    fig.savefig(output_path, dpi=150, metadata={"Software": f"tranquillyzer v{get_version()}"})
     plt.close(fig)
     logger.info(f"Saved barcode rank plot to {output_path}")
 
@@ -453,12 +457,22 @@ def save_barcode_counts_tsv(counts, barcode_columns, knee_tuples, mapping, outpu
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    df.to_csv(output_path, sep="\t", index=False)
+    from utils import write_tsv_with_version
+
+    write_tsv_with_version(output_path, df.to_csv(sep="\t", index=False))
     logger.info(f"Saved barcode counts ({len(df)} entries) to {output_path}")
 
 
-def run_barcode_discovery(global_counts, barcode_columns, output_dir, expected_cells=None, min_reads=3,
-                          min_cell_ratio=0.01, merge_dist=1, expected_lengths=None):
+def run_barcode_discovery(
+    global_counts,
+    barcode_columns,
+    output_dir,
+    expected_cells=None,
+    min_reads=3,
+    min_cell_ratio=0.01,
+    merge_dist=1,
+    expected_lengths=None,
+):
     """Run the full barcode discovery pipeline: knee detection, near-duplicate merging, whitelist building.
 
     Operates on barcode tuples (combinations) rather than individual barcode columns.
@@ -538,10 +552,16 @@ def run_barcode_discovery(global_counts, barcode_columns, output_dir, expected_c
     save_discovered_whitelist(whitelist_df, os.path.join(metadata_dir, "discovered_whitelist.tsv"))
     save_discovery_stats(
         os.path.join(metadata_dir, "barcode_discovery_stats.json"),
-        barcode_columns, global_counts, canonical_tuples, mapping,
+        barcode_columns,
+        global_counts,
+        canonical_tuples,
+        mapping,
     )
     save_barcode_counts_tsv(
-        global_counts, barcode_columns, knee_tuples, mapping,
+        global_counts,
+        barcode_columns,
+        knee_tuples,
+        mapping,
         os.path.join(metadata_dir, "barcode_counts.tsv"),
     )
 

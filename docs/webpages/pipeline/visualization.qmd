@@ -1,0 +1,65 @@
+---
+title: Visualization
+page-navigation: true
+---
+
+_Tranquillyzer_ provides two visualization tools for inspecting reads and data quality.
+
+# Read Annotation Visualization
+
+The `visualize` command produces color-coded plots of individual reads, showing the model's predicted annotations for
+each structural element (adapters, barcodes, UMIs, cDNA, polyA/T). This is useful for spot-checking model predictions
+and debugging annotation issues.
+
+Visualization runs its own model inference and is independent of `annotate-reads`. It can be run before, after, or
+without annotation.
+
+## Usage
+
+```bash
+# Visualize N random reads
+tranquillyzer visualize \
+    --num-reads 10 \
+    --model-name 10x3p_sc_ont_012 \
+    --gpu-mem 48 \
+    OUTPUT_DIR
+
+# Visualize specific reads by name
+tranquillyzer visualize \
+    --read-names read_001,read_002,read_003 \
+    --model-name 10x3p_sc_ont_012 \
+    --gpu-mem 48 \
+    OUTPUT_DIR
+```
+
+Either `--num-reads` or `--read-names` must be provided.
+
+## Options
+
+| Option | Default | Description |
+|---|:--:|---|
+| `OUTPUT_DIR` | required | Directory with preprocessed reads (writes to `plots/`) |
+| `--output-file` | `full_read_annots` | PDF filename prefix |
+| `--model-name` | `10x3p_sc_ont_012` | Model for inference |
+| `--num-reads` | None | Number of random reads to visualize per Parquet file |
+| `--read-names` | None | Comma-separated list of specific read names |
+| `--gpu-mem` | 12 GB | GPU memory budget |
+| `--target-tokens` | 1,200,000 | Token budget per GPU |
+| `--vram-headroom` | 0.35 | VRAM headroom fraction |
+| `--threads` | 2 | CPU threads |
+
+## Output
+
+- **`plots/{output_file}.pdf`**:multi-page PDF with one read per page, color-coded by segment type
+
+# Read Length Distribution
+
+The `readlengthdist` command generates a plot showing the distribution of read lengths in your preprocessed data.
+
+```bash
+tranquillyzer readlengthdist OUTPUT_DIR
+```
+
+## Output
+
+- **`plots/read_length_distribution.png`**:log10-transformed read lengths on the x-axis, frequencies on the y-axis

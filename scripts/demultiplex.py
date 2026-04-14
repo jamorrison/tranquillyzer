@@ -24,7 +24,9 @@ def assign_cell_id(row, whitelist_df, barcode_columns):
         corrected_key = f"corrected_{barcode_type}"
         corrected_raw = row.get(corrected_key, "")
         corrected_values[barcode_type] = {
-            token.strip() for token in str(corrected_raw).split(",") if token and token.strip() and token.strip() != "NMF"
+            token.strip()
+            for token in str(corrected_raw).split(",")
+            if token and token.strip() and token.strip() != "NMF"
         }
 
     combinations = list(product(*(sorted(corrected_values[barcode]) for barcode in barcode_columns)))

@@ -11,7 +11,6 @@ import re
 logger = logging.getLogger(__name__)
 
 
-
 def _has_usable_base_qualities_in_parquets(parquet_files, pl, sample_rows=5000):
     """Check if any parquet file contains non-null base quality scores."""
     for parquet_file in parquet_files:
@@ -159,17 +158,25 @@ def _combine_invalid_chunks(chunk_output_dir, output_dir, pl, chunk_size):
     Used by the whitelist-free path where valid chunks are handled separately.
     Handles TSV, parquet, and mixed inputs (for resume).
     """
+    from utils import get_version
+
+    ver_col = pl.lit(get_version()).alias("tranquillyzer_version")
+
     invalid_dir = os.path.join(chunk_output_dir, "invalid_chunks")
     metadata_dir = os.path.join(output_dir, "annotation_metadata")
     os.makedirs(metadata_dir, exist_ok=True)
     out_path = os.path.join(metadata_dir, "annotations_invalid.parquet")
 
-    tsv_files = sorted(
-        os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".tsv")
-    ) if os.path.isdir(invalid_dir) else []
-    pq_files = sorted(
-        os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".parquet")
-    ) if os.path.isdir(invalid_dir) else []
+    tsv_files = (
+        sorted(os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".tsv"))
+        if os.path.isdir(invalid_dir)
+        else []
+    )
+    pq_files = (
+        sorted(os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".parquet"))
+        if os.path.isdir(invalid_dir)
+        else []
+    )
 
     if not tsv_files and not pq_files:
         return
@@ -185,17 +192,17 @@ def _combine_invalid_chunks(chunk_output_dir, output_dir, pl, chunk_size):
                     pq_path, compression="snappy", row_group_size=chunk_size
                 )
             os.remove(tsv_path)
-        pq_files = sorted(
-            os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".parquet")
-        )
+        pq_files = sorted(os.path.join(invalid_dir, f) for f in os.listdir(invalid_dir) if f.endswith(".parquet"))
 
     if pq_files:
         try:
-            pl.scan_parquet(pq_files).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
+            pl.scan_parquet(pq_files).with_columns(ver_col).sink_parquet(
+                out_path, compression="snappy", row_group_size=chunk_size
+            )
         except Exception:
             logger.warning("Parallel parquet scan failed for invalid chunks, falling back to diagonal_relaxed concat.")
-            pl.concat(
-                [pl.scan_parquet(f) for f in pq_files], how="diagonal_relaxed"
+            pl.concat([pl.scan_parquet(f) for f in pq_files], how="diagonal_relaxed").with_columns(
+                ver_col
             ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
         for pq_path in pq_files:
             os.remove(pq_path)
@@ -212,6 +219,10 @@ def _convert_chunk_outputs(
     chunk_size,
 ):
     """Convert chunk TSV outputs to Parquet and optionally combine into final files."""
+    from utils import get_version
+
+    ver_col = pl.lit(get_version()).alias("tranquillyzer_version")
+
     def _sorted_chunk_files(path, suffix):
         if not os.path.isdir(path):
             return []
@@ -236,7 +247,9 @@ def _convert_chunk_outputs(
     invalid_chunk_parquets = _sorted_chunk_files(os.path.join(chunk_output_dir, "invalid_chunks"), ".parquet")
     valid_out_dir = os.path.join(chunk_output_dir, "valid_chunks")
     invalid_out_dir = os.path.join(chunk_output_dir, "invalid_chunks")
-    valid_output_name = "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
+    valid_output_name = (
+        "annotations_valid_bc_corrected.parquet" if run_barcode_correction else "annotations_valid.parquet"
+    )
     metadata_dir = os.path.join(output_dir, "annotation_metadata")
     os.makedirs(metadata_dir, exist_ok=True)
 
@@ -253,21 +266,28 @@ def _convert_chunk_outputs(
                 _write_chunk_parquets(tsv_files, out_dir)
                 all_parquets = _sorted_chunk_files(out_dir, ".parquet")
                 try:
-                    pl.scan_parquet(all_parquets).sink_parquet(
+                    pl.scan_parquet(all_parquets).with_columns(ver_col).sink_parquet(
                         out_path, compression="snappy", row_group_size=chunk_size
                     )
                 except Exception:
                     logger.warning("Parallel parquet scan failed, falling back to diagonal_relaxed concat.")
-                    pl.concat(
-                        [pl.scan_parquet(f) for f in all_parquets], how="diagonal_relaxed"
+                    pl.concat([pl.scan_parquet(f) for f in all_parquets], how="diagonal_relaxed").with_columns(
+                        ver_col
                     ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
                 for tsv_path in tsv_files:
                     os.remove(tsv_path)
             elif tsv_files:
                 # Legacy: all TSV
-                pl.scan_csv(tsv_files, separator="\t", infer_schema_length=5000).sink_parquet(
-                    out_path, compression="snappy", row_group_size=chunk_size
-                )
+                try:
+                    pl.scan_csv(tsv_files, separator="\t", infer_schema_length=5000).with_columns(ver_col).sink_parquet(
+                        out_path, compression="snappy", row_group_size=chunk_size
+                    )
+                except Exception:
+                    logger.warning("TSV scan failed due to schema mismatch, falling back to diagonal_relaxed concat.")
+                    pl.concat(
+                        [pl.scan_csv(f, separator="\t", infer_schema_length=5000) for f in tsv_files],
+                        how="diagonal_relaxed",
+                    ).with_columns(ver_col).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
                 if keep_chunk_tsv_after_combine:
                     _write_chunk_parquets(tsv_files, out_dir)
                 for tsv_path in tsv_files:
@@ -275,19 +295,17 @@ def _convert_chunk_outputs(
             elif parquet_files:
                 # Parallel multi-file scan — Polars reads chunks across cores internally
                 try:
-                    pl.scan_parquet(parquet_files).sink_parquet(
+                    pl.scan_parquet(parquet_files).with_columns(ver_col).sink_parquet(
                         out_path, compression="snappy", row_group_size=chunk_size
                     )
                 except Exception:
                     # Fallback for schema mismatches (e.g., resumed runs with mixed formats)
                     logger.warning("Parallel parquet scan failed, falling back to diagonal_relaxed concat.")
-                    pl.concat(
-                        [pl.scan_parquet(f) for f in parquet_files], how="diagonal_relaxed"
+                    pl.concat([pl.scan_parquet(f) for f in parquet_files], how="diagonal_relaxed").with_columns(
+                        ver_col
                     ).sink_parquet(out_path, compression="snappy", row_group_size=chunk_size)
 
-        _combine_valid_invalid(
-            valid_files, valid_chunk_parquets, f"{metadata_dir}/{valid_output_name}", valid_out_dir
-        )
+        _combine_valid_invalid(valid_files, valid_chunk_parquets, f"{metadata_dir}/{valid_output_name}", valid_out_dir)
         _combine_valid_invalid(
             invalid_files, invalid_chunk_parquets, f"{metadata_dir}/annotations_invalid.parquet", invalid_out_dir
         )
@@ -433,5 +451,3 @@ def _empty_results_queue(result_queue, workers, max_idle_time=60):
                 )
 
     logger.info("Results queue cleared. Commence shutdown due to error")
-
-

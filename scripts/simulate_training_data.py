@@ -65,7 +65,7 @@ def generate_segment(segment_type, segment_pattern, length_range, transcriptome_
         length = np.random.randint(length_range[0], length_range[1])
         if transcriptome_records:
             transcript = random.choice(transcriptome_records)
-            transcript_seq = str(transcript.seq)
+            transcript_seq = str(transcript.seq) if hasattr(transcript, "seq") else str(transcript)
         else:
             transcript_seq = "".join(np.random.choice(list("ATCG")) for _ in range(length))
         fragment = (
@@ -77,17 +77,15 @@ def generate_segment(segment_type, segment_pattern, length_range, transcriptome_
         label = ["cDNA"] * len(sequence)
     elif segment_pattern == "RN" and segment_type == "cDNA":
         length = np.random.randint(spacer_range[0], spacer_range[1] + 1)
+        length = min(length, 50)
+        if length == 0:
+            return "", []
         if transcriptome_records:
             transcript = random.choice(transcriptome_records)
-            transcript_seq = str(transcript.seq)
+            transcript_seq = str(transcript.seq) if hasattr(transcript, "seq") else str(transcript)
         else:
             transcript_seq = "".join(np.random.choice(list("ATCG")) for _ in range(length))
-        fragment = (
-            transcript_seq[:length]
-            if len(transcript_seq) > length and random.random() < 0.5
-            else transcript_seq[-length:]
-        )
-        sequence = fragment
+        sequence = transcript_seq[:length]
         label = ["cDNA"] * len(sequence)
     elif segment_pattern in ["A", "T"]:
         length = np.random.randint(0, 50)
@@ -176,9 +174,11 @@ def _transform_pattern(pattern, from_state, to_state):
         # RC'd → fwd → reverse: complement only (undo reverse, keep complement undone... )
         # Actually: RC = reverse + complement. To go from RC to reverse-only,
         # we need to undo the complement: apply complement without reversing.
-        return "".join(_RC_COMPLEMENT.get(b, b) for b in pattern) if not (
-            pattern in ("A", "T") or re.match(r"N\d+", pattern) or pattern in ("NN", "RN")
-        ) else pattern
+        return (
+            "".join(_RC_COMPLEMENT.get(b, b) for b in pattern)
+            if not (pattern in ("A", "T") or re.match(r"N\d+", pattern) or pattern in ("NN", "RN"))
+            else pattern
+        )
     elif from_state == "reverse" and to_state == "fwd":
         return _reverse_single_pattern(pattern)  # reverse is self-inverse
     elif from_state == "reverse" and to_state == "rev":
@@ -213,9 +213,7 @@ def _build_fragment(order, patterns, fragment_orientation, rc_elements):
         override = rc_elements.get(name)
         if override is None:
             continue
-        frag_patterns[i] = _transform_pattern(
-            frag_patterns[i], fragment_orientation, override
-        )
+        frag_patterns[i] = _transform_pattern(frag_patterns[i], fragment_orientation, override)
 
     return frag_order, frag_patterns
 
@@ -234,16 +232,12 @@ def _build_structure_order_and_patterns(struct):
         full_order = ["cDNA"]
         full_patterns = ["RN"]
         for i in range(repeat):
-            frag_order, frag_patterns = _build_fragment(
-                order, patterns, rc_pattern[i], rc_elements
-            )
+            frag_order, frag_patterns = _build_fragment(order, patterns, rc_pattern[i], rc_elements)
             full_order.extend(frag_order + ["cDNA"])
             full_patterns.extend(frag_patterns + ["RN"])
     else:
         # Single structure flanked with random cDNA
-        frag_order, frag_patterns = _build_fragment(
-            order, patterns, rc_pattern[0], rc_elements
-        )
+        frag_order, frag_patterns = _build_fragment(order, patterns, rc_pattern[0], rc_elements)
         full_order = ["cDNA"] + frag_order + ["cDNA"]
         full_patterns = ["RN"] + frag_patterns + ["RN"]
 
@@ -281,14 +275,18 @@ def simulate_dynamic_batch_complete(
     max_spacer=50,
 ):
     """Simulate a batch of synthetic reads with dynamic length and error profiles."""
-    reads, labels = [], []
+    reads, labels, expected_fragments = [], [], []
     weights = [s["proportion"] for s in training_structures]
 
     for _ in range(num_reads):
         struct = random.choices(training_structures, weights=weights, k=1)[0]
+        n_fragments = struct.get("repeat", 1)
         full_order, full_patterns = _build_structure_order_and_patterns(struct)
 
-        sequence, label = generate_valid_read(full_order, full_patterns, length_range, transcriptome_records, spacer_range=(min_spacer, max_spacer))
+        struct_length_range = struct.get("length_range", length_range)
+        sequence, label = generate_valid_read(
+            full_order, full_patterns, struct_length_range, transcriptome_records, spacer_range=(min_spacer, max_spacer)
+        )
 
         sequence, label = _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p)
 
@@ -304,8 +302,9 @@ def simulate_dynamic_batch_complete(
             )
             reads.append(seq_err)
             labels.append(lbl_err)
+            expected_fragments.append(n_fragments)
 
-    return reads, labels
+    return reads, labels, expected_fragments
 
 
 # ############## multiprocessing ##############
@@ -314,6 +313,79 @@ def simulate_dynamic_batch_complete(
 def simulate_dynamic_batch_complete_wrapper(args):
     """Wrapper for simulate_dynamic_batch_complete for use with multiprocessing."""
     return simulate_dynamic_batch_complete(*args)
+
+
+def simulate_and_write_fasta(args):
+    """Generate reads and write directly to a FASTA file. Returns (labels, expected_fragments) only.
+
+    Args tuple: (num_reads, length_range, mismatch_rate, insertion_rate, deletion_rate,
+                 polyT_error_rate, max_insertions, training_structures, transcriptome_records,
+                 rc, max_trunc_5p, max_trunc_3p, min_spacer, max_spacer,
+                 fasta_path, start_idx)
+    """
+    *sim_args, fasta_path, start_idx = args
+
+    (
+        num_reads,
+        length_range,
+        mismatch_rate,
+        insertion_rate,
+        deletion_rate,
+        polyT_error_rate,
+        max_insertions,
+        training_structures,
+        transcriptome_records,
+        rc,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
+    ) = sim_args
+
+    labels, expected_fragments, structure_names = [], [], []
+    weights = [s["proportion"] for s in training_structures]
+    read_idx = start_idx
+
+    with open(fasta_path, "w") as fh:
+        for _ in range(num_reads):
+            struct = random.choices(training_structures, weights=weights, k=1)[0]
+            n_fragments = struct.get("repeat", 1)
+            struct_name = struct.get("name", "unknown")
+            full_order, full_patterns = _build_structure_order_and_patterns(struct)
+
+            struct_length_range = struct.get("length_range", length_range)
+            sequence, label = generate_valid_read(
+                full_order,
+                full_patterns,
+                struct_length_range,
+                transcriptome_records,
+                spacer_range=(min_spacer, max_spacer),
+            )
+            sequence, label = _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p)
+
+            read_pairs = [(sequence, label)]
+            if rc:
+                rc_seq = reverse_complement(sequence)
+                rc_lbl = reverse_labels(label)
+                read_pairs.append((rc_seq, rc_lbl))
+
+            for seq, lbl in read_pairs:
+                seq_err, lbl_err = introduce_errors_with_labels_context(
+                    seq,
+                    lbl,
+                    mismatch_rate,
+                    insertion_rate,
+                    deletion_rate,
+                    polyT_error_rate,
+                    max_insertions,
+                )
+                fh.write(f">assess_{read_idx}\n{seq_err}\n")
+                labels.append(lbl_err)
+                expected_fragments.append(n_fragments)
+                structure_names.append(struct_name)
+                read_idx += 1
+
+    return labels, expected_fragments, structure_names
 
 
 # ############## main generator ##############
@@ -337,34 +409,45 @@ def generate_training_reads(
     max_spacer=50,
 ):
     """Generate a full set of synthetic training reads and labels."""
-    args_complete = (
-        num_reads,
-        length_range,
-        mismatch_rate,
-        insertion_rate,
-        deletion_rate,
-        polyT_error_rate,
-        max_insertions,
-        training_structures,
-        transcriptome_records,
-        rc,
-        max_trunc_5p,
-        max_trunc_3p,
-        min_spacer,
-        max_spacer,
-    )
+    # Convert BioPython SeqRecords to plain strings for fast pickling across workers
+    transcriptome_seqs = [str(rec.seq) if hasattr(rec, "seq") else str(rec) for rec in transcriptome_records]
 
-    # Parallel or single-thread execution
-    if num_processes > 1:
-        with Pool(processes=num_processes) as pool:
-            complete_results = pool.map(simulate_dynamic_batch_complete_wrapper, [args_complete])
-            pool.close()
+    effective_workers = max(1, min(num_processes, num_reads))
+
+    base_chunk = num_reads // effective_workers
+    remainder = num_reads % effective_workers
+    chunks = [base_chunk + (1 if i < remainder else 0) for i in range(effective_workers)]
+
+    worker_args = [
+        (
+            chunk_size,
+            length_range,
+            mismatch_rate,
+            insertion_rate,
+            deletion_rate,
+            polyT_error_rate,
+            max_insertions,
+            training_structures,
+            transcriptome_seqs,
+            rc,
+            max_trunc_5p,
+            max_trunc_3p,
+            min_spacer,
+            max_spacer,
+        )
+        for chunk_size in chunks
+    ]
+
+    if effective_workers > 1:
+        with Pool(processes=effective_workers) as pool:
+            complete_results = pool.map(simulate_dynamic_batch_complete_wrapper, worker_args)
     else:
-        complete_results = [simulate_dynamic_batch_complete_wrapper(args_complete)]
+        complete_results = [simulate_dynamic_batch_complete_wrapper(worker_args[0])]
 
-    reads, labels = [], []
-    for local_reads, local_labels in complete_results:
+    reads, labels, expected_fragments = [], [], []
+    for local_reads, local_labels, local_frags in complete_results:
         reads.extend(local_reads)
         labels.extend(local_labels)
+        expected_fragments.extend(local_frags)
 
-    return reads, labels
+    return reads, labels, expected_fragments

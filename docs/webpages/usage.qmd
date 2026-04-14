@@ -1,9 +1,10 @@
 ---
-title: Usage
+title: CLI Reference
 ---
 
-This page gives a detailed description of each component/subcommand of Tranquillyzer. For a quick overview of how to run
-Tranquillyzer, see the [Quick Start](quick_start.qmd) guide.
+This page provides a complete reference for all _Tranquillyzer_ commands and their options. For conceptual explanations
+and workflow guidance, see the [Pipeline Guide](pipeline_guide.qmd). For a quick overview, see the
+[Quick Start](quick_start.qmd) guide.
 
 # Input / Output
 
@@ -58,6 +59,13 @@ Optional Arguments
   `--no-output-base-qual`)
 - `--chunk-size INTEGER`: Starting chunk size for processing, dynamically adjusted based on increasing read length
   (default: 100000)
+- `--bin-size INTEGER`: Bin width (bp) for length-binning reads below `--adaptive-bin-threshold` (default: 500)
+- `--adaptive-bin-threshold INTEGER`: Read length (bp) above which fixed coarse bin widths (5,000 / 10,000 / 25,000 bp)
+  are used instead of `--bin-size` (default: 10000)
+- `--min-reads-per-bin INTEGER`: Merge adjacent sparse bins until each has at least this many reads; set to 0 to disable
+  (default: 0)
+- `--max-padding-fraction FLOAT`: Maximum merged bin width as a fraction of the bin's start position; controls padding
+  overhead when `--min-reads-per-bin` merges sparse bins (default: 0.20)
 - `--threads INTEGER`: Number of CPU threads (default: 12)
 - `--help`: Print help message and exit
 
@@ -156,7 +164,7 @@ reads to their respective cells (i.e., demultiplexes) in a single step. It produ
 your dataset. Tranquillyzer uses CNN-LSTM-CRF models for annotation.
 
 Model files follow the naming convention: `<model_name>.h5`, `<model_name>_lbl_bin.pkl`,
-`<model_name>_params.yaml` (e.g., `10x3p_sc_ont_011.h5`).
+`<model_name>_params.yaml` (e.g., `10x3p_sc_ont_012.h5`).
 
 Currently available trained models can be downloaded from [this  Dropbox link](https://www.dropbox.com/scl/fo/3lms8n97bnufzqa4ausv9/AGkO3EVrL1ZgctwEwTK1mEA?rlkey=47m69a6smwsisdznbwu3jvjpu&st=253al7s3&dl=0)
 and should be placed in the `models/` directory within the cloned Tranquillyzer repository.
@@ -187,7 +195,7 @@ Required Arguments
 Optional Arguments
 
 - `--output-fmt TEXT`: Output format for demultiplexed reads: `fasta` or `fastq` (default: `fasta`)
-- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_011`)
+- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_012`)
 - `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--chunk-size INTEGER`: Base chunk size for processing, dynamically adjusts based on read length (default: 100000)
@@ -284,6 +292,48 @@ Optional Arguments
 - `--threads INTEGER`: Number of CPU threads (default: 12)
 - `--help`: Show this message and exit
 
+# Gene Quantification (featureCounts)
+
+## Overview
+
+The `featurecounts` subcommand runs featureCounts over per-cell BAM files and merges results into a gene-by-cell counts
+matrix. Its primary purpose is to provide a quick, lightweight QC on relevant gene-level metrics — the output feeds
+directly into `qc-metrics --counts-matrix`.
+
+## Usage
+
+```bash
+tranquillyzer featurecounts \
+    [OPTIONS] \
+    BAM_DIR \
+    GTF \
+    OUT_DIR
+```
+
+## Command Line Arguments
+
+Required Arguments
+
+- `BAM_DIR`: Directory containing per-cell BAMs (output of `split-bam`)
+- `GTF`: GTF annotation file passed to featureCounts (`-a`)
+- `OUT_DIR`: Output directory for batch results and merged matrix
+
+Optional Arguments
+
+- `--container-runtime TEXT`: Container runtime: `auto`, `apptainer`, `singularity`, `docker`, or `native`. When set to
+  `auto`, uses the bundled native binary if available, otherwise falls back to a container (default: `auto`)
+- `--container-image TEXT`: Container image, used only when running via a container runtime
+  (default: `varishenlab/featurecounts:subread2.0.6_py3.10.12`)
+- `--image-cache TEXT`: Directory to cache pulled SIF images (default: `<package_dir>/container_images/`)
+- `--bind TEXT`: Comma-separated extra bind paths for the container (default: None)
+- `--batch-size INTEGER`: Number of BAMs per featureCounts call (default: 200)
+- `--threads INTEGER`: Total threads, split across workers (default: 8)
+- `--workers INTEGER`: Parallel featureCounts batches (default: 1)
+- `--extra TEXT`: Extra arguments passed to featureCounts (default: `-t exon -g gene_id -O`)
+- `--matrix-name TEXT`: Filename for the merged counts matrix (default: `counts_matrix.tsv`)
+- `--no-run`: Skip running featureCounts; merge existing batch outputs only (default: off)
+- `--help`: Show this message and exit
+
 # Read Visualization
 
 ## Overview
@@ -319,7 +369,7 @@ Required Arguments
 Optional Arguments
 
 - `--output-file TEXT`: Prefix for output file name. `.pdf` will be added automatically (default: `full_read_annots`)
-- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_011`)
+- `--model-name TEXT:` Base model name (default: `10x3p_sc_ont_012`)
 - `--seq-order-file TEXT`: Path to the sequence orders file. If not provided, uses the default: `utils/seq_orders.yaml`
   (default: None)
 - `--gpu-mem TEXT`: Total memory of the GPU in gigabytes (GB). For a single GPU or multiple GPUs with the same memory,

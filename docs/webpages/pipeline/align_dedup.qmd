@@ -1,0 +1,76 @@
+---
+title: Alignment and Deduplication
+page-navigation: true
+---
+
+After demultiplexing, reads are aligned to a reference genome and PCR duplicates are marked.
+
+# Alignment
+
+The `align` command runs `minimap2` for alignment and `samtools` for sorting and indexing, producing a
+coordinate-sorted BAM:
+
+```bash
+tranquillyzer align \
+    --threads 12 \
+    INPUT_DIR \
+    REFERENCE \
+    OUTPUT_DIR
+```
+
+Where `INPUT_DIR` is the directory containing `demuxed_fasta/demuxed.fasta` (typically the same as your annotation
+output directory), and `REFERENCE` is the reference genome FASTA.
+
+## Alignment Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `INPUT_DIR` | required | Directory with demuxed reads | |
+| `REFERENCE` | required | Reference genome FASTA | |
+| `OUTPUT_DIR` | required | Where to write BAM output | |
+| `--preset` | `splice` | minimap2 preset (`-ax <preset>`) | Use `map-ont` for non-spliced alignment |
+| `--filt-flag` | 260 | samtools filter flag (`-F`) | Default filters secondary + unmapped |
+| `--mapq` | 0 | Minimum MAPQ threshold | Increase for stricter filtering |
+| `--threads` | 12 | CPU threads for minimap2/samtools | Match your available cores |
+| `--add-minimap-args` | None | Additional minimap2 arguments | For protocol-specific settings |
+
+## Output
+
+- **`aligned_files/demuxed_aligned.bam`**:coordinate-sorted BAM
+- **`aligned_files/demuxed_aligned.bam.bai`**:BAM index
+
+# Duplicate Marking
+
+The `dedup` command marks PCR duplicates in the aligned BAM. A set of reads are considered PCR duplicates if all of the
+following are true:
+
+1. Their start and end positions fall within a defined window of each other
+2. They have the same strand orientation
+3. They have the same corrected cell barcode
+4. Their UMIs match within a Levenshtein edit distance threshold
+
+One read from each duplicate set is kept as the "original"; the others are flagged as PCR/optical duplicates using
+standard SAM flags and auxiliary tags.
+
+```bash
+tranquillyzer dedup \
+    --threads 12 \
+    INPUT_DIR
+```
+
+## Dedup Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `INPUT_DIR` | required | Directory containing `aligned_files/demuxed_aligned.bam` | |
+| `--lv-threshold` | 2 | Levenshtein distance for UMI similarity | Increase for noisier UMIs |
+| `--stranded` / `--no-stranded` | `--stranded` | Directional library | Use `--no-stranded` for non-directional libraries |
+| `--per-cell` / `--no-per-cell` | `--per-cell` | Deduplicate per cell barcode | Disable for bulk experiments |
+| `--threads` | 12 | CPU threads | Match your available cores |
+
+## Output
+
+- **`aligned_files/dup_marked.bam`**:deduplicated BAM with duplicate flags
+- **`aligned_files/dup_marked.bam.bai`**:BAM index
+
+Both alignment and deduplication can run on CPU-only machines.

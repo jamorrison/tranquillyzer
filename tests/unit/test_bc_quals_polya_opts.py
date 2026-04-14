@@ -60,7 +60,7 @@ def test_process_row_appends_polya_and_bq():
     }
 
     result, batch_reads = process_row(
-        row,
+        pd.Series(row),
         strand="fwd",
         barcode_columns=["i7", "i5", "CBC"],
         whitelist_dict=whitelist_dict,
@@ -113,6 +113,7 @@ def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
             chunk_size=10,
             gpu_mem=None,
             target_tokens=10,
+            token_cap_above=0,
             vram_headroom=0.1,
             min_batch_size=1,
             max_batch_size=2,

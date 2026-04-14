@@ -212,7 +212,9 @@ def visualize_wrap(
     encoded_data = preprocess_sequences(selected_reads, max_read_len + 10)
     try:
         logger.info("Annotating selected reads with the CRF model")
-        predictions, model = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        predictions, _, model = annotate_new_data_parallel(
+            encoded_data, model, max_batch_size, min_batch=min_batch_size
+        )
         logger.info("Annotation completed successfully")
     except Exception as e:
         logger.error(f"Encountered an error during annotation: {e}")

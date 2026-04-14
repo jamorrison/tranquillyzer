@@ -3,8 +3,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def demux_wrap(input_dir, output_dir, input_file, output_fmt, strand=None, barcode_columns=None,
-               include_barcode_quals=False, include_polya=False):
+def demux_wrap(
+    input_dir,
+    output_dir,
+    input_file,
+    output_fmt,
+):
     """Export demultiplexed reads to FASTA/FASTQ from annotation files."""
     import os
 
@@ -14,7 +18,6 @@ def demux_wrap(input_dir, output_dir, input_file, output_fmt, strand=None, barco
         _has_usable_demux_qualities,
         _has_usable_base_qualities,
         _write_from_demux_columns,
-        _write_corrected_demux,
         _write_bulk_from_annotations,
     )
 
@@ -57,16 +60,8 @@ def demux_wrap(input_dir, output_dir, input_file, output_fmt, strand=None, barco
         demuxed_path = f"{out_dir}/demuxed.fasta"
         ambiguous_path = f"{out_dir}/ambiguous.fasta"
 
-    has_corrected_columns = "cell_id" in df.columns and any(c.startswith("corrected_") for c in df.columns)
-
     if has_demux_columns:
         _write_from_demux_columns(df, effective_output_fmt, demuxed_path, ambiguous_path)
-    elif has_corrected_columns and strand and barcode_columns:
-        logger.info("Writing demux from corrected annotations with full headers.")
-        _write_corrected_demux(
-            df.iter_rows(named=True), effective_output_fmt, demuxed_path, ambiguous_path,
-            strand, barcode_columns, include_barcode_quals, include_polya,
-        )
     else:
         logger.info("Demux columns not found; exporting bulk reads from annotation coordinates.")
         _write_bulk_from_annotations(df, effective_output_fmt, demuxed_path, ambiguous_path)

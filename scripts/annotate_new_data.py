@@ -146,8 +146,12 @@ def pick_per_replica_batch_by_tokens(seq_len, target_tokens_per_replica=1_200_00
 
 
 def estimate_bytes_per_token(
-    embedding_dim=128, conv_filters=128, conv_layers=3,
-    lstm_units=96, bidirectional=True, num_labels=10,
+    embedding_dim=128,
+    conv_filters=128,
+    conv_layers=3,
+    lstm_units=96,
+    bidirectional=True,
+    num_labels=10,
     overhead_factor=1.12,
 ):
     """Estimate GPU memory per token from model architecture params.
@@ -159,12 +163,12 @@ def estimate_bytes_per_token(
     cf = sum(conv_filters) if isinstance(conv_filters, list) else int(conv_filters) * int(conv_layers)
     lu = sum(lstm_units) if isinstance(lstm_units, list) else int(lstm_units)
     bpt = (
-        4                       # input int32
-        + embedding_dim * 4     # embedding
-        + cf * 4                # conv layer outputs
-        + lu * bidir * 4        # LSTM outputs
-        + lu * 4 * bidir * 4    # LSTM gate activations
-        + num_labels * 4        # CRF/output
+        4  # input int32
+        + embedding_dim * 4  # embedding
+        + cf * 4  # conv layer outputs
+        + lu * bidir * 4  # LSTM outputs
+        + lu * 4 * bidir * 4  # LSTM gate activations
+        + num_labels * 4  # CRF/output
     )
     return bpt * overhead_factor
 
@@ -237,8 +241,12 @@ def predict_with_backoff(model, build_dataset_fn, start_batch: int, min_batch: i
             ds = build_dataset_fn(bs)
             result = model.predict(ds, verbose=0)
             return result, bs, model
-        except (tf.errors.ResourceExhaustedError, tf.errors.CancelledError, tf.errors.InternalError,
-                tf.errors.UnknownError) as e:
+        except (
+            tf.errors.ResourceExhaustedError,
+            tf.errors.CancelledError,
+            tf.errors.InternalError,
+            tf.errors.UnknownError,
+        ) as e:
             last_err = e
             new_bs = max(int(min_batch), bs // 2)
             logger.warning(f"OOM at batch={bs}. Retrying with batch={new_bs}...")
@@ -280,7 +288,7 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1, 
 
     if available_gpus.n_gpus() == 0:
         cpu_bs = min(32, max(1, len(new_encoded_data)))  # small & predictable for tests/CI
-        return model.predict(new_encoded_data, batch_size=cpu_bs, verbose=0), model
+        return model.predict(new_encoded_data, batch_size=cpu_bs, verbose=0), cpu_bs, model
 
     def build_ds(bs: int):
         return (
@@ -289,8 +297,8 @@ def annotate_new_data_parallel(new_encoded_data, model, global_bs, min_batch=1, 
             .prefetch(tf.data.AUTOTUNE)
         )
 
-    preds, _, model = predict_with_backoff(model, build_ds, global_bs, min_batch, rebuild_model_fn)
-    return preds, model
+    preds, final_bs, model = predict_with_backoff(model, build_ds, global_bs, min_batch, rebuild_model_fn)
+    return preds, final_bs, model
 
 
 def load_model_params(model_path):
@@ -431,7 +439,15 @@ def model_predictions(
     else:
         bpt = estimate_bytes_per_token(num_labels=num_labels)
 
-    max_len = int(int(bin_name.replace("bp", "").split("_")[1]) + 10)
+    # Add one-sided receptive field of the largest dilated conv layer as padding
+    # so the model can properly predict end-of-sequence transitions for all reads in the bin.
+    if params:
+        kernel_sizes = params.get("conv_kernel_sizes", [25, 25, 25])
+        dilation_rates = params.get("dilation_rates", [1, 1, 1])
+        conv_padding = max((k - 1) * d for k, d in zip(kernel_sizes, dilation_rates)) // 2
+    else:
+        conv_padding = 12  # default: half of kernel_size=25
+    max_len = int(bin_name.replace("bp", "").split("_")[1]) + 1 + conv_padding
     global_bs = choose_global_batch(
         max_len,
         bytes_per_token=bpt,
@@ -472,8 +488,11 @@ def model_predictions(
             if not using_strategy and strategy is not None:
                 model = build_model(model_path, conv_filters, num_labels, strategy=strategy)
                 using_strategy = True
-            chunk_predictions, model = annotate_new_data_parallel(
-                X_new_padded, model, global_bs, min_batch=min_batch,
+            chunk_predictions, global_bs, model = annotate_new_data_parallel(
+                X_new_padded,
+                model,
+                global_bs,
+                min_batch=min_batch,
                 rebuild_model_fn=_rebuild_model,
             )
         else:

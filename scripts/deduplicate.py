@@ -1,5 +1,6 @@
 import os
 import logging
+import subprocess
 import multiprocessing as mp
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -12,17 +13,9 @@ logger = logging.getLogger(__name__)
 
 def extract_cb_umi(read_name: str):
     """Extract cell barcode and UMI from a BAM alignment's CB and UR tags."""
-    parts = read_name.split("_")
-    if len(parts) >= 3:
-        # CBC and UMI are at the end
-        cb = parts[-2]
-        umi = parts[-1]
-
-        # Remove CBC and UMI from the read name
-        cleaned_name = "_".join(parts[:-2])
-
-        return cb, umi, cleaned_name
-
+    parts = read_name.rsplit("_", 2)
+    if len(parts) == 3:
+        return parts[1], parts[2], parts[0]
     return None, None, read_name
 
 
@@ -31,15 +24,16 @@ def _umi_dist(a: str, b: str, max_d: int) -> int:
     """
     Compute edit distance between two UMIs with early cutoff.
     - Uses fast Hamming when lengths match.
-    - Falls back to Levenshtein for indels.
+    - Falls back to Levenshtein for indels (only needed when max_d >= 2).
     """
     if len(a) == len(b):
         d_h = Hamming.distance(a, b, score_cutoff=max_d + 1)
         if d_h <= max_d:
             return d_h
-        return Levenshtein.distance(a, b, score_cutoff=max_d + 1)
-    else:
-        return Levenshtein.distance(a, b, score_cutoff=max_d + 1)
+        if max_d >= 2:
+            return Levenshtein.distance(a, b, score_cutoff=max_d + 1)
+        return d_h
+    return Levenshtein.distance(a, b, score_cutoff=max_d + 1)
 
 
 # Minimal BK-tree for approximate search
@@ -89,23 +83,6 @@ class BKTree:
         return None
 
 
-# Duplicate marking core
-@dataclass
-class ReadData:
-    name: str
-    flag: int
-    chrom: str
-    start: int
-    end: int
-    mapq: int
-    cigar: str
-    seq: str
-    qual: str
-    strand: str
-    cb: str
-    umi: str
-
-
 class Deduper:
     """
     Streaming deduper that:
@@ -148,6 +125,7 @@ class Deduper:
 
     def _mk_bktree(self):
         """Create a new BK-tree seeded with the given UMI."""
+
         def df(a, b, cutoff=self.umi_ld):
             return _umi_dist(a, b, cutoff)
 
@@ -161,13 +139,15 @@ class Deduper:
             old_start_bin = dq.popleft()
             self.state[chrom_key].pop(old_start_bin, None)
 
-    def decide_primary(self, rd: ReadData) -> str:
+    def decide_primary(self, chrom: str, cb: str, strand: str, start: int, end: int, umi: str):
         """
-        Decide duplicate status for a **primary** alignment. Returns "Yes" or "No".
-        Exactly one primary per cluster will be "No"; later primaries matching the cluster → "Yes".
+        Decide duplicate status for a **primary** alignment.
+        Returns (dup_str, canonical_umi):
+          - ("No", umi)  for unique reads (keeps its own UMI)
+          - ("Yes", hit)  for duplicates (gets the UMI of the kept read)
         """
-        chrom_key = self._key_of(rd.chrom, rd.cb, rd.strand)
-        sb, eb = self._bins(rd.start, rd.end)
+        chrom_key = self._key_of(chrom, cb, strand)
+        sb, eb = self._bins(start, end)
 
         # Stream forward eviction
         self.evict_before(chrom_key, sb)
@@ -185,15 +165,15 @@ class Deduper:
             end_dict[eb] = bucket
 
         # BK-tree query
-        hit = bucket["bktree"].query_within(rd.umi, self.umi_ld)
+        hit = bucket["bktree"].query_within(umi, self.umi_ld)
         if hit is None:
-            bucket["bktree"].add(rd.umi)
-            bucket["kept_umis"].add(rd.umi)
+            bucket["bktree"].add(umi)
+            bucket["kept_umis"].add(umi)
             self.unique_count += 1
-            return "No"
+            return "No", umi
         else:
             self.dup_count += 1
-            return "Yes"
+            return "Yes", hit
 
 
 # Per-contig worker
@@ -219,13 +199,16 @@ def process_region(
         position_tolerance=10,
     )
 
-    # qname -> bool (True if duplicate) for decisions made on primaries within this region
+    # qname -> (is_dup: bool, canonical_umi: str) for primary decisions within this region
     qname_dup = {}
 
     with pysam.AlignmentFile(sorted_bam, "rb") as bam_in:
         hdr = bam_in.header.to_dict()
         hdr.setdefault("HD", {})
         hdr["HD"]["SO"] = "coordinate"
+        from utils import get_version
+
+        hdr.setdefault("PG", []).append({"ID": "tranquillyzer-dedup", "PN": "tranquillyzer", "VN": get_version()})
         out_header = pysam.AlignmentHeader.from_dict(hdr)
 
         with pysam.AlignmentFile(temp_bam_path, "wb", header=out_header, threads=threads_bgzf) as bam_out:
@@ -235,118 +218,52 @@ def process_region(
 
                 cb, umi, clean_name = extract_cb_umi(read.query_name)
                 if not cb or not umi:
-                    # If CB/UMI missing, write through unchanged
-                    aln = read.to_string()  # not available; must construct new AlignedSegment
-                    # Construct minimal pass-through without DT if you prefer; but since we rely on primaries only,
-                    # we will skip here (no CB/UMI -> cannot dedup); write original with no DT/dup change.
-                    aln_seg = pysam.AlignedSegment(bam_out.header)
-                    aln_seg.query_name = read.query_name
-                    aln_seg.flag = read.flag
-                    aln_seg.reference_name = read.reference_name
-                    aln_seg.reference_start = read.reference_start
-                    aln_seg.mapping_quality = read.mapping_quality
-                    aln_seg.cigarstring = read.cigarstring
-                    aln_seg.query_sequence = read.query_sequence
-                    aln_seg.query_qualities = read.query_qualities
-                    bam_out.write(aln_seg)
+                    # No CB/UMI → cannot dedup; write through unchanged
+                    bam_out.write(read)
                     continue
 
                 strand = "-" if read.is_reverse else "+"
-                rd = ReadData(
-                    name=clean_name,
-                    flag=read.flag,
-                    chrom=read.reference_name,
-                    start=read.reference_start,
-                    end=read.reference_end,
-                    mapq=read.mapping_quality,
-                    cigar=read.cigarstring,
-                    seq=read.query_sequence,
-                    qual=read.qual,
-                    strand=strand,
-                    cb=cb,
-                    umi=umi,
-                )
 
                 # Decide only on PRIMARY
                 is_primary = not (read.is_secondary or read.is_supplementary)
                 if is_primary:
-                    dup_str = deduper.decide_primary(rd)  # "Yes" or "No"
-                    qname_dup[clean_name] = dup_str == "Yes"
+                    dup_str, canonical_umi = deduper.decide_primary(
+                        read.reference_name, cb, strand, read.reference_start, read.reference_end, umi
+                    )
+                    qname_dup[clean_name] = (dup_str == "Yes", canonical_umi)
                 else:
-                    # For secondary/supplementary: reuse decision if known; otherwise leave unchanged
-                    dup_str = "Yes" if qname_dup.get(clean_name, False) else None  # None => no DT tag written
+                    # For secondary/supplementary: reuse decision if known
+                    cached = qname_dup.get(clean_name)
+                    if cached is not None:
+                        dup_str = "Yes" if cached[0] else "No"
+                        canonical_umi = cached[1]
+                    else:
+                        dup_str = None
+                        canonical_umi = umi
 
-                # Build output alignment
-                aln = pysam.AlignedSegment(bam_out.header)
-                aln.query_name = rd.name  # cleaned QNAME without CB/UMI
-                # Set dup flag only if we have a decision (primary or known from prior primary)
-                if dup_str is not None and dup_str == "Yes":
-                    aln.flag = rd.flag | 0x400
-                elif dup_str is not None and dup_str == "No":
-                    aln.flag = rd.flag & ~0x400
-                else:
-                    aln.flag = rd.flag  # unknown for secondaries not yet decided
+                # Mutate read in-place — preserves all original tags (AS, NM, MD, etc.)
+                read.query_name = clean_name
 
-                aln.reference_name = rd.chrom
-                aln.reference_start = rd.start
-                aln.mapping_quality = rd.mapq
-                aln.cigarstring = rd.cigar
-                aln.query_sequence = rd.seq
-                aln.query_qualities = pysam.qualitystring_to_array(rd.qual) if isinstance(rd.qual, str) else rd.qual
+                if dup_str == "Yes":
+                    read.flag = read.flag | 0x400
+                elif dup_str == "No":
+                    read.flag = read.flag & ~0x400
 
-                # Tags
-                aln.set_tag("CB", rd.cb, value_type="Z")
-                aln.set_tag("UB", rd.umi, value_type="Z")
+                read.set_tag("CB", cb, value_type="Z")
+                read.set_tag("UB", canonical_umi, value_type="Z")
                 if dup_str is not None:
-                    aln.set_tag("DT", dup_str, value_type="Z")  # only when we have a decision
+                    read.set_tag("DT", dup_str, value_type="Z")
 
-                bam_out.write(aln)
+                bam_out.write(read)
 
-    # Return path; stats are computed after merge on primaries only
-    return region, temp_bam_path
+    return region, temp_bam_path, deduper.unique_count, deduper.dup_count
 
 
 # Merge temp BAMs in @SQ order
 def merge_in_sq_order(output_bam: str, temp_paths_in_order, template_bam: str, threads_bgzf: int):
-    """Merge sorted BAM shards in reference sequence order into a single output."""
-    with pysam.AlignmentFile(template_bam, "rb") as template:
-        hdr = template.header.to_dict()
-        hdr.setdefault("HD", {})
-        hdr["HD"]["SO"] = "coordinate"
-        out_header = pysam.AlignmentHeader.from_dict(hdr)
-
-        with pysam.AlignmentFile(output_bam, "wb", header=out_header, threads=threads_bgzf) as merged_out:
-            for p in temp_paths_in_order:  # same order as @SQ
-                with pysam.AlignmentFile(p, "rb") as t:
-                    for r in t:
-                        merged_out.write(r)
-
-
-# Per-read (QNAME) stats on primaries only
-def compute_final_stats_per_read(bam_path: str, stats_tsv: str, threads: int = 4, primary_only: bool = True):
-    """
-    Count each read name once:
-      - If ANY primary alignment for that QNAME is duplicate -> count as Duplicate.
-      - Else -> Unique.
-    (Secondary/supplementary are ignored by default.)
-    """
-    seen = {}
-    with pysam.AlignmentFile(bam_path, "rb", threads=threads) as bam:
-        for r in bam.fetch(until_eof=True):
-            if primary_only and (r.is_secondary or r.is_supplementary):
-                continue
-            qn = r.query_name
-            # Treat either the SAM duplicate bit or DT tag as authority
-            is_dup = r.is_duplicate or (r.has_tag("DT") and r.get_tag("DT") == "Yes")
-            seen[qn] = seen.get(qn, False) or is_dup
-
-    dups = sum(1 for v in seen.values() if v)
-    uniq = len(seen) - dups
-
-    with open(stats_tsv, "w") as fh:
-        fh.write("Metric\tValue\n")
-        fh.write(f"Unique Reads\t{uniq}\n")
-        fh.write(f"Duplicate Reads\t{dups}\n")
+    """Merge sorted BAM shards in reference sequence order into a single output via samtools cat."""
+    cmd = ["samtools", "cat", "-h", template_bam, "-o", output_bam] + list(temp_paths_in_order)
+    subprocess.run(cmd, check=True)
 
 
 def deduplication_parallel(
@@ -370,10 +287,11 @@ def deduplication_parallel(
         regions = list(bam.references)
 
     temp_paths = {}
+    total_unique = 0
+    total_dup = 0
     logger.info(f"Splitting per contig across {threads} processes ...")
 
     # Process per region
-    work = []
     if threads > 1:
         work = []
         with mp.Pool(processes=threads, maxtasksperchild=32) as pool:
@@ -395,13 +313,15 @@ def deduplication_parallel(
                 )
 
             for w in work:
-                region, path = w.get()
+                region, path, n_unique, n_dup = w.get()
                 temp_paths[region] = path
+                total_unique += n_unique
+                total_dup += n_dup
     else:
         # Serial path (no Pool)
         for region in regions:
             temp_path = f"{output_bam}.{region}.tmp.bam"
-            region_out, path_out = process_region(
+            region_out, path_out, n_unique, n_dup = process_region(
                 sorted_bam,
                 temp_path,
                 region,
@@ -411,10 +331,13 @@ def deduplication_parallel(
                 bgzf_threads_per_writer,
             )
             temp_paths[region_out] = path_out
+            total_unique += n_unique
+            total_dup += n_dup
 
-    # Merge in @SQ order
+    # Merge in @SQ order — use first temp BAM as header source (carries @PG line)
     ordered_paths = [temp_paths[r] for r in regions if r in temp_paths]
-    merge_in_sq_order(output_bam, ordered_paths, sorted_bam, bgzf_threads_per_writer)
+    header_bam = ordered_paths[0] if ordered_paths else sorted_bam
+    merge_in_sq_order(output_bam, ordered_paths, header_bam, bgzf_threads_per_writer)
 
     # Cleanup temps
     for p in ordered_paths:
@@ -423,8 +346,11 @@ def deduplication_parallel(
         except OSError:
             pass
 
-    # Stats: per read (QNAME), primaries only
-    logger.info("Duplicate marking complete, computing per-read stats")
+    # Write stats from accumulated counts (no need to re-scan the BAM)
+    logger.info("Duplicate marking complete, writing per-read stats")
     stats_file = output_bam.replace(".bam", "_stats.tsv")
-    compute_final_stats_per_read(output_bam, stats_file, threads=threads, primary_only=True)
+    with open(stats_file, "w") as fh:
+        fh.write("Metric\tValue\n")
+        fh.write(f"Unique Reads\t{total_unique}\n")
+        fh.write(f"Duplicate Reads\t{total_dup}\n")
     logger.info("Computed per-read stats, indexing final BAM")

@@ -11,6 +11,7 @@ dependencies:
   - polars=1.32.3
   - matplotlib=3.10.5
   - seaborn=0.13.2
+  - plotly=6.6.0
   - tqdm=4.67.1
   - filelock=3.19.1
   - numba=0.61.2
@@ -19,6 +20,8 @@ dependencies:
   - python-Levenshtein=0.27.1
   - minimap2=2.30
   - samtools=1.22.1
+  - subread=2.0.6
+  - htseq=2.1.2
   - pip
 
   # pip-installed packages

@@ -1,0 +1,183 @@
+---
+title: Pipeline Guide
+page-navigation: true
+---
+
+_Tranquillyzer_ processes long-read single-cell RNA-seq data through a series of steps, from raw FASTA/FASTQ files
+to per-cell demultiplexed reads, aligned BAMs, and QC reports. This guide explains the core concepts behind each
+processing stage, the key decisions involved, and how the pieces fit together.
+
+# Core Concepts
+
+## Base-Level Read Annotation
+
+A long-read single-cell RNA-seq read is not just a cDNA sequence. It contains multiple structural elements arranged
+in a protocol-specific order. A typical 10x Genomics 3' read, for example, looks like:
+
+```
+[5' adapter] [cell barcode (16 bp)] [UMI (12 bp)] [polyT] [cDNA] [3' adapter]
+```
+
+Annotation is the process of identifying which bases belong to which structural element. _Tranquillyzer_ does this
+using a trained CNN-BiLSTM-CRF deep learning model that assigns a label to **every base** in the read. The model learns
+to recognize segment boundaries from surrounding sequence context, rather than relying on exact pattern matching. This
+makes it robust to:
+
+- **Sequencing errors** that corrupt barcode or adapter sequences
+- **Truncated reads** that are missing one or more structural elements
+- **Chimeric/concatenated reads** where multiple full or partial cDNA fragments are joined into a single read,
+  arising from library preparation or sequencing
+- **Internal homopolymers** in cDNA that can mimic polyA/T tails
+
+After labeling, the predicted segment order is compared against valid structures defined in the model's configuration
+(`seq_orders.yaml`). Reads matching a valid structure are classified as **valid**; others are classified as **invalid**
+and set aside.
+
+## Barcode Correction
+
+After annotation, each valid read has an extracted barcode sequence corresponding to the bases the model labeled as
+the cell barcode. However, these raw extracted sequences cannot be used directly for cell assignment for two reasons:
+
+1. **Sequencing errors** introduce substitutions, insertions, and deletions into the barcode, so the extracted sequence
+   may not exactly match any known barcode.
+2. **Strand ambiguity** in nanopore reads means the barcode may appear as its reverse complement, depending on which
+   DNA strand was sequenced.
+
+Without correction, each error-containing barcode would be treated as a distinct cell, artificially inflating the
+number of detected cells and fragmenting reads that belong to the same cell across multiple identities.
+
+There are two general strategies for correcting barcodes, depending on whether a reference set of valid barcodes is
+available:
+
+- **Whitelist-based correction**: the extracted barcode is compared against a known set of valid barcodes (a whitelist).
+  This whitelist typically comes from the corresponding short-read experiment for the same library (e.g., cell barcodes
+  identified by Cell Ranger from 10x Genomics short-read data). This is the most common and most reliable approach,
+  since the search space is constrained to barcodes that are known to exist in the experiment.
+- **Whitelist-free correction**: when no whitelist is available (e.g., custom protocols or novel library designs), cell
+  barcodes must first be discovered from the data itself before correction can proceed. This involves identifying which
+  barcode sequences correspond to real cells versus sequencing noise.
+
+_Tranquillyzer_ supports both strategies. The sections below describe each in detail.
+
+### Whitelist-Based Correction
+
+Given a whitelist, _Tranquillyzer_ matches each extracted barcode to the closest valid barcode using a tiered strategy,
+applied in order of increasing computational cost:
+
+1. **Exact match**: the extracted barcode is found directly in the whitelist. This is the fastest path and handles
+   error-free reads.
+2. **Reverse complement match**: the reverse complement of the barcode is checked against the whitelist. This resolves
+   cases where the read was sequenced from the opposite strand.
+3. **Fuzzy match**: if neither exact nor reverse complement matching succeeds, the closest whitelist barcode within a
+   configurable Levenshtein edit distance threshold (default: 2 edits) is selected. Levenshtein distance counts the
+   minimum number of single-base insertions, deletions, or substitutions needed to transform one sequence into another.
+
+If no whitelist barcode is within the threshold, the barcode is labeled `NMF` (No Match Found) and the read is excluded
+from downstream cell-level analyses. If multiple whitelist barcodes tie at the minimum distance, the read is marked as
+`ambiguous` since the true cell of origin cannot be determined.
+
+For protocols with **multiple barcodes** (e.g., combinatorial indexing with CBC + i5 + i7), each barcode is corrected
+independently and a cell identity is assigned via product matching against the whitelist.
+
+### Whitelist-Free Barcode Discovery
+
+When no whitelist is available, _Tranquillyzer_ can discover cell barcodes directly from the annotation output. The
+approach relies on the expectation that true cell barcodes are shared across many reads originating from the same cell,
+resulting in high read counts, while erroneous barcodes introduced by sequencing errors tend to be unique or
+near-unique, resulting in low read counts.
+
+The discovery process involves three steps:
+
+1. **Barcode counting**: all extracted barcodes from valid reads are counted. Barcodes are canonicalized via reverse
+   complement (taking the lexicographic minimum of each sequence and its RC) to collapse strand-ambiguous duplicates.
+2. **Knee-point detection**: barcodes are sorted by count in descending order. The resulting rank-count curve shows a
+   characteristic **knee**, a sharp drop-off where real cells transition to background noise. _Tranquillyzer_ detects
+   this knee automatically using the kneedle algorithm, or guided by an `--expected-cells` hint if provided.
+3. **Near-duplicate merging**: barcodes within edit distance 1 of a higher-count barcode are merged into it, collapsing
+   error variants of the same true barcode into a single entry.
+
+The surviving barcodes are output as a discovered whitelist, which can then be used for standard whitelist-based
+correction as described above.
+
+## Demultiplexing
+
+Demultiplexing assigns each read to the cell it came from and exports per-cell FASTA or FASTQ files. After barcode
+correction, each valid read has a corrected barcode and a corresponding cell ID. Demultiplexing groups reads by cell
+ID and writes them to output files, with headers containing the cell identity, corrected barcodes, UMI sequence, and
+read orientation.
+
+Reads with ambiguous barcode assignments are written to a separate file (`ambiguous.fasta.gz`) so they can be reviewed
+or discarded as needed.
+
+## Quality Control Metrics
+
+QC metrics provide a quantitative assessment of the data at multiple levels, from raw read statistics through
+cell-level gene quantification. _Tranquillyzer_ generates an interactive HTML report combining annotation-level metrics
+(read validity, barcode assignment rates, segment lengths), alignment-level metrics (mapping rates, duplication,
+saturation), and optionally gene-level metrics (genes per cell, UMIs per cell, mitochondrial fraction). These metrics
+help identify issues such as low barcode assignment rates, over-sequencing, or poor library quality.
+
+# Two Workflow Paths
+
+_Tranquillyzer_ supports two workflows depending on whether you have a barcode whitelist for your experiment:
+
+## Whitelist-Based Workflow
+
+If you already have a barcode whitelist (e.g., from 10x Genomics), _Tranquillyzer_ can annotate, correct barcodes, and
+demultiplex in a single pass:
+
+```
+preprocess → annotate-reads (with whitelist + --run-barcode-correction + --run-demux)
+           → align → dedup → split-bam → qc-metrics
+```
+
+This is the fastest path because barcode correction and demultiplexing are integrated into the annotation pass. For details,
+see [Annotation](pipeline/annotation.qmd) and [Barcode Correction & Demux](pipeline/barcode_demux.qmd).
+
+## Whitelist-Free Workflow
+
+If you do not have a barcode whitelist (e.g., custom protocol, novel library prep), _Tranquillyzer_ can discover cell
+barcodes from the data itself:
+
+```
+preprocess → annotate-reads (without whitelist)
+           → generate-whitelist (knee-point discovery)
+           → barcode-correct (with discovered whitelist)
+           → demux-reads
+           → align → dedup → split-bam → qc-metrics
+```
+
+This workflow first annotates reads to extract barcode sequences, then uses the `generate-whitelist` command to identify
+true cell barcodes via knee-point detection, and finally corrects and demultiplexes using the discovered whitelist. For
+details, see [Barcode Correction & Demux](pipeline/barcode_demux.qmd).
+
+# Input and Output
+
+## Input
+
+The raw input to _Tranquillyzer_ is a directory containing FASTA or FASTQ files from your sequencing run. Supported
+extensions: `.fasta`, `.fa`, `.fasta.gz`, `.fa.gz`, `.fastq`, `.fq`, `.fastq.gz`, `.fq.gz`.
+
+## Output Directory Structure
+
+All outputs are organized under a single output directory:
+
+```
+<output_dir>/
+├── full_length_pp_fa/           # Preprocessed length-binned Parquet files
+├── annotation_chunks/           # Per-chunk annotation intermediates
+├── annotation_metadata/         # Combined annotation outputs
+│   ├── annotations_valid.parquet
+│   ├── annotations_invalid.parquet
+│   ├── annotations_valid_bc_corrected.parquet   (after barcode correction)
+│   ├── discovered_whitelist.tsv                  (whitelist-free only)
+│   ├── barcode_discovery_stats.json              (whitelist-free only)
+│   ├── barcode_counts.tsv                        (whitelist-free only)
+│   └── barcode_rank_plot.png                     (whitelist-free only)
+├── demuxed_fasta/               # Per-cell FASTA/FASTQ.gz
+├── aligned_files/               # BAM + index
+├── qc_metrics/                  # HTML report + MultiQC TSVs
+├── split_bams/                  # Per-cell BAM files
+├── plots/                       # Visualization PDFs
+└── checkpoints/                 # Resume checkpoints
+```

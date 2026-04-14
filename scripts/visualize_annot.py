@@ -124,6 +124,11 @@ def save_plots_to_pdf(
 ):
     """Generate annotation plots for multiple reads and save them to a PDF."""
     with PdfPages(filename) as pdf:
+        from utils import get_version
+
+        d = pdf.infodict()
+        d["Creator"] = f"tranquillyzer v{get_version()}"
+        d["Producer"] = f"tranquillyzer v{get_version()}"
         for sequence, annotated_read, read_name in zip(sequences, annotated_reads, read_names):
             if not sequence:  # Skip if the sequence is empty
                 print(f"Warning: Empty sequence for {read_name}. Skipping.")

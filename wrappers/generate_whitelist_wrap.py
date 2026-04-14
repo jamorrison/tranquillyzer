@@ -135,9 +135,7 @@ def _count_barcodes_from_files(files, barcode_columns, chunk_size):
             col = pl.col(sc).str.strip_chars()
             rc = _rc_expr(col)
             lf = lf.with_columns(pl.min_horizontal(col, rc).alias(cc))
-            lf = lf.filter(
-                ~pl.col(cc).is_in(_INVALID_VALUES) & pl.col(cc).is_not_null() & (pl.col(cc) != "")
-            )
+            lf = lf.filter(~pl.col(cc).is_in(_INVALID_VALUES) & pl.col(cc).is_not_null() & (pl.col(cc) != ""))
         frames.append(lf.select(canon_cols))
 
     combined = pl.concat(frames)
@@ -153,7 +151,9 @@ def _count_barcodes_from_files(files, barcode_columns, chunk_size):
             global_counts[row[:-1]] = row[-1]
 
     total_reads = sum(global_counts.values())
-    logger.info(f"Counted {len(global_counts)} unique barcode tuples from {total_reads} reads across {len(files)} files")
+    logger.info(
+        f"Counted {len(global_counts)} unique barcode tuples from {total_reads} reads across {len(files)} files"
+    )
     return global_counts
 
 

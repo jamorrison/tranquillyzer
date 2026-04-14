@@ -65,7 +65,7 @@ def simulate_data_wrap(
         logger.info(f"Generated {len(transcriptome_records)} synthetic transcripts")
 
     logger.info("Generating reads")
-    reads, labels = generate_training_reads(
+    reads, labels, _ = generate_training_reads(
         num_reads,
         mismatch_rate,
         insertion_rate,

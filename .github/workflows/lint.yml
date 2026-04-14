@@ -3,7 +3,7 @@ on:
   push:
     branches: [main,dev]
   pull_request:
-    bracnhes: [main,dev]
+    branches: [main,dev]
 
 jobs:
   prek:

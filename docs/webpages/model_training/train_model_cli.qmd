@@ -3,90 +3,121 @@ title: "train-model CLI"
 page-navigation: true
 ---
 
-# Input Parameters to `train-model`
+The `train-model` command trains model variants from pre-generated simulated data (produced by `simulate-data`). It
+reads the simulated reads and labels from `{output_dir}/simulated_data/`, trains each hyperparameter combination defined
+in `training_params.yaml`, and validates each variant on an independently generated set of reads.
 
-**Important Note**: The error model (e.g., `--mismatch-rate`, `--polyt-error-rate`, etc.) and cDNA length options
-(`--min-cdna` and `--max-cdna`) below are used to synthesize a small post-training validation set (with
-`--num-val-reads` number of reads). `tranquillyzer` annotates these reads using the newly trained model and exports a
-PDF (`*_val_viz.pdf`) as an initial sanity check. These options do not affect the training reads, which were produced by
-`simulate-data` and can be found in `reads.pkl` and `labels.pkl` inside the `<output_dir>/simulated_data/` directory.
+For background on the model architecture and training process, see
+[Model Training](train_model.qmd).
 
-| CLI Option | Type | What It Controls | Default |
-|:-----------|:----:|:-----------------|:-------:|
-| `model_name`                 | TEXT  | Library model key defining segment order and motifs                                                       | required                        |
-| `output_dir`                 | TEXT  | Directory where simulated training data lives                                                             | required                        |
-| `--param-file`               | TEXT  | Path to `training_params.yaml` used to define the hyperparameter grid for `model_name`                     | `utils/training_params.yaml`     |
-| `--training-seq-orders-file` | TEXT  | Path to `seq_orders.yaml` defining segment order/motifs for the model                             | `utils/seq_orders.yaml` |
-| `--num-val-reads`            | INT   | Number of **post-training validation** reads to synthesize and visualize                                  | 20                              |
-| `--mismatch-rate`            | FLOAT | **Validation synthesis** mismatch rate                                                                    | 0.05                            |
-| `--insertion-rate`           | FLOAT | **Validation synthesis** insertion rate                                                                   | 0.05                            |
-| `--deletion-rate`            | FLOAT | **Validation synthesis** deletion rate                                                                    | 0.06                            |
-| `--min-cdna`                 | INT   | **Validation synthesis** minimum cDNA length                                                              | 100                             |
-| `--max-cdna`                 | INT   | **Validation synthesis** maximum cDNA length                                                              | 500                             |
-| `--polyt-error-rate`         | FLOAT | **Validation synthesis** error rate inside polyA/polyT segments                                           | 0.02                            |
-| `--max-insertions`           | FLOAT | **Validation synthesis** max insertions per position                                                      | 1                               |
-| `--threads`                  | INT   | CPU threads used for **validation read synthesis**                                                        | 2                               |
-| `--rc` / `--no-rc`           | FLAG  | Include reverse complements in **validation** set (doubles `--num-val-reads`)                             | `--rc`                          |
-| `--transcriptome`            | TEXT  | Optional transcriptome FASTA used for **validation** synthesis (otherwise random transcripts)             | None (i.e., random transcripts) |
-| `--invalid-fraction`         | FLOAT | Fraction of **validation** reads synthesized as invalid/artifactual                                       | 0.3                             |
-| `--gpu-mem`                  | TEXT  | GPU memory (GB) used to guide *inference batch sizing* for **validation** annotation/plotting             | None (12 GB if GPU present)     |
-| `--target-tokens`            | INT   | Token budget **per GPU replica** for choosing safe inference batch size (&cong; batch &times; padded_len) | 1200000                         |
-| `--vram-headroom`            | FLOAT | Fraction of VRAM reserved as headroom when sizing inference batches                                       | 0.35                            |
-| `--min-batch-size`           | INT   | Minimum inference batch size for **validation** annotation                                                | 1                               |
-| `--max-batch-size`           | INT   | Maximum inference batch size for **validation** annotation                                                | 2000                            |
+> **Note:** The error model options below (`--mismatch-rate`, `--polyt-error-rate`, etc.) and cDNA length options
+> (`--min-cdna`, `--max-cdna`) control the **post-training validation reads only**. These validation reads are generated
+> independently to provide a quick sanity check — they do not affect the training data, which was produced earlier by
+> `simulate-data`.
 
-# Example `training_params.yaml` Template
+# Command Line Options
 
-::: callout-note
-If you copy and paste the following template, make sure the pasted text retains the tab (`\t`) characters that serve as
-the delimiter between the columns.
-:::
+| CLI Option | Type | Default | What it controls | When to change it |
+|:-----------|:----:|:-------:|:-----------------|:------------------|
+| `model_name` | TEXT | required | Library model key defining segment order and motifs | Set to match your protocol |
+| `output_dir` | TEXT | required | Directory containing simulated training data | Same directory used for `simulate-data` |
+| `--param-file` | TEXT | `utils/training_params.yaml` | Hyperparameter grid file | Only if using a custom file |
+| `--training-seq-orders-file` | TEXT | `utils/seq_orders.yaml` | Library definition file | Only if using a custom file |
+| `--num-val-reads` | INT | 20 | Number of validation reads to synthesize after training | Increase for a more thorough validation check |
+| `--mismatch-rate` | FLOAT | 0.05 | Validation read substitution rate | Match your sequencing platform |
+| `--insertion-rate` | FLOAT | 0.05 | Validation read insertion rate | Match your sequencing platform |
+| `--deletion-rate` | FLOAT | 0.06 | Validation read deletion rate | Match your sequencing platform |
+| `--min-cdna` | INT | 100 | Minimum cDNA length in validation reads | Adjust to match expected read lengths |
+| `--max-cdna` | INT | 500 | Maximum cDNA length in validation reads | Adjust to match expected read lengths |
+| `--polyt-error-rate` | FLOAT | 0.02 | Validation polyA/polyT error rate | Increase if your data has noisy homopolymers |
+| `--max-insertions` | FLOAT | 1 | Validation max insertions per position | Rarely needs changing |
+| `--threads` | INT | 2 | CPU threads for validation read synthesis | Increase on multi-core machines |
+| `--rc` / `--no-rc` | FLAG | `--rc` | Include reverse complements in the validation set | Disable only for fixed-orientation protocols |
+| `--transcriptome` | TEXT | None | Transcriptome FASTA for validation cDNA | Recommended for realistic validation |
+| `--invalid-fraction` | FLOAT | 0.3 | Fraction of validation reads generated as invalid | Rarely needs changing |
+| `--gpu-mem` | TEXT | None (12 GB) | GPU memory budget for validation inference | Set to your actual VRAM |
+| `--target-tokens` | INT | 1,200,000 | Token budget per GPU for validation inference batching | See [Resource Requirements](../resource_requirements.qmd) |
+| `--vram-headroom` | FLOAT | 0.35 | VRAM headroom fraction for validation inference | Increase if OOM during validation |
+| `--min-batch-size` | INT | 1 | Minimum batch size for validation inference | Rarely needs changing |
+| `--max-batch-size` | INT | 2,000 | Maximum batch size for validation inference | Rarely needs changing |
 
-```{.txt filename="training_params_example.tsv"}
-parameter	10x5p_sc_ont
-batch_size	128
-train_fraction	0.8
-vocab_size	5
-embedding_dim	128
-conv_layers	4
-conv_filters	128
-conv_kernel_size	25
-lstm_layers	1
-lstm_units	96
-bidirectional	TRUE
-crf_layer	TRUE
-attention_heads	0
-dropout_rate	0.35
-regularization	0.01
-learning_rate	0.001
-epochs	5
+# Defining Hyperparameters in `training_params.yaml`
+
+The hyperparameter grid is defined in a YAML file with one top-level key per model. Each key maps to a dictionary of
+parameter values. If you want to search over multiple values for a parameter, provide them as a comma-separated string
+— `train-model` will enumerate all combinations automatically.
+
+> **Note:** If you copy and paste the following template, make sure the pasted text retains proper YAML formatting.
+
+## Single-Model Example
+
+```{.yaml filename="training_params.yaml"}
+10x3p_sc_ont:
+  batch_size: 128
+  train_fraction: 0.8
+  vocab_size: 5
+  embedding_dim: 128
+  conv_layers: 3
+  conv_filters: [128, 128, 128]
+  conv_kernel_sizes: [25, 25, 25]
+  dilation_rates: [1, 3, 5]
+  lstm_layers: 1
+  lstm_units: [96]
+  bidirectional: true
+  crf_layer: true
+  attention_heads: 0
+  dropout_rate: 0.35
+  regularization: 0.01
+  learning_rate: 0.001
+  epochs: 5
 ```
 
-Additional models can be added to the `training_params.yaml` file by adding additional columns to the existing file. The
-name in the first column is the `model_name` to be used in other `tranquillyzer` functions for that model. A realistic
-example that includes parameters for both 10x Genomics 5' and 3' protocols is:
+## Multi-Model Example
 
-```{.txt filename="training_params_example_extended.tsv"}
-parameter	10x5p_sc_ont	10x3p_sc_ont
-batch_size	128	128
-train_fraction	0.8	0.8
-vocab_size	5	5
-embedding_dim	128	128
-conv_layers	4	3
-conv_filters	128	128
-conv_kernel_size	25	25
-lstm_layers	1	1
-lstm_units	96	96
-bidirectional	TRUE	TRUE
-crf_layer	TRUE	TRUE
-attention_heads	0	0
-dropout_rate	0.35	0.35
-regularization	0.01	0.01
-learning_rate	0.001	0.001
-epochs	5	1
+Additional models can be added as separate top-level keys. The model name in the YAML file is the `model_name` used in
+other _Tranquillyzer_ commands.
+
+```{.yaml filename="training_params_multi.yaml"}
+10x5p_sc_ont:
+  batch_size: 128
+  train_fraction: 0.8
+  vocab_size: 5
+  embedding_dim: 128
+  conv_layers: 4
+  conv_filters: [128, 128, 128, 128]
+  conv_kernel_sizes: [25, 25, 25, 25]
+  dilation_rates: [1, 1, 1, 1]
+  lstm_layers: 1
+  lstm_units: [96]
+  bidirectional: true
+  crf_layer: true
+  attention_heads: 0
+  dropout_rate: 0.35
+  regularization: 0.01
+  learning_rate: 0.001
+  epochs: 5
+
+10x3p_sc_ont:
+  batch_size: 128
+  train_fraction: 0.8
+  vocab_size: 5
+  embedding_dim: 128
+  conv_layers: 3
+  conv_filters: [128, 128, 128]
+  conv_kernel_sizes: [25, 25, 25]
+  dilation_rates: [1, 3, 5]
+  lstm_layers: 1
+  lstm_units: [96]
+  bidirectional: true
+  crf_layer: true
+  attention_heads: 0
+  dropout_rate: 0.35
+  regularization: 0.01
+  learning_rate: 0.001
+  epochs: 5
 ```
 
-# Example Use Case
+# Example Usage
 
 ```bash
 tranquillyzer train-model \
