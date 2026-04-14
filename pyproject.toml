@@ -51,3 +51,13 @@ local_scheme = "no-local-version"
 
 [tool.ruff]
 line-length = 120
+
+[tool.coverage.run]
+branch = false
+parallel = true
+source = ["."]
+concurrency = ["multiprocessing", "thread"]
+
+[tool.coverage.report]
+show_missing = true
+omit = ["tests/*", "*/site-packages/*"]
