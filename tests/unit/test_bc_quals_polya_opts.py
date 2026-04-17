@@ -2,8 +2,11 @@ import pandas as pd
 import pytest
 import sys
 import types
+import yaml
 
 from scripts.correct_barcodes import process_row
+from scripts.demultiplex import assign_cell_id
+from scripts.trained_models import seq_orders
 from wrappers.annotate_reads_wrap import annotate_reads_wrap
 
 # Stub optional training-time deps so unit tests don't require them.
@@ -56,8 +59,8 @@ def test_process_row_appends_polya_and_bq():
         "base_qualities": "ABCDEFGHIJKLMNOPQRST",
     }
 
-    result, _, _, batch_reads = process_row(
-        row,
+    result, batch_reads = process_row(
+        pd.Series(row),
         strand="fwd",
         barcode_columns=["i7", "i5", "CBC"],
         whitelist_dict=whitelist_dict,
@@ -81,8 +84,22 @@ def test_process_row_appends_polya_and_bq():
 
 
 def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
-    seq_orders_file = tmp_path / "seq_orders.tsv"
-    seq_orders_file.write_text('model_a\t"x"\t"y"\t"i7"\tUMI\tfwd\nmodel_b\t"x"\t"y"\t"i7"\tUMI\trev\n')
+    seq_orders_file = tmp_path / "seq_orders.yaml"
+    config = {
+        "model_a": {
+            "strand": "fwd",
+            "barcodes": ["i7"],
+            "umis": ["UMI"],
+            "segments": [{"name": "x", "pattern": "y"}],
+        },
+        "model_b": {
+            "strand": "rev",
+            "barcodes": ["i7"],
+            "umis": ["UMI"],
+            "segments": [{"name": "x", "pattern": "y"}],
+        },
+    }
+    seq_orders_file.write_text(yaml.dump(config))
     whitelist_file = tmp_path / "whitelist.tsv"
     whitelist_file.write_text("i7\ni7_seq\n")
 
@@ -92,11 +109,11 @@ def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
             whitelist_file=str(whitelist_file),
             output_fmt="fastq",
             model_name="missing_model",
-            model_type="CRF",
             seq_order_file=str(seq_orders_file),
             chunk_size=10,
             gpu_mem=None,
             target_tokens=10,
+            token_cap_above=0,
             vram_headroom=0.1,
             min_batch_size=1,
             max_batch_size=2,
@@ -110,3 +127,41 @@ def test_annotate_reads_wrap_missing_model_lists_available(tmp_path):
     msg = str(excinfo.value)
     assert "missing_model" in msg
     assert "model_a" in msg and "model_b" in msg
+
+
+def test_assign_cell_id_supports_dynamic_multi_barcode_columns():
+    whitelist_df = pd.DataFrame([{"i5": "GGGG", "i7": "AAAA", "cbc": "CCCC"}])
+    row = {
+        "corrected_i5": "GGGG",
+        "corrected_i7": "AAAA",
+        "corrected_cbc": "CCCC",
+    }
+
+    cell_id = assign_cell_id(row, whitelist_df, ["i5", "i7", "cbc"])
+
+    assert cell_id == 1
+
+
+def test_seq_orders_strips_whitespace_in_barcode_fields(tmp_path):
+    seq_orders_file = tmp_path / "seq_orders.yaml"
+    config = {
+        "model_a": {
+            "strand": "fwd",
+            "barcodes": ["i5", "i7", "cbc"],
+            "umis": ["UMI"],
+            "segments": [
+                {"name": "5p", "pattern": "A"},
+                {"name": "i5", "pattern": "B"},
+                {"name": "i7", "pattern": "C"},
+                {"name": "cbc", "pattern": "D"},
+                {"name": "cDNA", "pattern": "E"},
+            ],
+        }
+    }
+    seq_orders_file.write_text(yaml.dump(config))
+
+    _, _, barcodes, umis, strand = seq_orders(str(seq_orders_file), "model_a")
+
+    assert barcodes == ["i5", "i7", "cbc"]
+    assert umis == ["UMI"]
+    assert strand == "fwd"

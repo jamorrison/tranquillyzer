@@ -1,0 +1,99 @@
+---
+title: Annotation
+page-navigation: true
+---
+
+The `annotate-reads` command is the core of _Tranquillyzer_. It runs the trained deep learning model on preprocessed
+reads to label every base identifying adapters, barcodes, UMIs, cDNA, polyA/T tails, and other structural elements.
+It can also perform barcode correction and demultiplexing within the same pass.
+
+# Overview
+
+For each read, the model produces a per-base label sequence. _Tranquillyzer_ then:
+
+1. Extracts segment boundaries (where each structural element starts and ends)
+2. Classifies each read as **valid** (matches an expected structure) or **invalid** (malformed/artifact)
+3. Extracts barcode, UMI, and cDNA sequences from their predicted positions
+4. Optionally corrects barcodes against a whitelist and assigns cell IDs
+5. Optionally exports demultiplexed FASTA/FASTQ files
+
+# Execution Modes
+
+## Annotation Only
+
+Use this when you do not have a whitelist, or want to run barcode correction as a separate step later (e.g., in a
+whitelist-free workflow):
+
+```bash
+tranquillyzer annotate-reads \
+    --model-name 10x3p_sc_ont_013 \
+    --gpu-mem 48 \
+    --threads 12 \
+    OUTPUT_DIR
+```
+
+## Integrated Annotation, Barcode Correction, and Demultiplexing
+
+Use this when you have a whitelist and want the fastest path to demultiplexed reads:
+
+```bash
+tranquillyzer annotate-reads \
+    --model-name 10x3p_sc_ont_013 \
+    --gpu-mem 48 \
+    --threads 12 \
+    --run-barcode-correction \
+    --run-demux \
+    --output-fmt fasta \
+    OUTPUT_DIR \
+    WHITELIST_FILE
+```
+
+This runs annotation, barcode correction, and demultiplexing in a single pass. Barcode correction and demux happen
+in the post-processing workers concurrently with GPU inference on the next batch.
+
+# Concatenated Read Splitting
+
+Nanopore sequencing can produce reads where multiple cDNA molecules are concatenated together. The
+`--split-concatenated` flag tells _Tranquillyzer_ to detect these and split them into separate valid entries, each
+with its own barcode and demux record. This is used internally by `assess-model` and can be useful for datasets with
+high concatenation rates.
+
+# Checkpoint and Resumability
+
+Annotation is chunk-based and fully resumable. If a run is interrupted, restarting with the same command will
+automatically pick up from the last completed chunk. Progress is tracked in a checkpoint file under `checkpoints/`.
+
+# Command Line Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `OUTPUT_DIR` | required | Base output directory | |
+| `WHITELIST_FILE` | optional | Barcode whitelist TSV | Required if using `--run-barcode-correction` |
+| `--model-name` | `10x3p_sc_ont_013` | Model to use for inference | Set to match your protocol |
+| `--seq-order-file` | `utils/seq_orders.yaml` | Library definition file | Only if using a custom file |
+| `--gpu-mem` | 12 GB | GPU memory budget | Always set to your actual VRAM |
+| `--target-tokens` | 1,200,000 | Token budget per GPU | See [Resource Requirements](resource_requirements.qmd) |
+| `--vram-headroom` | 0.35 | VRAM safety buffer fraction | Increase if hitting OOM |
+| `--token-cap-above` | 0 | Two-tier batching threshold | See [Resource Requirements](resource_requirements.qmd) |
+| `--min-batch-size` | 1 | Batch size floor per GPU | Rarely needs changing |
+| `--max-batch-size` | 8,192 | Batch size ceiling per GPU | Increase on high-VRAM GPUs |
+| `--run-barcode-correction` | off | Enable integrated barcode correction | Enable for whitelist-based workflows |
+| `--bc-lv-threshold` | 2 | Levenshtein distance for fuzzy matching | Increase if barcodes are very noisy |
+| `--run-demux` | off | Enable integrated demultiplexing | Enable to get demuxed FASTA/FASTQ |
+| `--output-fmt` | `fasta` | Demux output format | Use `fastq` if you need quality scores |
+| `--include-barcode-quals` | off | Append barcode quality scores to headers | Enable for downstream QC |
+| `--include-polya` | off | Append polyA/T tail to demuxed reads | Enable if polyA is needed downstream |
+| `--split-concatenated` | off | Split concatenated reads into fragments | Enable for high-concatenation datasets |
+| `--chunk-size` | 100,000 | Rows per processing chunk | Rarely needs changing |
+| `--threads` | 12 | CPU threads for post-processing | Match your available cores |
+| `--max-queue-size` | 3 | Max chunks buffered for workers | Rarely needs changing |
+| `--resume` / `--no-resume` | `--resume` | Resume from checkpoint | Disable to force full re-run |
+
+# Output
+
+- **`annotation_metadata/annotations_valid.parquet`**:valid reads with segment coordinates and sequences
+- **`annotation_metadata/annotations_invalid.parquet`**:reads that did not match any valid structure
+- **`demuxed_fasta/demuxed.fasta.gz`**:demultiplexed reads (if `--run-demux`)
+- **`demuxed_fasta/ambiguous.fasta.gz`**:reads with ambiguous barcode matches (if `--run-demux`)
+- **`annotation_metadata/annotations_valid_bc_corrected.parquet`**:barcode-corrected annotations (if
+  `--run-barcode-correction`)

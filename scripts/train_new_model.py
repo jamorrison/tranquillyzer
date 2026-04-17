@@ -40,14 +40,17 @@ def encode_sequence(sequence):
 
 class DynamicPaddingDataGenerator(Sequence):
     def __init__(self, X, Y, batch_size, label_binarizer):
+        """Initialize the data generator with sequences, labels, and batch size."""
         self.X = [encode_sequence(seq) for seq in X]
         self.Y = [label_binarizer.transform(labels) for labels in Y]
         self.batch_size = batch_size
 
     def __len__(self):
+        """Return the number of batches per epoch."""
         return int(np.ceil(len(self.X) / self.batch_size))
 
     def __getitem__(self, idx):
+        """Return a padded (X, y) batch for the given index."""
         batch_X = self.X[idx * self.batch_size : (idx + 1) * self.batch_size]
         batch_Y = self.Y[idx * self.batch_size : (idx + 1) * self.batch_size]
         max_len = max(len(x) for x in batch_X)
@@ -61,10 +64,11 @@ def ont_read_annotator(
     embedding_dim,
     num_labels,
     conv_layers=3,
-    conv_filters=260,
-    conv_kernel_size=25,
+    conv_filters=None,
+    conv_kernel_sizes=None,
+    dilation_rates=None,
     lstm_layers=1,
-    lstm_units=128,
+    lstm_units=None,
     bidirectional=True,
     crf_layer=True,
     attention_heads=0,
@@ -72,12 +76,34 @@ def ont_read_annotator(
     regularization=0.01,
     learning_rate=0.01,
 ):
+    """Build the CNN-LSTM or CNN-LSTM-CRF annotation model."""
+    if conv_filters is None:
+        conv_filters = [260] * conv_layers
+    assert len(conv_filters) == conv_layers, (
+        f"conv_filters length ({len(conv_filters)}) must match conv_layers ({conv_layers})"
+    )
+    if conv_kernel_sizes is None:
+        conv_kernel_sizes = [25] * conv_layers
+    assert len(conv_kernel_sizes) == conv_layers, (
+        f"conv_kernel_sizes length ({len(conv_kernel_sizes)}) must match conv_layers ({conv_layers})"
+    )
+    if dilation_rates is None:
+        dilation_rates = [1] * conv_layers
+    assert len(dilation_rates) == conv_layers, (
+        f"dilation_rates length ({len(dilation_rates)}) must match conv_layers ({conv_layers})"
+    )
+    if lstm_units is None:
+        lstm_units = [128 // (2**i) for i in range(lstm_layers)]
+    assert len(lstm_units) == lstm_layers, (
+        f"lstm_units length ({len(lstm_units)}) must match lstm_layers ({lstm_layers})"
+    )
     inputs = Input(shape=(None,), dtype="int32", name="input_tokens")
     x = Embedding(vocab_size, embedding_dim, name="embedding")(inputs)
     for i in range(conv_layers):
         x = Conv1D(
-            filters=conv_filters,
-            kernel_size=conv_kernel_size,
+            filters=conv_filters[i],
+            kernel_size=conv_kernel_sizes[i],
+            dilation_rate=dilation_rates[i],
             activation="relu",
             padding="same",
             kernel_regularizer=l2(regularization),
@@ -87,7 +113,7 @@ def ont_read_annotator(
         x = Dropout(dropout_rate, name=f"dropout_conv_{i}")(x)
     for i in range(lstm_layers):
         lstm_layer = LSTM(
-            lstm_units if i == 0 else lstm_units // 2,
+            lstm_units[i],
             return_sequences=True,
             kernel_regularizer=l2(regularization),
             recurrent_regularizer=l2(regularization),
@@ -97,7 +123,7 @@ def ont_read_annotator(
         x = Dropout(dropout_rate, name=f"dropout_lstm_{i}")(x)
     if attention_heads > 0:
         attention_out = MultiHeadAttention(
-            num_heads=attention_heads, key_dim=lstm_units, dropout=dropout_rate, name="multihead_attention"
+            num_heads=attention_heads, key_dim=lstm_units[-1], dropout=dropout_rate, name="multihead_attention"
         )(x, x)
         x = Add(name="residual_attention")([x, attention_out])
         x = Dropout(dropout_rate, name="dropout_attention")(x)

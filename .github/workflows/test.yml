@@ -2,9 +2,9 @@ name: Run Pytest
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev, annot_demux_refactor]
   pull_request:
-    branches: [main]
+    branches: [main, dev, annot_demux_refactor]
 
 jobs:
   test:
@@ -12,7 +12,9 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Miniconda
         uses: conda-incubator/setup-miniconda@v2
@@ -35,10 +37,11 @@ jobs:
         shell: bash -l {0}
         run: |
          mkdir -p tests/10x3p/data tests/references
-         curl -L "https://www.dropbox.com/scl/fi/re7f2s36jr3mijdwpvvc7/10x3p_sc_ont_011_w_CRF.h5?rlkey=7pcxny332fuctr3aw1xew5j8z&dl=1" -o models/10x3p_sc_ont_011_w_CRF.h5
-         curl -L "https://www.dropbox.com/scl/fi/umoonedt500khhhvebu7r/10x3p_sc_ont_011_w_CRF_params.json?rlkey=28xl4toxtzzff60954dhv1m4t&dl=1" -o models/10x3p_sc_ont_011_w_CRF_params.json
-         curl -L "https://www.dropbox.com/scl/fi/313vfpp5usgknfi9o375n/10x3p_sc_ont_011_w_CRF_lbl_bin.pkl?rlkey=ofc6drcra7rs1js0t71psavu0&dl=1" -o models/10x3p_sc_ont_011_w_CRF_lbl_bin.pkl
+         curl -L "https://www.dropbox.com/scl/fi/k18rs7icrw7la7ogoi9bh/10x3p_sc_ont_013.h5?rlkey=ssw6ylhpvwe3e96jmwm0j3pzg&st=5byhrx7t&dl=0" -o models/10x3p_sc_ont_013.h5
+         curl -L "https://www.dropbox.com/scl/fi/2plk01thb9q1o8gqgmgks/10x3p_sc_ont_013_params.yaml?rlkey=twtqwmpsyv6ecqeh7a2c5k6tx&dl=0" -o models/10x3p_sc_ont_013_params.yaml
+         curl -L "https://www.dropbox.com/scl/fi/inz070k8k7kfpibnj9lkt/10x3p_sc_ont_013_lbl_bin.pkl?rlkey=pwhonyomb3i4d13yjat8cxpro&dl=0" -o models/10x3p_sc_ont_013_lbl_bin.pkl
          curl -L "https://www.dropbox.com/scl/fi/9203pc2gz45u419kze446/hg38_gencode_chr21.fa?rlkey=k1co80pso7zsvb8oiqqc1o1dy&st=e0e92h5h&dl=1" -o tests/references/hg38_gencode_chr21.fa
+         curl -L "https://www.dropbox.com/scl/fi/9zvh26moro7frfho818ko/hg38_gencode_chr21.gtf?rlkey=v3s05m9ap3srpjhvl5yfjfeq7&st=hn6mufoq&dl=0" -o tests/references/hg38_gencode_chr21.gtf
 
       - name: Run Pytest with coverage
         shell: bash -l {0}

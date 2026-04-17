@@ -58,6 +58,7 @@ RUN if [ -n "$MODEL_ZIP_URL" ]; then \
         echo "MODEL_ZIP_URL not provided; skipping model download."; \
     fi
 
-RUN rm -rf *.egg-info && pip install --no-cache-dir -e .
+ARG SETUPTOOLS_SCM_PRETEND_VERSION
+RUN rm -rf *.egg-info && pip install --no-cache-dir .
 
 CMD ["tranquillyzer", "--help"]

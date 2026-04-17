@@ -1,169 +1,262 @@
 ---
-title: "Stage 3/4: Model Training Intuitions"
+title: "Model Training"
 page-navigation: true
 ---
 
-The `train-model` command trains a base-level sequence labeling model to assign a segment identity (e.g., adapter,
-barcode, UMI, cDNA, polyA/T) to every nucleotide position in a read. Training operates on synthetic reads produced by
-`simulate-data` (stored as `reads.pkl` and `labels.pkl`) and evaluates each trained variant using an independently
-simulated validation set with known ground-truth labels.
+The `train-model` command trains a deep learning model that assigns a segment label (e.g., adapter, barcode, UMI, cDNA,
+polyA/T) to every base in a read. It trains on the synthetic reads produced by `simulate-data` and validates each model
+variant using an independently simulated set with known ground-truth labels.
 
-For a given `model_name`, `train-model` reads a parameter table (`training_params.tsv`), enumerates the specified
-hyperparameter combinations, trains each model variant, and exports a standardized set of artifacts (model weights,
-label binarizer, training history, and a validation visualization PDF).
+If multiple hyperparameter combinations are specified in `training_params.yaml`, `train-model` trains each variant
+separately and exports a standardized set of artifacts for each one (see
+[Output Artifacts](../model_training.qmd#output-artifacts)).
 
-# Model architecture
+# Model Architecture Overview
 
-## Input Representation and Tokenization
+The model processes a read through a series of layers, each building on the previous one to capture increasingly complex
+patterns:
 
-Reads are represented as sequences of nucleotide tokens, converted to integers prior to training:
+```
+Input tokens → Embedding → Conv layers → [BiLSTM] → Dense → CRF → Per-base labels
+```
 
-- A &rarr; 1
-- C &rarr; 2
-- G &rarr; 3
-- T &rarr; 4
-- N &rarr; 5
-- 0 reserved for padding
+Brackets around `BiLSTM` indicate that it is an optional component — see [When the BiLSTM can be dropped](#when-the-bilstm-can-be-dropped) below.
 
-This is governed by the vocabulary size parameter (`vocab_size`). In the current implementation, `vocab_size` is 5 to
-correspond to the five nucleotide symbols `{A, C, G, T, N}`, while the padding token, 0, is introduced only for batching
-and does not represent a nucleotide.
+At a high level:
 
-Increasing `vocab_size` is not typically meaningful for DNA unless additional symbols are introduced (e.g., ambiguity
-codes beyond `N`). The critical representation choice is the embedding dimension (`embedding_dim`), which controls how
-much information the model can store about each token.
+1. Each DNA base is converted to a numeric token and then to a learned vector representation (**embedding**).
+2. **Convolutional layers** scan local windows along the read to detect short motifs like adapter subsequences and
+   boundary signatures.
+3. A **bidirectional LSTM** reads the entire sequence in both directions, providing long-range context — so the model
+   knows, for example, that a barcode should appear between specific adapter sequences.
+4. A **dense layer** produces a score for each possible label at every position.
+5. A **CRF layer** enforces globally consistent label sequences by learning which label transitions are plausible (e.g.,
+   adapter → barcode is likely, but barcode → adapter may not be).
+
+The sections below explain each component in more detail, along with the parameters that control it.
+
+# Layer-by-Layer Details
+
+## Input Representation
+
+Reads are converted to integer tokens before training:
+
+| Base | Token |
+|:--:|:--:|
+| padding | 0 |
+| A | 1 |
+| C | 2 |
+| G | 3 |
+| T | 4 |
+| N | 5 |
+
+This mapping is governed by the `vocab_size` parameter (default: 5, for the five nucleotide symbols). The padding token
+(0) is used only to make reads within a batch the same length and does not represent a nucleotide.
 
 ## Embedding Layer
 
-The embedding layer converts each integer token into a learned numeric vector of length `embedding_dim`. This step is
-conceptually similar to assigning each nucleotide a trainable "feature profile" that downstream layers can combine to
-detect patterns.
+The embedding layer converts each integer token into a learned numeric vector of length `embedding_dim`. This gives the
+model a richer representation of each base than the raw integer — essentially, each nucleotide gets a trainable "feature
+profile" that downstream layers can combine to detect patterns.
 
-- A larger `embedding_dim` increases representational capacity and may help in complex settings (e.g., more labels or
-  noisier reads), but requires additional computational resources and can overfit if training data are limited.
-- For a small vocabulary like DNA, moderate values (e.g., 64-128) are typically sufficient.
+- **`embedding_dim`** (default: 128): controls how much information the model stores about each token. For DNA's small
+  vocabulary, moderate values (64-128) are typically sufficient. Larger values increase capacity but require more
+  memory and can lead to overfitting with limited training data.
 
-## Convolutional Layers ("Conv1D" Blocks)
+## Convolutional Layers
 
-Following embedding, the model applies a stack of 1D convolution layers. A convolution layer slides a small window (the
-kernel) along the sequence and learns to recognize local motifs. In this application, convolutions primarily learn
-short-range patterns such as adapter subsequences, barcode/UMI neighborhood signatures and transition cues near segment
-boundaries.
+After embedding, the model applies a stack of 1D convolutional layers. Each layer slides a small window (the **kernel**)
+along the read and learns to recognize local motifs — adapter subsequences, barcode/UMI neighborhood signatures, and
+transition cues near segment boundaries.
 
-Each convolution block consists of:
+Each convolutional block consists of:
 
-1. `Conv1D(filters=conv_filters, kernel_size=conv_kernel_size, padding="same")`
+1. `Conv1D` with ReLU activation and L2 regularization
 2. `BatchNormalization`
-3. `Dropout(dropout_rate)`
+3. `Dropout`
 
-The user can control the following inputs to the convolution blocks:
+The key parameters are:
 
-- `conv_kernel_size`: Controls how wide a motif the layer can "see" at once. Larger kernels (e.g., 25) help detect
-  longer protocol motifs and smooth local noise. However, selecting too large a value may blur sharp boundary cues,
-  whereas too small a value may miss multi-base motifs.
-- `conv_filters`: Number of motif detectors per layer. More filters means more pattern capacity at the cost of higher
-  memory and time requirements. If boundaries are missed or adapters vary, increasing the number of filters is often
-  more beneficial than increasing the depth.
-- `conv_layers`: How many convolution stages are stacked. More layers allow hierarchical motif composition (from simple
-  to complex). Too many layers can over-smooth or overfit, especially with limited training reads.
+- **`conv_kernel_size`** (default: 25): how wide a motif each layer can detect at once. Larger kernels help detect
+  longer protocol motifs and smooth local noise, but values that are too large may blur sharp boundary cues.
+- **`conv_filters`** (default: 128 per layer): the number of distinct motif detectors per layer. More filters means
+  more pattern capacity at the cost of memory and compute. If boundaries are being missed or adapters vary across
+  reads, increasing filters is often more effective than adding more layers.
+- **`conv_layers`** (default: 3): how many convolutional stages are stacked. More layers allow hierarchical motif
+  composition (combining simple patterns into complex ones). Too many layers can over-smooth or overfit.
+- **`dilation_rates`** (default: [1, 1, 1]): controls the spacing between kernel elements. Increasing dilation (e.g.,
+  [1, 3, 5]) expands the receptive field — the amount of surrounding context each layer can see — without increasing
+  the number of parameters. This is useful when segment boundaries depend on context that extends beyond a single
+  kernel width.
 
-## Regularization within Convolution Layers
+## Regularization
 
-- Regularization applies an L2 penalty to convolution weights. Higher values discourage overly complex filters and
-  reduce overfitting, but if too strong it can prevent learning adapter/barcode patterns.
-- `dropout_rate` randomly drops activations during training. Higher dropout improves generalization but can reduce
-  boundary precision if excessive.
+Two mechanisms prevent the model from overfitting to the training data:
 
-## Bidirectional LSTM (Long-Range Context)
+- **L2 regularization** (`regularization`, default: 0.01): applies a penalty to large convolution weights, encouraging
+  simpler patterns. If too strong, it can prevent the model from learning adapter/barcode motifs.
+- **Dropout** (`dropout_rate`, default: 0.35): randomly disables a fraction of activations during training, forcing the
+  model to be robust to missing features. Higher dropout improves generalization but can reduce boundary precision if
+  excessive.
 
-Adapters and barcodes can be recognized locally, but accurate labeling often requires understanding **ordering and
-context**. For example, a barcode is not defined only by its sequence composition but also by *where it appears relative
-to other segments*. This is addressed using long short-term memory (LSTM) recurrent layers, which process the sequence
-in order and can retain information over long distances.
+## Bidirectional LSTM
 
-`tranquillyzer` uses an LSTM configured to bidirectionally read the sequence and output a prediction at every position
-(`return_sequences=True`). Bidirectionality means the model reads the sequence both left-to-right and right-to-left,
-allowing each position to be interpreted using context on both sides.
+Adapters and barcodes can be recognized by their local sequence, but accurate labeling often requires understanding
+**where a segment appears relative to others**. For example, a barcode is not just a 16-mer — it is a 16-mer that
+appears between specific adapter sequences. The LSTM (Long Short-Term Memory) layer addresses this by reading the
+sequence in order and retaining information over long distances.
 
-The user has the option to adjust the following parameters that govern the LSTM aspect of `tranquillyzer`.
+_Tranquillyzer_ uses a **bidirectional** LSTM by default, meaning it reads the sequence both left-to-right and
+right-to-left. This allows each position to be interpreted using context from both sides.
 
-- `lstm_units`: Size of the "memory" used to store contextual information. Increasing the number of units can improve
-  modeling of long-range structure but increases compute and can overfit.
-- `lstm_layers`: Stacking multiple LSTMs increases modeling power but may be unnecessary for many protocols.
-- `bidirectional`: `True` is typically beneficial for boundary labeling because both upstream and downstream motifs
-  inform segment identity. `False` may be preferred only if strict causal directionality is desired (uncommon for this
-  task).
+- **`lstm_units`** (default: 96): the size of the LSTM's internal memory. Increasing units improves the model's ability
+  to track long-range structure but increases compute and can overfit.
+- **`lstm_layers`** (default: 1): stacking multiple LSTMs increases modeling power but is often unnecessary for
+  standard protocols.
+- **`bidirectional`** (default: True): reading in both directions is typically beneficial for boundary labeling. Setting
+  this to False is uncommon for this task.
 
-## [Optional] Multi-head Self-attention (Global Context Refinement)
+### When the BiLSTM can be dropped
 
-If enabled, (`attention_heads > 0`), the model applies self-attention after the LSTM. Attention allows each position to
-"look at" other positions and re-weight information based on relevance, which can help when distant cues are informative
-(e.g., ambiguous low-complexity regions that require recognizing other motif anchors elsewhere in the read).
+For typical segmentation tasks — short motif-like adapters, barcodes, and UMIs flanked by known structure — the
+**Conv + CRF** backbone alone is often sufficient. Convolutional layers capture the local motifs, and the CRF enforces
+globally consistent label sequences, which together cover most of what the BiLSTM contributes for well-behaved library
+designs.
 
-- More heads allow multiple "views" of relevance patterns, but increase memory and training time.
-- Attention is typically most useful when reads are long and contain repeated and/or ambiguous patterns.
+Dropping or shrinking the BiLSTM (e.g., setting `lstm_layers = 0`) can yield accuracy comparable to the default
+CNN-BiLSTM-CRF model while noticeably reducing training and inference time and GPU memory footprint. Because the BiLSTM
+is sequential and memory-heavy, removing it also allows larger batch sizes and makes processing very long reads more
+tractable.
 
-**Note**: multi-head attention is disabled by default
+The BiLSTM is more likely to help when long-range dependencies actually matter — for example, ambiguous motifs whose
+identity depends on distant context, or non-standard library structures with repeated or overlapping adapter patterns.
 
-## Dense Layer (Per-Base Classifier)
+**Practical recommendation:** start with the default CNN-BiLSTM-CRF. If inference is memory-bound or reads are very
+long, train a Conv + CRF variant (`lstm_layers = 0`) and compare per-segment accuracy on a held-out validation set
+before committing to it.
 
-After feature extraction, a dense layer produces a vector of scores for each label at every position. This is the
-per-position classification step.
+## Multi-Head Self-Attention (Experimental)
 
-- `num_labels`: Derived from the library segment set - equal to the number of segments defined in the
-  `training_seq_orders.tsv`
+> **Warning:** Self-attention is an **experimental feature** intended for exploratory and research purposes only. The
+> standard CNN-BiLSTM-CRF architecture has been sufficient for all read segmentation tasks to date, and self-attention
+> has never been required in practice. Enabling it significantly increases GPU memory usage and training time, and may
+> not improve (or could even degrade) performance for typical annotation workloads. It is disabled by default and should
+> remain so unless you have a specific research reason to experiment with it.
 
-## Conditional Random Field (Structured Decoding)
+If enabled (`attention_heads > 0`), the model applies self-attention after the LSTM. Attention allows each position to
+directly reference other positions in the read and re-weight information based on relevance.
 
-The model uses a Conditional Random Field (CRF) on top of per-base scores. The CRF learns which label transitions are
-plausible (e.g., adapter &rarr; barcode is likely, but barcode &rarr; adapter may be unlikely) and encourages globally
-consistent label sequences.
+- More attention heads allow multiple "views" of relevance patterns, but substantially increase memory and training time.
+- **Disabled by default** (`attention_heads = 0`). The CNN-BiLSTM-CRF architecture provides sufficient context modeling
+  for segment labeling tasks.
 
-- CRF is particularly beneficial when the model exhibits "label fragmentation" or rapid oscillation across boundaries,
-  especially in repetitive contexts.
-- CRF usually increases training and inference time but often improves boundary consistency.
+## Dense Layer
 
-# Training Configuration and Hyperparameters
+After feature extraction, a dense (fully connected) layer produces a vector of scores for each possible segment label
+at every position. The number of outputs equals `num_labels`, which is determined automatically from the segment
+definitions in `seq_orders.yaml`.
 
-`tranquillyzer` uses a tabular parameter grid specified in `training_params.tsv`, where each column corresponds to a
-`model_name` and each row provides one hyperparameter. For each model, values may be single values or comma-delimited
-lists. If a comma-delimited list is given, `train-model` will enumerate all hyperparameter combinations.
+## Conditional Random Field (CRF)
 
-## Core Optimization Parameters
+The CRF layer sits on top of the per-base scores and learns which label transitions are plausible. For example, it
+can learn that `adapter → barcode` is a likely transition but `barcode → adapter` is not, and use this to produce
+globally consistent label sequences.
 
-- `batch_size`: Number of reads per gradient update. Larger batches improve throughput and stabilize gradients but
-  require more memory and may reduce generalization.
-- `train_fraction`: Fraction between 0.0 and 1.0 (inclusive) of simulated reads used for training versus internal
-  validation. Higher values increase training signal but reduce internal validation monitoring.
-- `epochs`: Maximum training epochs (with early stopping enabled). More epochs can improve fit but increase overfitting
-  risk.
+The CRF is particularly beneficial when the model exhibits **label fragmentation** — rapid oscillation between labels
+near boundaries or in repetitive regions. It usually increases training and inference time slightly but often improves
+boundary consistency.
 
-## Model Capacity and Generalization Controls
+When `crf_layer = False`, the model uses standard softmax classification instead, which predicts each position
+independently without considering neighboring labels.
 
-- `embedding_dim`, `conv_layers`, `conv_filters`, `conv_kernel_size`, `lstm_layers`, `lstm_units`, `attention_heads`:
-  Determine representational power.
-- `dropout_rate`, `regularization`: Reduce overfitting and stabilize training.
-- `learning_rate`: Step size for optimization. Too high can destabilize, but too low slows convergence.
+# Training Configuration
 
-## Example Hyperparameter Effects (Intuitive Scenarios)
+## Optimizer and Learning Rate
 
-### Example 1: Adapters Recognized but Boundaries are Fuzzy
+Training uses the **Adam optimizer** with gradient clipping (`clipnorm = 1.0`) to prevent unstable updates. The learning
+rate is controlled by:
 
-Symptom: adapter/barcode regions are detected, but transition points drift.
+- **`learning_rate`** (default: 0.001): the step size for weight updates. Too high can cause training to diverge; too
+  low slows convergence.
+- **Automatic reduction**: if validation accuracy plateaus, the learning rate is halved (down to a minimum of 1e-5).
+  This is handled by `ReduceLROnPlateau` with patience = 1 epoch.
 
-- Increase `conv_kernel_size` slightly (e.g., 15 &rarr; 20) to provide a wider local context for boundary cues.
-- If overfitting is suspected, increase `dropout_rate` modestly (e.g. 0.20 &rarr; 0.30).
+## Early Stopping
 
-### Example 2: Model Struggles on Noisy Reads (Indels)
+Training automatically stops when the model is no longer improving on the validation set, preventing overfitting:
 
-Symptom: predictions degrade sharply as indel rate increases.
+- **CRF models**: training stops after 1 epoch without improvement in validation loss (patience = 1). The weights from
+  the best epoch are restored.
+- **Non-CRF models**: training stops after 3 epochs without improvement (patience = 3).
 
-- Increase `num_reads` during simulation to expose more noisy examples (handled in `simulate-data`).
-- Increase `conv_filters` (e.g., 64 &rarr; 96) to learn more robust motif detectors.
+The `epochs` parameter (default: 5) sets the maximum number of training epochs, but early stopping typically ends
+training before this limit.
+
+## Batch Sizing and Dynamic Padding
+
+Training reads within a batch are padded to the length of the longest read in that batch (not the longest read in the
+dataset). This **dynamic padding** approach reduces wasted computation on shorter reads. The `batch_size` parameter
+(default: 128) controls how many reads are in each batch.
+
+- Larger batches improve throughput and stabilize gradient estimates but require more GPU memory.
+- Smaller batches use less memory and can sometimes improve generalization.
+
+## Multi-GPU Support
+
+When multiple GPUs are available, `train-model` automatically distributes training across them using TensorFlow's
+`MirroredStrategy`. No additional configuration is needed.
+
+## Core Training Parameters
+
+| Parameter | Default | What it controls |
+|---|:--:|---|
+| `batch_size` | 128 | Reads per gradient update |
+| `train_fraction` | 0.8 | Fraction of simulated reads used for training (rest for internal validation) |
+| `epochs` | 5 | Maximum training epochs (early stopping typically ends sooner) |
+| `learning_rate` | 0.001 | Step size for optimization |
+| `dropout_rate` | 0.35 | Fraction of activations randomly disabled during training |
+| `regularization` | 0.01 | L2 penalty strength on convolution weights |
+
+# Hyperparameter Grid Search
+
+If you specify multiple values for a parameter in `training_params.yaml` (as a comma-delimited list), `train-model`
+will enumerate **all combinations** and train a separate model variant for each. For example, if you specify
+`learning_rate: 0.001,0.0001` and `dropout_rate: 0.2,0.35`, four variants will be trained.
+
+Each variant is saved in its own subdirectory with a numeric index (e.g., `model_name_0/`, `model_name_1/`, ...).
+
+**Note:** Per-layer parameters like `conv_filters`, `conv_kernel_sizes`, `dilation_rates`, and `lstm_units` are
+specified as lists that define the value for each layer — they are not expanded as part of the grid search.
+
+# Post-Training Validation
+
+After training each variant, `train-model` automatically generates an independent set of validation reads (controlled by
+`--num-val-reads`, default 20), runs them through the trained model, and produces a PDF visualization
+(`*_val_viz.pdf`). This serves as a quick sanity check — you can visually inspect whether the model is correctly
+identifying segment boundaries on reads it has never seen.
+
+The validation reads are generated using the same error model parameters (`--mismatch-rate`, `--insertion-rate`, etc.)
+but are completely independent from the training data.
+
+# Hyperparameter Tuning Guide
+
+## Imprecise Segment Boundaries
+
+The model finds the right segments but transition points drift by a few bases.
+
+- Increase `conv_kernel_size` slightly (e.g., 15 → 20) to give the model a wider local context for boundary detection.
+- If the model appears to be overfitting, increase `dropout_rate` modestly (e.g., 0.20 → 0.30).
+
+## Degraded Accuracy on Noisy Reads
+
+Predictions are accurate on clean reads but break down as error rates increase.
+
+- Increase `--num-reads` during simulation to expose the model to more noisy examples.
+- Increase `conv_filters` (e.g., 64 → 96) to learn more robust motif detectors.
 - Consider a slightly lower `learning_rate` to stabilize optimization under noise.
 
-Example 3: Model is slow and memory-limited on GPU
+## Reducing GPU Memory Usage
 
-- Reduce `batch_size`.
-- Reduce `conv_filters` or `embedding_dim` (reduces activation memory).
-- Keep `attention_heads=0` unless needed. Attention increases memory substantially.
+- Reduce `batch_size` to lower GPU memory usage.
+- Reduce `conv_filters` or `embedding_dim` to decrease the model's memory footprint.
+- Keep `attention_heads = 0` unless needed — attention increases memory usage substantially.
