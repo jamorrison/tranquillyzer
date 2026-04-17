@@ -42,9 +42,11 @@ Tranquillyzer is available through a variety of methods. See the [Installation](
 ## Preprocessing
 
 Tranquillyzer implements a parallelized binning strategy that sorts reads into discrete bins based on their length
-(e.g., 0-499 bp, 500-999 bp, and so on) and then writes each bin to its own Parquet file. This strategy ensures that
-reads of similar lengths are group together, minimizing unnecessary padding and optimizing GPU memory consumption. In
-parallel, Tranquillyzer generates a lightweight index that maps each read to its corresponding bin. This index enables
+(e.g., 0-499 bp, 500-999 bp, and so on) and then writes each bin to its own Parquet file. For long reads (above a
+configurable threshold), bin widths automatically widen to coarser tiers, and optionally, adjacent sparsely populated
+bins can be merged to reduce processing overhead. This strategy ensures that reads of similar lengths are grouped
+together, minimizing unnecessary padding and optimizing GPU memory consumption. In parallel, Tranquillyzer generates a
+lightweight index that maps each read to its corresponding bin. This index enables
 rapid retrieval of individual reads for targeted visualization or debugging via the `visualize` subcommand and
 eliminates reloading the full dataset.
 

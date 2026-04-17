@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def plot_read_len_distr(parquet_dir, output_dir):
+    """Generate and save a read-length distribution histogram."""
     os.makedirs(output_dir, exist_ok=True)
     parquet_files = [
         os.path.join(parquet_dir, f)
@@ -57,7 +58,9 @@ def plot_read_len_distr(parquet_dir, output_dir):
 
     # Save the plot to the output directory
     plot_file = os.path.join(output_dir, "read_length_distribution.png")
-    plt.savefig(plot_file)
+    from utils import get_version
+
+    plt.savefig(plot_file, metadata={"Software": f"tranquillyzer v{get_version()}"})
     plt.close()
 
     logger.info(f"Read length distribution plot saved to {plot_file}")

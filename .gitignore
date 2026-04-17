@@ -4,9 +4,15 @@
 
 # Singularity image
 tranquillyzer.sif
+.coverage*
+__pycache__/
+*.pyc
 
 # Unwanted hidden files
 ._*
+
+CLAUDE.md
+_version.py
 
 # Samba-related files
 .smbdelete*
@@ -17,7 +23,11 @@ util_2
 util_2/*
 utils2
 utils2/*
+
+
 # Ignore references and analysis files
+container_images
+container_images/*
 
 tests/references/
 tests/10x3p/*

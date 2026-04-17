@@ -129,17 +129,11 @@ cd tranquillyzer
 Before proceeding with the installation, download the model files [this Dropbox link](https://www.dropbox.com/scl/fo/3lms8n97bnufzqa4ausv9/AGkO3EVrL1ZgctwEwTK1mEA?rlkey=47m69a6smwsisdznbwu3jvjpu&st=253al7s3&dl=0)
 and manually place the required model files inside the `models/` directory.
 
-For the REG model (i.e., the base model), the following files are required:
+The following model files are required:
 ```bash
 <model_name>.h5
 <model_name>_lbl_bin.pkl
-```
-
-The CRF model, on the other hand, requires the following files:
-```bash
-<model_name>_w_CRF.h5
-<model_name>_w_CRF_lbl_bin.pkl
-<model_name>_w_CRF_params.json
+<model_name>_params.yaml
 ```
 
 These files are needed for the annotation and visualization functionality.

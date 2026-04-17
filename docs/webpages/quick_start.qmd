@@ -2,119 +2,127 @@
 title: Quick Start
 ---
 
+This page provides minimal end-to-end examples to get you running quickly. For detailed explanations of each step, see
+the [Pipeline Guide](pipeline_guide.qmd). For a full list of all CLI options, see the [CLI Reference](usage.qmd).
+
+# Prerequisites
+
+- A GPU with at least 16 GB VRAM is recommended (see [Resource Requirements](resource_requirements.qmd))
+- Raw FASTA or FASTQ files from your sequencing run
+- A reference genome FASTA for alignment
+- A barcode whitelist TSV (for whitelist-based workflow) or none (for whitelist-free workflow)
+
 # Available Models
 
-| Parameter \\ Model Name   | `10x5p_sc_ont` | `10x3p_sc_ont` |
-|:--------------------------|:--------------:|:--------------:|
-| Batch Size                | 128            | 128            |
-| Training Fraction         | 0.8            | 0.8            |
-| Vocab Size                | 5              | 5              |
-| Embedding Dimension       | 128            | 128            |
-| Convolutional Layers      | 4              | 3              |
-| Convolutional Filters     | 128            | 128            |
-| Convolutional Kernel Size | 25             | 25             |
-| LSTM Layers               | 1              | 1              |
-| LSTM Units                | 96             | 96             |
-| Bidirectional             | True           | True           |
-| CRF Layer                 | True           | True           |
-| Attention Heads           | 0              | 0              |
-| Dropout Rate              | 0.35           | 0.35           |
-| Regularization            | 0.01           | 0.01           |
-| Learning Rate             | 0.001          | 0.001          |
-| # Epochs                  | 5              | 1              |
+_Tranquillyzer_ ships with pre-trained models for common 10x Genomics protocols:
+
+| Parameter | `10x5p_sc_ont` | `10x3p_sc_ont` |
+|:--|:-:|:-:|
+| Batch Size | 128 | 128 |
+| Training Fraction | 0.8 | 0.8 |
+| Vocab Size | 5 | 5 |
+| Embedding Dimension | 128 | 128 |
+| Conv Layers | 4 | 3 |
+| Conv Filters | 128 | 128 |
+| Conv Kernel Size | 25 | 25 |
+| Dilation Rates | [1, 1, 1, 1] | [1, 3, 5] |
+| LSTM Layers | 1 | 1 |
+| LSTM Units | 96 | 96 |
+| Bidirectional | True | True |
+| CRF Layer | True | True |
+| Attention Heads | 0 | 0 |
+| Dropout Rate | 0.35 | 0.35 |
+| Regularization | 0.01 | 0.01 |
+| Learning Rate | 0.001 | 0.001 |
+| Epochs | 5 | 5 |
+
+Use `tranquillyzer availablemodels` to see all installed models and their configurations.
+
+# Whitelist-Based Pipeline
+
+The most common workflow — you have a barcode whitelist from your library prep kit.
+
+```bash
+# 1. Preprocess raw reads into length-binned Parquets
+tranquillyzer preprocess \
+    --threads 12 \
+    /path/to/fastq_dir \
+    /path/to/output
+
+# 2. Annotate reads + correct barcodes + demultiplex (single pass)
+tranquillyzer annotate-reads \
+    --model-name 10x3p_sc_ont_013 \
+    --gpu-mem 48 \
+    --threads 12 \
+    --run-barcode-correction \
+    --run-demux \
+    --output-fmt fasta \
+    /path/to/output \
+    /path/to/whitelist.tsv
+
+# 3. Align to reference genome
+tranquillyzer align \
+    --threads 12 \
+    /path/to/output \
+    /path/to/reference.fa \
+    /path/to/output
+
+# 4. Mark PCR duplicates
+tranquillyzer dedup \
+    --threads 12 \
+    /path/to/output
+
+# 5. Generate QC report
+tranquillyzer qc-metrics \
+    --threads 4 \
+    --bam /path/to/output/aligned_files/dup_marked.bam \
+    /path/to/output
+```
+
+# Whitelist-Free Pipeline
+
+Use this when you do not have a barcode whitelist — _Tranquillyzer_ discovers cell barcodes from the data.
+
+```bash
+# 1. Preprocess
+tranquillyzer preprocess \
+    --threads 12 \
+    /path/to/fastq_dir \
+    /path/to/output
+
+# 2. Annotate reads (no whitelist)
+tranquillyzer annotate-reads \
+    --model-name 10x3p_sc_ont_013 \
+    --gpu-mem 48 \
+    --threads 12 \
+    /path/to/output
+
+# 3. Discover cell barcodes via knee-point detection
+tranquillyzer generate-whitelist \
+    --model-name 10x3p_sc_ont_013 \
+    --expected-cells 5000 \
+    /path/to/output
+
+# 4. Correct barcodes using the discovered whitelist + demultiplex
+tranquillyzer barcode-correct \
+    --run-demux \
+    --output-fmt fasta \
+    --threads 12 \
+    /path/to/output \
+    /path/to/output/annotation_metadata/discovered_whitelist.tsv
+
+# 5. Align, dedup, and QC (same as whitelist-based)
+tranquillyzer align --threads 12 /path/to/output /path/to/reference.fa /path/to/output
+tranquillyzer dedup --threads 12 /path/to/output
+tranquillyzer qc-metrics --threads 4 --bam /path/to/output/aligned_files/dup_marked.bam /path/to/output
+```
 
 # Software Dependencies
 
-- It is suggested to use Docker (or another containerization tool like Singularity or Apptainer). This handles all
-  dependencies for you and provides easier portability across systems.
-- If you are building Tranquillyzer yourself, you will need either `mamba` or `conda`. `pip` is also used during the
-  installation process, though this will be installed via `mamba`/`conda` and does not need to be installed on its own.
-- Required dependencies for Tranquillyzer are provided in the `environment.yml` file at the top level of the
-  Tranquillyzer repository.
-- TensorFlow has its own requirements to run. Those can be found on
-  [TensorFlow's documentation site](https://www.tensorflow.org/install/source#gpu).
+- **Docker** (recommended): handles all dependencies and provides portability across systems. Singularity and Apptainer
+  are also supported.
+- **Manual install**: requires `mamba` or `conda`. Dependencies are listed in `environment.yml`.
+- **TensorFlow**: has its own GPU requirements — see
+  [TensorFlow's documentation](https://www.tensorflow.org/install/source#gpu).
 
-# Important Notes for Running Tranquillyzer
-
-Will be added as useful notes on running Tranquillyzer are come by
-
-# Basic Pipeline for Running Tranquillyzer
-
-More details about each of the commands can be found on [Usage page](usage.qmd).
-
-```bash
-# Preprocessing raw FASTQs
-# Notes:
-#     Can be run on CPU-only computer
-#     Best to run with >1 thread, though only 1 thread will be used if 1 file is
-#         input
-# User-defined elements:
-#     N_THREADS  - number of threads to use when processing
-#     DATA_DIR   - path to your raw FASTAs or FASTQs
-#     OUTPUT_DIR - path to where the preprocessing output will be written
-tranquillyzer preprocess \
-    --threads N_THREADS \
-    DATA_DIR \
-    OUTPUT_DIR
-
-# Create read length distribution plot
-# Notes:
-#     Can be run on a CPU-only computer
-#     Only one (1) thread is needed
-# User-defined elements:
-#     OUTPUT_DIR - same OUTPUT_DIR directory from preprocessing step
-tranquillyzer readlengthdist \
-    OUTPUT_DIR
-
-# Annotate reads
-# Notes:
-#     Best run on a GPU-enabled computer
-#     Also utilizes CPU multiprocessing, so run with >1 threads
-# User-defined elements:
-#     MODEL_NAME     - base name of neural net model to use
-#     MODEL_TYPE     - type of model to use
-#     GPU_MEM        - amount of vRAM in your GPU(s)
-#     OUTPUT_FORMAT  - whether to output data as FASTA or FASTQ
-#     SEQ_ORDER_FILE - path to the sequence order file used to define valid
-#                      reads
-#     OUTPUT_DIR     - same OUTPUT_DIR from preprocessing
-#     WHITELIST_FILE - TSV file with sequences that define each cell (see
-#                      [Usage](usage.qmd) for more details)
-tranquillyzer annotate-reads \
-        --model-name MODEL_NAME \
-        --model-type MODEL_TYPE \
-        --gpu-mem GPU_MEM \
-        --output-fmt OUTPUT_FORMAT \
-        --seq-order-file SEQ_ORDER_FILE \
-        --threads N_THREADS \
-        OUTPUT_DIR \
-        WHITELIST_FILE
-
-# Align annotated reads
-# Notes:
-#    Needs samtools and minimap2 to run (should be installed with tranquillyzer)
-#    Can be run on a CPU-only computer
-#    Best to run with >1 threads
-# User-defined elements:
-#     N_THREADS  - number of CPU threads to use
-#     OUTPUT_DIR - same OUTPUT_DIR from preprocessing (NOTE: use the same
-#                  directory twice as shown)
-#     REFERENCE  - reference FASTA for minimap2
-tranquillyzer align \
-    --threads N_THREADS \
-    OUTPUT_DIR \
-    REFERENCE \
-    OUTPUT_DIR
-
-# Deduplicate aligned BAM
-# Notes:
-#     Uses samtools
-#     Can be run on a CPU-only computer
-#     Best to run with >1 threads
-# User-defined elements:
-#     N_THREADS  - number of CPU threads to use
-#     OUTPUT_DIR - same OUTPUT_DIR from preprocessing
-tranquillyzer dedup \
-    --threads N_THREADS \
-    OUTPUT_DIR
-```
+See the [Install](install.qmd) page for detailed setup instructions.

@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 def introduce_errors_with_labels_context(
     sequence, label, mismatch_rate, insertion_rate, deletion_rate, polyT_error_rate, max_insertions
 ):
+    """Introduce substitution/insertion/deletion errors into a sequence while tracking label offsets."""
     error_sequence, error_labels = [], []
     for base, lbl in zip(sequence, label):
         insertion_count = 0
@@ -54,7 +55,8 @@ def introduce_errors_with_labels_context(
 ############## generate segments ##############
 
 
-def generate_segment(segment_type, segment_pattern, length_range, transcriptome_records):
+def generate_segment(segment_type, segment_pattern, length_range, transcriptome_records, spacer_range=(0, 50)):
+    """Generate a random DNA segment matching a pattern specification."""
     if re.match(r"N\d+", segment_pattern):
         length = int(segment_pattern[1:])
         sequence = "".join(np.random.choice(list("ATCG")) for _ in range(length))
@@ -63,7 +65,7 @@ def generate_segment(segment_type, segment_pattern, length_range, transcriptome_
         length = np.random.randint(length_range[0], length_range[1])
         if transcriptome_records:
             transcript = random.choice(transcriptome_records)
-            transcript_seq = str(transcript.seq)
+            transcript_seq = str(transcript.seq) if hasattr(transcript, "seq") else str(transcript)
         else:
             transcript_seq = "".join(np.random.choice(list("ATCG")) for _ in range(length))
         fragment = (
@@ -74,23 +76,21 @@ def generate_segment(segment_type, segment_pattern, length_range, transcriptome_
         sequence = fragment
         label = ["cDNA"] * len(sequence)
     elif segment_pattern == "RN" and segment_type == "cDNA":
-        length = np.random.randint(0, 50)
+        length = np.random.randint(spacer_range[0], spacer_range[1] + 1)
+        length = min(length, 50)
+        if length == 0:
+            return "", []
         if transcriptome_records:
             transcript = random.choice(transcriptome_records)
-            transcript_seq = str(transcript.seq)
+            transcript_seq = str(transcript.seq) if hasattr(transcript, "seq") else str(transcript)
         else:
             transcript_seq = "".join(np.random.choice(list("ATCG")) for _ in range(length))
-        fragment = (
-            transcript_seq[:length]
-            if len(transcript_seq) > length and random.random() < 0.5
-            else transcript_seq[-length:]
-        )
-        sequence = fragment
+        sequence = transcript_seq[:length]
         label = ["cDNA"] * len(sequence)
     elif segment_pattern in ["A", "T"]:
         length = np.random.randint(0, 50)
         sequence = segment_pattern * length
-        label = ["polyA"] * length if segment_pattern == "A" else ["polyT"] * length
+        label = [segment_type] * length
     else:
         sequence = segment_pattern
         label = [segment_type] * len(sequence)
@@ -100,10 +100,11 @@ def generate_segment(segment_type, segment_pattern, length_range, transcriptome_
 ############## generate valid read ##############
 
 
-def generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records):
+def generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records, spacer_range=(0, 50)):
+    """Assemble a full synthetic read from segment patterns and structure order."""
     read_segments, label_segments = [], []
     for seg_type, seg_pattern in zip(segments_order, segments_patterns):
-        s, labs = generate_segment(seg_type, seg_pattern, length_range, transcriptome_records)
+        s, labs = generate_segment(seg_type, seg_pattern, length_range, transcriptome_records, spacer_range)
         read_segments.append(s)
         label_segments.append(labs)
     return "".join(read_segments), [lbl for seg_lbls in label_segments for lbl in seg_lbls]
@@ -113,160 +114,148 @@ def generate_valid_read(segments_order, segments_patterns, length_range, transcr
 
 
 def reverse_complement(sequence):
+    """Return the reverse complement of a DNA sequence."""
     complement = {"A": "T", "T": "A", "C": "G", "G": "C", "N": "N"}
     return "".join(complement[base] for base in reversed(sequence))
 
 
 def reverse_labels(labels):
+    """Reverse a list of per-position labels."""
     return labels[::-1]
 
 
-############## generate invalid read with multiple corruption types ##############
+############## config-driven training data generation ##############
 
 
-# def generate_invalid_read(segments_order, segments_patterns,
-#                           length_range, transcriptome_records):
-#     # corruption_type = random.choice([
-#     #     "concat", "repeat_adapter_5p",
-#     #     "repeat_adapter_3p",
-#     # ])
-
-#     corruption_type = random.choice([
-#         "concat"
-#     ])
-
-#     if corruption_type == "concat":
-#         read1, label1 = generate_valid_read(segments_order,
-#                                             segments_patterns,
-#                                             length_range,
-#                                             transcriptome_records)
-#         read2, label2 = generate_valid_read(segments_order,
-#                                             segments_patterns,
-#                                             length_range,
-#                                             transcriptome_records)
-
-#         # Randomly reverse or reverse complement second read
-#         strand_flip = random.choices(["none", "reverse", "revcomp"],
-#                                      weights=[0.5, 0.25, 0.25])[0]
-
-#         if strand_flip == "reverse":
-#             read2 = read2[::-1]
-#             label2 = label2[::-1]
-#         if strand_flip == "revcomp":
-#             read2 = reverse_complement(read2)
-#             label2 = label2[::-1]  # reverse label direction to match RC
-
-#         return read1 + read2, label1 + label2
-
-#     elif corruption_type == "repeat_adapter_5p":
-#         adapter_seq, adapter_label = generate_segment(segments_order[1],
-#                                                       segments_patterns[1],
-#                                                       length_range,
-#                                                       transcriptome_records)
-#         repeated_adapter = adapter_seq * 3
-#         repeated_labels = [adapter_label[0]] * len(repeated_adapter)
-#         read, label = generate_valid_read(segments_order,
-#                                           segments_patterns,
-#                                           length_range,
-#                                           transcriptome_records)
-#         return repeated_adapter + read, repeated_labels + label
-
-#     elif corruption_type == "repeat_adapter_3p":
-#         adapter_seq, adapter_label = generate_segment(segments_order[-2],
-#                                                       segments_patterns[-2],
-#                                                       length_range,
-#                                                       transcriptome_records)
-#         repeated_adapter = adapter_seq * 3
-#         repeated_labels = [adapter_label[0]] * len(repeated_adapter)
-#         read, label = generate_valid_read(segments_order,
-#                                           segments_patterns,
-#                                           length_range,
-#                                           transcriptome_records)
-#         return repeated_adapter + read, repeated_labels + label
+_RC_COMPLEMENT = {"A": "T", "T": "A", "C": "G", "G": "C", "N": "N"}
 
 
-def generate_invalid_read(segments_order, segments_patterns, length_range, transcriptome_records):
-    corruption_type = random.choice(["concat", "repeat_adapter_5p", "repeat_adapter_3p", "truncate_5p", "truncate_3p"])
+def _rc_pattern_str(pattern):
+    """Reverse-complement a literal adapter pattern string."""
+    return "".join(_RC_COMPLEMENT[b] for b in reversed(pattern))
 
-    # corruption_type = random.choice([
-    #     "concat", "truncate_5p", "truncate_3p"
-    # ])
 
-    if corruption_type == "concat":
-        read1, label1 = generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records)
-        read2, label2 = generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records)
+def _rc_single_pattern(pattern):
+    """Reverse-complement a single element's pattern based on its type."""
+    if pattern in ("A", "T"):
+        return "T" if pattern == "A" else "A"
+    elif re.match(r"N\d+", pattern) or pattern in ("NN", "RN"):
+        return pattern
+    else:
+        return _rc_pattern_str(pattern)
 
-        # Randomly reverse or reverse complement second read
-        strand_flip = random.choices(["none", "reverse", "revcomp"], weights=[0.5, 0.25, 0.25])[0]
 
-        if strand_flip == "reverse":
-            read2 = read2[::-1]
-            label2 = label2[::-1]
-        elif strand_flip == "revcomp":
-            read2 = reverse_complement(read2)
-            # labels follow the reversed orientation
-            label2 = label2[::-1]
+def _reverse_single_pattern(pattern):
+    """Reverse (without complement) a single element's pattern based on its type."""
+    if pattern in ("A", "T"):
+        # Poly patterns unchanged when just reversed
+        return pattern
+    elif re.match(r"N\d+", pattern) or pattern in ("NN", "RN"):
+        return pattern
+    else:
+        # Literal adapter — reverse the string only (no complement)
+        return pattern[::-1]
 
-        return read1 + read2, label1 + label2
 
-    elif corruption_type == "repeat_adapter_5p":
-        adapter_seq, adapter_label = generate_segment(
-            segments_order[1], segments_patterns[1], length_range, transcriptome_records
+# Maps (current_state, desired_state) to the transform needed.
+# States: "fwd", "rev" (reverse-complement), "reverse" (reverse-only)
+def _transform_pattern(pattern, from_state, to_state):
+    """Transform a pattern between orientation states."""
+    if from_state == to_state:
+        return pattern
+    # Build lookup of transforms
+    if from_state == "fwd" and to_state == "rev":
+        return _rc_single_pattern(pattern)
+    elif from_state == "fwd" and to_state == "reverse":
+        return _reverse_single_pattern(pattern)
+    elif from_state == "rev" and to_state == "fwd":
+        return _rc_single_pattern(pattern)  # RC is self-inverse
+    elif from_state == "rev" and to_state == "reverse":
+        # RC'd → fwd → reverse: complement only (undo reverse, keep complement undone... )
+        # Actually: RC = reverse + complement. To go from RC to reverse-only,
+        # we need to undo the complement: apply complement without reversing.
+        return (
+            "".join(_RC_COMPLEMENT.get(b, b) for b in pattern)
+            if not (pattern in ("A", "T") or re.match(r"N\d+", pattern) or pattern in ("NN", "RN"))
+            else pattern
         )
-        repeated_adapter = adapter_seq * 3
-        repeated_labels = [adapter_label[0]] * len(repeated_adapter)
-
-        read, label = generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records)
-        return repeated_adapter + read, repeated_labels + label
-
-    elif corruption_type == "repeat_adapter_3p":
-        adapter_seq, adapter_label = generate_segment(
-            segments_order[-2], segments_patterns[-2], length_range, transcriptome_records
-        )
-        repeated_adapter = adapter_seq * 3
-        repeated_labels = [adapter_label[0]] * len(repeated_adapter)
-
-        read, label = generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records)
-        return read + repeated_adapter, label + repeated_labels
-
-    # ----------------------
-    # Truncation artifacts
-    # ----------------------
-    elif corruption_type in ("truncate_5p", "truncate_3p"):
-        read, label = generate_valid_read(segments_order, segments_patterns, length_range, transcriptome_records)
-
-        read_len = len(read)
-        if read_len <= 1:
-            # Fallback: if something degenerate happens, just return the read
-            return read, label
-
-        # Keep at least some fraction of the read so it's not empty
-        min_fraction_kept = 0.3  # you can tune this
-        max_trunc = max(1, int(read_len * (1 - min_fraction_kept)))
-
-        # If read is extremely short, avoid truncation turning it invalid for your code
-        if max_trunc >= read_len:
-            max_trunc = read_len - 1
-
-        trunc_len = random.randint(1, max_trunc)
-
-        if corruption_type == "truncate_5p":
-            # Drop bases from the 5' end
-            new_read = read[trunc_len:]
-            new_label = label[trunc_len:]
-        else:  # "truncate_3p"
-            # Drop bases from the 3' end
-            new_read = read[:-trunc_len]
-            new_label = label[:-trunc_len]
-
-        # Safety: in case truncation wiped everything out
-        if len(new_read) == 0:
-            return read, label
-
-        return new_read, new_label
+    elif from_state == "reverse" and to_state == "fwd":
+        return _reverse_single_pattern(pattern)  # reverse is self-inverse
+    elif from_state == "reverse" and to_state == "rev":
+        # reverse → fwd → RC
+        fwd = _reverse_single_pattern(pattern)
+        return _rc_single_pattern(fwd)
+    return pattern
 
 
-############## simulate complete batch ##############
+def _build_fragment(order, patterns, fragment_orientation, rc_elements):
+    """Build a fragment's order and patterns, applying fragment-level and element-level orientation.
+
+    Args:
+        order: list of element names
+        patterns: list of patterns corresponding to order
+        fragment_orientation: "fwd", "rev" (reverse-complement), or "reverse" (reverse-only)
+        rc_elements: dict of element-level overrides, e.g. {"3p": "rev", "5p": "fwd", "UMI": "reverse"}
+    """
+    if fragment_orientation in ("rev", "reverse"):
+        # Reverse the order
+        frag_order = order[::-1]
+        if fragment_orientation == "rev":
+            frag_patterns = [_rc_single_pattern(p) for p in reversed(patterns)]
+        else:
+            frag_patterns = [_reverse_single_pattern(p) for p in reversed(patterns)]
+    else:
+        frag_order = list(order)
+        frag_patterns = list(patterns)
+
+    # Apply per-element overrides (absolute: override whatever fragment-level did)
+    for i, name in enumerate(frag_order):
+        override = rc_elements.get(name)
+        if override is None:
+            continue
+        frag_patterns[i] = _transform_pattern(frag_patterns[i], fragment_orientation, override)
+
+    return frag_order, frag_patterns
+
+
+def _build_structure_order_and_patterns(struct):
+    """Build the full segment order and patterns for a training structure,
+    including cDNA flanking and repeat handling."""
+    order = struct["order"]
+    patterns = struct["patterns"]
+    repeat = struct.get("repeat", 1)
+    rc_pattern = struct.get("rc_pattern", ["fwd"] * repeat)
+    rc_elements = struct.get("rc_elements", {})
+
+    if repeat > 1:
+        # Concatenate: repeat the core with cDNA flanks between copies
+        full_order = ["cDNA"]
+        full_patterns = ["RN"]
+        for i in range(repeat):
+            frag_order, frag_patterns = _build_fragment(order, patterns, rc_pattern[i], rc_elements)
+            full_order.extend(frag_order + ["cDNA"])
+            full_patterns.extend(frag_patterns + ["RN"])
+    else:
+        # Single structure flanked with random cDNA
+        frag_order, frag_patterns = _build_fragment(order, patterns, rc_pattern[0], rc_elements)
+        full_order = ["cDNA"] + frag_order + ["cDNA"]
+        full_patterns = ["RN"] + frag_patterns + ["RN"]
+
+    return full_order, full_patterns
+
+
+def _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p):
+    """Truncate ends that lack random flanking cDNA."""
+    if not sequence:
+        return sequence, label
+    if max_trunc_5p > 0 and label[0] != "cDNA":
+        t = random.randint(0, max_trunc_5p)
+        sequence, label = sequence[t:], label[t:]
+    if max_trunc_3p > 0 and sequence and label[-1] != "cDNA":
+        t = random.randint(0, max_trunc_3p)
+        if 0 < t < len(sequence):
+            sequence, label = sequence[:-t], label[:-t]
+    return sequence, label
 
 
 def simulate_dynamic_batch_complete(
@@ -277,49 +266,126 @@ def simulate_dynamic_batch_complete(
     deletion_rate,
     polyT_error_rate,
     max_insertions,
-    segments_order,
-    segments_patterns,
+    training_structures,
     transcriptome_records,
-    invalid_fraction,
     rc,
+    max_trunc_5p=0,
+    max_trunc_3p=0,
+    min_spacer=0,
+    max_spacer=50,
 ):
-    reads, labels = [], []
+    """Simulate a batch of synthetic reads with dynamic length and error profiles."""
+    reads, labels, expected_fragments = [], [], []
+    weights = [s["proportion"] for s in training_structures]
 
     for _ in range(num_reads):
-        # Generate clean read first
-        if np.random.rand() < invalid_fraction:
-            sequence, label = generate_invalid_read(
-                segments_order, segments_patterns, length_range, transcriptome_records
-            )
-        else:
-            sequence, label = generate_valid_read(
-                segments_order, segments_patterns, length_range, transcriptome_records
-            )
+        struct = random.choices(training_structures, weights=weights, k=1)[0]
+        n_fragments = struct.get("repeat", 1)
+        full_order, full_patterns = _build_structure_order_and_patterns(struct)
 
-        # Add both orientations BEFORE adding noise
+        struct_length_range = struct.get("length_range", length_range)
+        sequence, label = generate_valid_read(
+            full_order, full_patterns, struct_length_range, transcriptome_records, spacer_range=(min_spacer, max_spacer)
+        )
+
+        sequence, label = _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p)
+
         read_pairs = [(sequence, label)]
-
         if rc:
             rc_seq = reverse_complement(sequence)
             rc_lbl = reverse_labels(label)
             read_pairs.append((rc_seq, rc_lbl))
 
-        # Introduce noise to each orientation
         for seq, lbl in read_pairs:
             seq_err, lbl_err = introduce_errors_with_labels_context(
                 seq, lbl, mismatch_rate, insertion_rate, deletion_rate, polyT_error_rate, max_insertions
             )
             reads.append(seq_err)
             labels.append(lbl_err)
+            expected_fragments.append(n_fragments)
 
-    return reads, labels
+    return reads, labels, expected_fragments
 
 
 # ############## multiprocessing ##############
 
 
 def simulate_dynamic_batch_complete_wrapper(args):
+    """Wrapper for simulate_dynamic_batch_complete for use with multiprocessing."""
     return simulate_dynamic_batch_complete(*args)
+
+
+def simulate_and_write_fasta(args):
+    """Generate reads and write directly to a FASTA file. Returns (labels, expected_fragments) only.
+
+    Args tuple: (num_reads, length_range, mismatch_rate, insertion_rate, deletion_rate,
+                 polyT_error_rate, max_insertions, training_structures, transcriptome_records,
+                 rc, max_trunc_5p, max_trunc_3p, min_spacer, max_spacer,
+                 fasta_path, start_idx)
+    """
+    *sim_args, fasta_path, start_idx = args
+
+    (
+        num_reads,
+        length_range,
+        mismatch_rate,
+        insertion_rate,
+        deletion_rate,
+        polyT_error_rate,
+        max_insertions,
+        training_structures,
+        transcriptome_records,
+        rc,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
+    ) = sim_args
+
+    labels, expected_fragments, structure_names = [], [], []
+    weights = [s["proportion"] for s in training_structures]
+    read_idx = start_idx
+
+    with open(fasta_path, "w") as fh:
+        for _ in range(num_reads):
+            struct = random.choices(training_structures, weights=weights, k=1)[0]
+            n_fragments = struct.get("repeat", 1)
+            struct_name = struct.get("name", "unknown")
+            full_order, full_patterns = _build_structure_order_and_patterns(struct)
+
+            struct_length_range = struct.get("length_range", length_range)
+            sequence, label = generate_valid_read(
+                full_order,
+                full_patterns,
+                struct_length_range,
+                transcriptome_records,
+                spacer_range=(min_spacer, max_spacer),
+            )
+            sequence, label = _maybe_truncate(sequence, label, max_trunc_5p, max_trunc_3p)
+
+            read_pairs = [(sequence, label)]
+            if rc:
+                rc_seq = reverse_complement(sequence)
+                rc_lbl = reverse_labels(label)
+                read_pairs.append((rc_seq, rc_lbl))
+
+            for seq, lbl in read_pairs:
+                seq_err, lbl_err = introduce_errors_with_labels_context(
+                    seq,
+                    lbl,
+                    mismatch_rate,
+                    insertion_rate,
+                    deletion_rate,
+                    polyT_error_rate,
+                    max_insertions,
+                )
+                fh.write(f">assess_{read_idx}\n{seq_err}\n")
+                labels.append(lbl_err)
+                expected_fragments.append(n_fragments)
+                structure_names.append(struct_name)
+                read_idx += 1
+
+    return labels, expected_fragments, structure_names
 
 
 # ############## main generator ##############
@@ -332,40 +398,56 @@ def generate_training_reads(
     deletion_rate,
     polyT_error_rate,
     max_insertions,
-    segments_order,
-    segments_patterns,
+    training_structures,
     length_range,
     num_processes,
     rc,
     transcriptome_records,
-    invalid_fraction,
+    max_trunc_5p=0,
+    max_trunc_3p=0,
+    min_spacer=0,
+    max_spacer=50,
 ):
-    args_complete = (
-        num_reads,
-        length_range,
-        mismatch_rate,
-        insertion_rate,
-        deletion_rate,
-        polyT_error_rate,
-        max_insertions,
-        segments_order,
-        segments_patterns,
-        transcriptome_records,
-        invalid_fraction,
-        rc,
-    )
+    """Generate a full set of synthetic training reads and labels."""
+    # Convert BioPython SeqRecords to plain strings for fast pickling across workers
+    transcriptome_seqs = [str(rec.seq) if hasattr(rec, "seq") else str(rec) for rec in transcriptome_records]
 
-    # Parallel or single-thread execution
-    if num_processes > 1:
-        with Pool(processes=num_processes) as pool:
-            complete_results = pool.map(simulate_dynamic_batch_complete_wrapper, [args_complete])
-            pool.close()
+    effective_workers = max(1, min(num_processes, num_reads))
+
+    base_chunk = num_reads // effective_workers
+    remainder = num_reads % effective_workers
+    chunks = [base_chunk + (1 if i < remainder else 0) for i in range(effective_workers)]
+
+    worker_args = [
+        (
+            chunk_size,
+            length_range,
+            mismatch_rate,
+            insertion_rate,
+            deletion_rate,
+            polyT_error_rate,
+            max_insertions,
+            training_structures,
+            transcriptome_seqs,
+            rc,
+            max_trunc_5p,
+            max_trunc_3p,
+            min_spacer,
+            max_spacer,
+        )
+        for chunk_size in chunks
+    ]
+
+    if effective_workers > 1:
+        with Pool(processes=effective_workers) as pool:
+            complete_results = pool.map(simulate_dynamic_batch_complete_wrapper, worker_args)
     else:
-        complete_results = [simulate_dynamic_batch_complete_wrapper(args_complete)]
+        complete_results = [simulate_dynamic_batch_complete_wrapper(worker_args[0])]
 
-    reads, labels = [], []
-    for local_reads, local_labels in complete_results:
+    reads, labels, expected_fragments = [], [], []
+    for local_reads, local_labels, local_frags in complete_results:
         reads.extend(local_reads)
         labels.extend(local_labels)
+        expected_fragments.extend(local_frags)
 
-    return reads, labels
+    return reads, labels, expected_fragments

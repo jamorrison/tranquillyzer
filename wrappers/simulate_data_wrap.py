@@ -18,8 +18,12 @@ def simulate_data_wrap(
     threads,
     rc,
     transcriptome,
-    invalid_fraction,
+    max_trunc_5p=0,
+    max_trunc_3p=0,
+    min_spacer=0,
+    max_spacer=50,
 ):
+    """Generate synthetic labeled training reads and save to pickle."""
     import os
     import random
     import pickle
@@ -28,10 +32,7 @@ def simulate_data_wrap(
     from Bio.Seq import Seq
     from Bio.SeqRecord import SeqRecord
     from scripts.simulate_training_data import generate_training_reads
-    from scripts.trained_models import seq_orders
-
-    reads = []
-    labels = []
+    from scripts.trained_models import seq_orders, get_training_structures
 
     length_range = (min_cDNA, max_cDNA)
 
@@ -42,10 +43,10 @@ def simulate_data_wrap(
     utils_dir = os.path.abspath(utils_dir)
 
     if training_seq_orders_file is None:
-        training_seq_orders_file = f"{utils_dir}/training_seq_orders.tsv"
+        training_seq_orders_file = f"{utils_dir}/seq_orders.yaml"
 
     seq_order, sequences, barcodes, UMIs, strand = seq_orders(training_seq_orders_file, model_name)
-    seq_order_dict = {}
+    training_structs = get_training_structures(training_seq_orders_file, model_name)
 
     if transcriptome:
         logger.info("Loading transcriptome fasta file")
@@ -63,32 +64,23 @@ def simulate_data_wrap(
             transcriptome_records.append(record)
         logger.info(f"Generated {len(transcriptome_records)} synthetic transcripts")
 
-    for i in range(len(seq_order)):
-        seq_order_dict[seq_order[i]] = sequences[i]
-
-    training_segment_order = ["cDNA"]
-    training_segment_order.extend(seq_order)
-    training_segment_order.append("cDNA")
-
-    training_segment_pattern = ["RN"]
-    training_segment_pattern.extend(sequences)
-    training_segment_pattern.append("RN")
-
     logger.info("Generating reads")
-    reads, labels = generate_training_reads(
+    reads, labels, _ = generate_training_reads(
         num_reads,
         mismatch_rate,
         insertion_rate,
         deletion_rate,
         polyT_error_rate,
         max_insertions,
-        training_segment_order,
-        training_segment_pattern,
+        training_structs,
         length_range,
         threads,
         rc,
         transcriptome_records,
-        invalid_fraction,
+        max_trunc_5p,
+        max_trunc_3p,
+        min_spacer,
+        max_spacer,
     )
     logger.info("Finished generating reads")
 

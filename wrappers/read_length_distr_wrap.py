@@ -4,6 +4,7 @@ logger = logging.getLogger(__name__)
 
 
 def read_length_distr_wrap(output_dir):
+    """Plot read-length distribution from preprocessed Parquet files."""
     import os
     import time
     import resource

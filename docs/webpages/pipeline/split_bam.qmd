@@ -1,0 +1,55 @@
+---
+title: BAM Splitting
+page-navigation: true
+---
+
+The `split-bam` command splits a coordinate-sorted BAM file into separate BAM files for each cell barcode. This is
+useful for per-cell analysis workflows that require individual BAM files.
+
+# Two-Stage Splitting Strategy
+
+Splitting runs in two stages to handle the inherent challenge of splitting a coordinate-sorted BAM by cell barcode
+(which is scattered throughout the file) without loading everything into memory:
+
+1. **Stage 1 (Bucketing):** Reads are distributed into hash buckets based on their cell barcode. Each contig is
+   processed independently and can run in parallel.
+2. **Stage 2 (Merging):** Each bucket is streamed in coordinate order, and reads are written to their final per-cell
+   BAM files. An LRU cache limits the number of simultaneously open output files.
+
+The result is one coordinate-sorted BAM per cell, maintaining the sort order from the input.
+
+# Usage
+
+```bash
+tranquillyzer split-bam \
+    --bucket-threads 4 \
+    --merge-threads 4 \
+    INPUT_BAM
+```
+
+# Command Line Options
+
+| Option | Default | Description | When to change |
+|---|:--:|---|---|
+| `INPUT_BAM` | required | Coordinate-sorted BAM (must be indexed) | |
+| `--out-dir` | `<bam_dir>/split_bams` | Output directory for per-cell BAMs | |
+| `--tag` | `CB` | BAM tag holding the cell barcode | Change if your BAM uses a different tag |
+| `--bucket-threads` | 1 | Parallel workers for Stage 1 (bucketing) | Increase for faster bucketing |
+| `--merge-threads` | 1 | Parallel workers for Stage 2 (merging) | Increase for faster merging (max 8) |
+| `--nbuckets` | 256 | Number of hash buckets | Increase for very large cell counts |
+| `--max-open-cb-writers` | 128 | Max simultaneous open output files | Increase if your system allows more open files |
+| `--filter-secondary` | off | Drop secondary alignments | Enable to reduce output size |
+| `--filter-supplementary` | off | Drop supplementary alignments | Enable to reduce output size |
+| `--filter-unmapped` | on | Drop unmapped reads | |
+| `--filter-duplicates` | on | Drop PCR/optical duplicates | Disable if you want to keep duplicates |
+| `--min-mapq` | 0 | Minimum MAPQ for retention | Increase for stricter quality filtering |
+| `--index-outputs` | off | Create .bai index for each per-cell BAM | Enable if downstream tools need indexes |
+| `--prefer-csi-index` | off | Use CSI instead of BAI indexing | Enable for very large reference genomes |
+| `--keep-tmp` | off | Keep temporary bucket files | Enable for debugging |
+
+# Output
+
+- **`<out_dir>/<cell_barcode>.bam`**:one coordinate-sorted BAM per cell
+- **`<out_dir>/<cell_barcode>.bam.bai`**:BAM index (if `--index-outputs` enabled)
+
+Reads without a cell barcode tag are skipped.

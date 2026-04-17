@@ -1,6 +1,65 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "tranquillyzer"
+dynamic = ["version"]
+description = "ONT single-cell barcode annotation, demultiplexing, and QC"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "polars",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "tqdm",
+    "filelock",
+    "tensorflow",
+    "tensorflow-addons",
+    "rapidfuzz",
+    "pysam",
+    "HTSeq",
+    "numba",
+    "typer",
+    "biopython",
+    "python-Levenshtein",
+    "scikit-learn",
+    "pyyaml",
+]
+
+[project.scripts]
+tranquillyzer = "main:app"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts", "utils", "wrappers"]
+
+[tool.setuptools.package-data]
+"*" = ["models/*", "utils/*.tsv", "utils/*.yaml"]
+
+[tool.setuptools_scm]
+write_to = "_version.py"
+fallback_version = "0.2.2"
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+tag_regex = "^(?P<prefix>v)?(?P<version>\\d+\\.\\d+\\.\\d+)(?:[_-].*)?$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v[0-9]*.[0-9]*.[0-9]*"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.coverage.run]
+branch = false
+parallel = true
+source = ["."]
+concurrency = ["multiprocessing", "thread"]
+
+[tool.coverage.report]
+show_missing = true
+omit = ["tests/*", "*/site-packages/*"]

@@ -5,9 +5,11 @@ logger = logging.getLogger(__name__)
 
 
 def load_libs():
+    """Lazily import and return libraries needed by the training pipeline."""
     import os
     import gc
     import json
+    import yaml
     import time
     import pickle
     import random
@@ -27,7 +29,7 @@ def load_libs():
         DynamicPaddingDataGenerator,
         ont_read_annotator,
     )
-    from scripts.trained_models import seq_orders
+    from scripts.trained_models import seq_orders, get_training_structures, get_training_params, get_valid_structures
     from scripts.simulate_training_data import generate_training_reads
     from scripts.annotate_new_data import (
         annotate_new_data_parallel,
@@ -36,11 +38,14 @@ def load_libs():
     from scripts.extract_annotated_seqs import extract_annotated_full_length_seqs
     from scripts.visualize_annot import save_plots_to_pdf
     from scripts.available_gpus import log_gpus_used
+    from utils import get_version
+    import h5py
 
     return (
         os,
         gc,
         json,
+        yaml,
         time,
         pickle,
         random,
@@ -56,6 +61,9 @@ def load_libs():
         shuffle,
         generate_training_reads,
         seq_orders,
+        get_training_structures,
+        get_training_params,
+        get_valid_structures,
         ont_read_annotator,
         DynamicPaddingDataGenerator,
         annotate_new_data_parallel,
@@ -63,6 +71,8 @@ def load_libs():
         extract_annotated_full_length_seqs,
         save_plots_to_pdf,
         log_gpus_used,
+        get_version,
+        h5py,
     )
 
 
@@ -82,17 +92,18 @@ def train_model_wrap(
     threads,
     rc,
     transcriptome,
-    invalid_fraction,
     gpu_mem,
     target_tokens,
     vram_headroom,
     min_batch_size,
     max_batch_size,
 ):
+    """Grid-train model variants from a parameter table."""
     (
         os,
         gc,
         json,
+        yaml,
         time,
         pickle,
         random,
@@ -108,6 +119,9 @@ def train_model_wrap(
         shuffle,
         generate_training_reads,
         seq_orders,
+        get_training_structures,
+        get_training_params,
+        get_valid_structures,
         ont_read_annotator,
         DynamicPaddingDataGenerator,
         annotate_new_data_parallel,
@@ -115,6 +129,8 @@ def train_model_wrap(
         extract_annotated_full_length_seqs,
         save_plots_to_pdf,
         log_gpus_used,
+        get_version,
+        h5py,
     ) = load_libs()
 
     # Let user know whether they're running on CPU only or GPU (provided handles if so)
@@ -130,11 +146,11 @@ def train_model_wrap(
     utils_dir = os.path.abspath(utils_dir)
 
     if param_file is None:
-        param_file = f"{utils_dir}/training_params.tsv"
+        param_file = f"{utils_dir}/training_params.yaml"
     if not os.path.exists(param_file):
         raise FileNotFoundError(f"Parameter file not found: {param_file}")
     if training_seq_orders_file is None:
-        training_seq_orders_file = f"{utils_dir}/training_seq_orders.tsv"
+        training_seq_orders_file = f"{utils_dir}/seq_orders.yaml"
     if not os.path.exists(training_seq_orders_file):
         raise FileNotFoundError(f"Seq orders file not found: {training_seq_orders_file}")
 
@@ -143,31 +159,44 @@ def train_model_wrap(
     with open(f"{output_dir}/simulated_data/labels.pkl", "rb") as labs:
         labels = pickle.load(labs)
 
-    df = pd.read_csv(param_file, sep="\t")
-
-    # Ensure the model exists in the file
-    if model_name not in df.columns:
-        logger.info(f"{model_name} not found in the parameter file.")
-        return
+    # Load training parameters from YAML
+    raw_params = get_training_params(param_file, model_name)
     logger.info(f"Extracting parameters for {model_name}")
 
-    # Convert the model's parameter column to a dictionary of lists
-    param_dict = {df.iloc[i, 0]: df.iloc[i][model_name].split(",") for i in range(len(df))}
+    # Extract list parameters before grid search (they're per-layer, not grid search axes)
+    dilation_rates = raw_params.pop("dilation_rates", None)
+    if dilation_rates is not None:
+        dilation_rates = [int(x) for x in dilation_rates]
+
+    conv_filters = raw_params.pop("conv_filters", None)
+    if conv_filters is not None:
+        conv_filters = [int(x) for x in conv_filters]
+
+    conv_kernel_sizes = raw_params.pop("conv_kernel_sizes", None)
+    if conv_kernel_sizes is not None:
+        conv_kernel_sizes = [int(x) for x in conv_kernel_sizes]
+
+    lstm_units = raw_params.pop("lstm_units", None)
+    if lstm_units is not None:
+        lstm_units = [int(x) for x in lstm_units]
+
+    # Build grid search dict: ensure all values are lists for itertools.product
+    param_dict = {}
+    for key, val in raw_params.items():
+        if isinstance(val, list):
+            param_dict[key] = [str(v) for v in val]
+        else:
+            param_dict[key] = [str(val)]
 
     # Generate all possible combinations of parameters for this model
     param_combinations = list(itertools.product(*param_dict.values()))
+    single_config = len(param_combinations) == 1
     length_range = (min_cDNA, max_cDNA)
     seq_order, sequences, barcodes, UMIs, strand = seq_orders(training_seq_orders_file, model_name)
+    training_structs = get_training_structures(training_seq_orders_file, model_name)
+    valid_structs = get_valid_structures(training_seq_orders_file, model_name)
 
     print(f"seq orders: {seq_order}")
-
-    validation_segment_order = ["cDNA"]
-    validation_segment_order.extend(seq_order)
-    validation_segment_order.append("cDNA")
-
-    validation_segment_pattern = ["RN"]
-    validation_segment_pattern.extend(sequences)
-    validation_segment_pattern.append("RN")
 
     if transcriptome:
         logger.info("Loading transcriptome fasta file")
@@ -185,20 +214,18 @@ def train_model_wrap(
             transcriptome_records.append(record)
         logger.info(f"Generated {len(transcriptome_records)} synthetic transcripts")
 
-    validation_reads, validation_labels = generate_training_reads(
+    validation_reads, validation_labels, _ = generate_training_reads(
         num_val_reads,
         mismatch_rate,
         insertion_rate,
         deletion_rate,
         polyT_error_rate,
         max_insertions,
-        validation_segment_order,
-        validation_segment_pattern,
+        training_structs,
         length_range,
         threads,
         rc,
         transcriptome_records,
-        invalid_fraction,
     )
 
     palette = ["red", "blue", "green", "purple", "pink", "cyan", "magenta", "orange", "brown"]
@@ -217,10 +244,15 @@ def train_model_wrap(
         validation_read_lengths.append(len(validation_read))
 
     for idx, param_set in enumerate(param_combinations):
-        model_filename = f"{model_name}_{idx}.h5"
-        param_filename = f"{model_name}_{idx}_params.json"
+        if single_config:
+            variant_dir = f"{output_dir}/{model_name}"
+        else:
+            variant_dir = f"{output_dir}/{model_name}_{idx}"
+        variant_label = model_name if single_config else f"{model_name}_{idx}"
+        model_filename = f"{model_name}.h5"
+        param_filename = f"{model_name}_params.yaml"
 
-        os.makedirs(f"{output_dir}/{model_name}_{idx}", exist_ok=True)
+        os.makedirs(variant_dir, exist_ok=True)
         params = dict(zip(param_dict.keys(), param_set))
 
         # Extract model parameters
@@ -230,10 +262,7 @@ def train_model_wrap(
         embedding_dim = int(params["embedding_dim"])
         num_labels = int(len(seq_order))
         conv_layers = int(params["conv_layers"])
-        conv_filters = int(params["conv_filters"])
-        conv_kernel_size = int(params["conv_kernel_size"])
         lstm_layers = int(params["lstm_layers"])
-        lstm_units = int(params["lstm_units"])
         bidirectional = params["bidirectional"].lower() == "true"
         crf_layer = params["crf_layer"].lower() == "true"
         attention_heads = int(params["attention_heads"])
@@ -242,12 +271,32 @@ def train_model_wrap(
         learning_rate = float(params["learning_rate"])
         epochs = int(params["epochs"])
 
-        logger.info(f"Training {model_filename} with parameters: {params}")
+        logger.info(f"Training {variant_label} with parameters: {params}")
 
-        # Save the parameters used in training
+        # Save the parameters used in training (with native types)
+        save_params = {
+            "tranquillyzer_version": get_version(),
+            "batch_size": batch_size,
+            "train_fraction": train_fraction,
+            "vocab_size": vocab_size,
+            "embedding_dim": embedding_dim,
+            "conv_layers": conv_layers,
+            "conv_filters": conv_filters if conv_filters else [260] * conv_layers,
+            "conv_kernel_sizes": conv_kernel_sizes if conv_kernel_sizes else [25] * conv_layers,
+            "dilation_rates": dilation_rates if dilation_rates else [1] * conv_layers,
+            "lstm_layers": lstm_layers,
+            "lstm_units": lstm_units if lstm_units else [128 // (2**i) for i in range(lstm_layers)],
+            "bidirectional": bidirectional,
+            "crf_layer": crf_layer,
+            "attention_heads": attention_heads,
+            "dropout_rate": dropout_rate,
+            "regularization": regularization,
+            "learning_rate": learning_rate,
+            "epochs": epochs,
+        }
         os.makedirs(output_dir, exist_ok=True)
-        with open(f"{output_dir}/{model_name}_{idx}/{param_filename}", "w") as param_file:
-            json.dump(params, param_file, indent=4)
+        with open(f"{variant_dir}/{param_filename}", "w") as param_file:
+            yaml.dump(save_params, param_file, default_flow_style=False, sort_keys=False)
 
         # Shuffle data
         reads, labels = shuffle(reads, labels)
@@ -258,7 +307,8 @@ def train_model_wrap(
 
         # Save label binarizer
         os.makedirs(output_dir, exist_ok=True)
-        with open(f"{output_dir}/{model_name}_{idx}/{model_name}_{idx}_lbl_bin.pkl", "wb") as lb_file:
+        label_binarizer.tranquillyzer_version_ = get_version()
+        with open(f"{variant_dir}/{model_name}_lbl_bin.pkl", "wb") as lb_file:
             pickle.dump(label_binarizer, lb_file)
 
         # Train-validation split
@@ -287,7 +337,8 @@ def train_model_wrap(
                 num_labels,
                 conv_layers=conv_layers,
                 conv_filters=conv_filters,
-                conv_kernel_size=conv_kernel_size,
+                conv_kernel_sizes=conv_kernel_sizes,
+                dilation_rates=dilation_rates,
                 lstm_layers=lstm_layers,
                 lstm_units=lstm_units,
                 bidirectional=bidirectional,
@@ -298,7 +349,7 @@ def train_model_wrap(
                 learning_rate=learning_rate,
             )
 
-        logger.info(f"Training {model_name}_{idx} with parameters: {params}")
+        logger.info(f"Training {variant_label} with parameters: {params}")
         if crf_layer:
             dummy_input = tf.zeros((1, 512), dtype=tf.int32)  # Batch of 1, sequence length 512
             _ = model(dummy_input)
@@ -318,7 +369,9 @@ def train_model_wrap(
                 workers=0,
                 use_multiprocessing=False,
             )
-            model.save_weights(f"{output_dir}/{model_name}_{idx}/{model_name}_{idx}.h5")
+            model.save_weights(f"{variant_dir}/{model_filename}")
+            with h5py.File(f"{variant_dir}/{model_filename}", "a") as f:
+                f.attrs["tranquillyzer_version"] = get_version()
         else:
             reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
                 monitor="val_accuracy", factor=0.5, patience=1, min_lr=1e-5, mode="max"
@@ -328,16 +381,18 @@ def train_model_wrap(
             history = model.fit(
                 train_gen, validation_data=val_gen, epochs=epochs, callbacks=[early_stopping, reduce_lr]
             )
-            model.save(f"{output_dir}/{model_name}_{idx}/{model_filename}")
+            model.save(f"{variant_dir}/{model_filename}")
+            with h5py.File(f"{variant_dir}/{model_filename}", "a") as f:
+                f.attrs["tranquillyzer_version"] = get_version()
 
         history_df = pd.DataFrame(history.history)
-        history_df.to_csv(f"{output_dir}/{model_name}_{idx}/{model_name}_{idx}_history.tsv", sep="\t", index=False)
+        history_df.to_csv(f"{variant_dir}/{model_name}_history.tsv", sep="\t", index=False)
 
         max_read_len = int(max(validation_read_lengths)) + 10
 
         encoded_data = preprocess_sequences(validation_reads, max_read_len)
-        predictions = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
-        annotated_reads = extract_annotated_full_length_seqs(
+        predictions, _, _ = annotate_new_data_parallel(encoded_data, model, max_batch_size, min_batch=min_batch_size)
+        annotated_reads, _, _ = extract_annotated_full_length_seqs(
             validation_reads,
             predictions,
             crf_layer,
@@ -346,12 +401,13 @@ def train_model_wrap(
             seq_order,
             barcodes,
             n_jobs=1,
+            valid_structures=valid_structs,
         )
         save_plots_to_pdf(
             validation_reads,
             annotated_reads,
             validation_read_names,
-            f"{output_dir}/{model_name}_{idx}/{model_name}_{idx}_val_viz.pdf",
+            f"{variant_dir}/{model_name}_val_viz.pdf",
             colors,
             chars_per_line=150,
         )

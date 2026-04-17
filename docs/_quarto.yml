@@ -19,12 +19,14 @@ website:
         text: Install
       - href: webpages/quick_start.qmd
         text: Quick Start
+      - href: webpages/pipeline_guide.qmd
+        text: Pipeline Guide
       - href: webpages/model_training.qmd
         text: Model Training
       - href: webpages/resource_requirements.qmd
         text: Resource Requirements
       - href: webpages/usage.qmd
-        text: Usage
+        text: CLI Reference
       - href: webpages/releases.qmd
         text: Releases
       - href: webpages/contributing.qmd
@@ -33,21 +35,42 @@ website:
       - icon: github
         href: https://github.com/huishenlab/tranquillyzer
   sidebar:
+    - title: "Pipeline Guide"
+      style: "docked"
+      contents:
+        - text: "Overview"
+          href: webpages/pipeline_guide.qmd
+        - text: "Preprocessing"
+          href: webpages/pipeline/preprocessing.qmd
+        - text: "Annotation"
+          href: webpages/pipeline/annotation.qmd
+        - text: "Barcode Correction & Demux"
+          href: webpages/pipeline/barcode_demux.qmd
+        - text: "Alignment & Deduplication"
+          href: webpages/pipeline/align_dedup.qmd
+        - text: "BAM Splitting"
+          href: webpages/pipeline/split_bam.qmd
+        - text: "Gene Quantification"
+          href: webpages/pipeline/featurecounts.qmd
+        - text: "QC Metrics"
+          href: webpages/pipeline/qc_metrics.qmd
+        - text: "Visualization"
+          href: webpages/pipeline/visualization.qmd
     - title: "Model Training"
       style: "docked"
       contents:
         - text: "Overview"
           href: webpages/model_training.qmd
-        - text: "1. Read Simulation"
+        - text: "Read Simulation"
           href: webpages/model_training/read_simulation.qmd
-        - text: "2. Introduce Errors"
-          href: webpages/model_training/intro_errors.qmd
         - text: "simulate-data CLI"
           href: webpages/model_training/simulate_data_cli.qmd
-        - text: "3./4. Model Training"
+        - text: "Model Training"
           href: webpages/model_training/train_model.qmd
         - text: "train-model CLI"
           href: webpages/model_training/train_model_cli.qmd
+        - text: "Model Assessment"
+          href: webpages/model_training/assess_model.qmd
 
 format:
   html:
